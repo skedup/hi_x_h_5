@@ -121,7 +121,6 @@ export class MyNotesRepository {
       permissionCode?: number;
       permissionMsg?: string;
       schedulePostTime?: number;
-      xsecToken?: string;
     },
   ): void {
     const sql = `
@@ -134,7 +133,7 @@ export class MyNotesRepository {
         ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
-        ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
       )
       ON CONFLICT(id) DO UPDATE SET
         type = excluded.type,
@@ -151,7 +150,7 @@ export class MyNotesRepository {
         permission_code = excluded.permission_code,
         permission_msg = excluded.permission_msg,
         schedule_post_time = excluded.schedule_post_time,
-        xsec_token = excluded.xsec_token,
+        xsec_token = NULL,
         fetched_at = CURRENT_TIMESTAMP,
         updated_at = CURRENT_TIMESTAMP
     `;
@@ -175,7 +174,6 @@ export class MyNotesRepository {
         note.permissionCode ?? 0,
         note.permissionMsg ?? null,
         note.schedulePostTime ?? 0,
-        note.xsecToken ?? null,
       );
   }
 
@@ -200,7 +198,6 @@ export class MyNotesRepository {
       permissionCode?: number;
       permissionMsg?: string;
       schedulePostTime?: number;
-      xsecToken?: string;
     }>,
   ): { inserted: number; updated: number } {
     let inserted = 0;
@@ -223,6 +220,16 @@ export class MyNotesRepository {
 
     transaction();
     return { inserted, updated };
+  }
+
+  /** 清除旧版本缓存的笔记访问凭证。 */
+  scrubTokens(): number {
+    const stmt = this.db.prepare(`
+      UPDATE my_published_notes
+      SET xsec_token = NULL
+      WHERE xsec_token IS NOT NULL
+    `);
+    return stmt.run().changes;
   }
 
   /**

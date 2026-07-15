@@ -119,6 +119,18 @@ export class XhsDatabase {
 
     // 数据库迁移：添加新列到 account_profiles 表
     this.migrateAccountProfiles();
+    const noteTokenMarker = 'kindred.my_notes_token_scrub.v1';
+    const noteTokenScrubComplete = this.config.get<boolean>(noteTokenMarker) === true;
+    const scrubbedNoteTokens = this.myNotes.scrubTokens();
+    if (scrubbedNoteTokens > 0 || !noteTokenScrubComplete) {
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+      this.db.exec('VACUUM');
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+    }
+    if (!noteTokenScrubComplete) {
+      this.config.set(noteTokenMarker, true);
+    }
+
   }
 
   /**

@@ -256,7 +256,6 @@ export async function handleCreatorTools(name: string, args: any, pool: AccountP
             permissionCode: note.permissionCode,
             permissionMsg: note.permissionMsg,
             schedulePostTime: note.schedulePostTime,
-            xsecToken: note.xsecToken,
           })),
         );
         log.info(`缓存笔记到数据库: 新增 ${cacheResult.inserted}, 更新 ${cacheResult.updated}`);
