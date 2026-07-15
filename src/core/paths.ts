@@ -13,7 +13,10 @@ export { paths, getImageDownloadPath, getVideoDownloadPath };
  * Ensure all required directories exist
  */
 export async function ensureDirectories(): Promise<void> {
-  await fs.ensureDir(paths.dataDir);
+  await fs.ensureDir(paths.dataDir, { mode: 0o700 });
+  await fs.chmod(paths.dataDir, 0o700);
+  await fs.ensureDir(paths.browserProfile, { mode: 0o700 });
+  await fs.chmod(paths.browserProfile, 0o700);
   await fs.ensureDir(paths.downloads);
   await fs.ensureDir(paths.images);
   await fs.ensureDir(paths.videos);

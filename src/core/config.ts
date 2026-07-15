@@ -76,8 +76,8 @@ export const config = {
    * 浏览器配置
    */
   browser: {
-    /** 是否使用无头模式 (XHS_MCP_HEADLESS)，默认 true */
-    headless: parseBoolean(process.env.XHS_MCP_HEADLESS, true),
+    /** 是否使用无头模式 (XHS_MCP_HEADLESS)，默认 false */
+    headless: parseBoolean(process.env.XHS_MCP_HEADLESS, false),
     /** 请求间隔（毫秒）(XHS_MCP_REQUEST_INTERVAL)，用于速率限制 */
     requestInterval: parseInteger(process.env.XHS_MCP_REQUEST_INTERVAL, 2000),
     /** 操作完成后是否保持浏览器打开 (XHS_MCP_KEEP_OPEN)，默认 false */
@@ -165,6 +165,10 @@ export const paths = {
   /** SQLite 数据库文件 */
   get database() {
     return path.join(config.data.dir, 'data.db');
+  },
+  /** 持久化 Chrome profile */
+  get browserProfile() {
+    return path.join(config.data.dir, 'browser-profile');
   },
   /** 下载目录 */
   get downloads() {

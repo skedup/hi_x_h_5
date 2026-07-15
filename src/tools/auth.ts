@@ -162,10 +162,7 @@ export async function handleAuthTools(name: string, args: any, pool: AccountPool
             });
             accountNameUpdated = true;
             newAccountName = profile.nickname;
-            log.info('Updated account name', {
-              from: currentName,
-              to: profile.nickname,
-            });
+            log.info('Updated account name');
           } catch (e) {
             // 名称可能已存在，忽略错误
             log.debug('Could not update account name', { error: e });
@@ -203,10 +200,7 @@ export async function handleAuthTools(name: string, args: any, pool: AccountPool
             });
             accountNameUpdated = true;
             newAccountName = userInfo.nickname;
-            log.info('Updated account name', {
-              from: currentName,
-              to: userInfo.nickname,
-            });
+            log.info('Updated account name');
           } catch (e) {
             log.debug('Could not update account name', { error: e });
           }

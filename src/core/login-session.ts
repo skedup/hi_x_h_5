@@ -4,12 +4,13 @@
  * @module core/login-session
  */
 
-import { chromium, Browser, BrowserContext, Page } from 'patchright';
+import { Browser, BrowserContext, Page } from 'patchright';
 import { LoginUserInfo, FullUserProfile } from '../xhs/types.js';
-import { sleep, generateWebId } from '../xhs/utils/index.js';
+import { sleep } from '../xhs/utils/index.js';
 import { createLogger } from './logger.js';
 import { config } from './config.js';
-import { BROWSER_ARGS, QR_CODE_SELECTOR, LOGIN_STATUS_SELECTOR, URLS } from '../xhs/clients/constants.js';
+import { QR_CODE_SELECTOR, LOGIN_STATUS_SELECTOR, URLS } from '../xhs/clients/constants.js';
+import { launchProfileContext } from '../xhs/clients/context.js';
 
 const log = createLogger('login-session');
 
@@ -153,32 +154,7 @@ export class LoginSessionManager {
     const id = this.generateSessionId();
     log.info('Creating login session', { id, accountName, hasProxy: !!proxy });
 
-    // Launch browser
-    const launchOptions: any = {
-      headless: config.browser.headless, // 可通过 XHS_MCP_HEADLESS 控制
-      channel: 'chrome',
-      args: BROWSER_ARGS,
-    };
-
-    if (proxy) {
-      launchOptions.proxy = { server: proxy };
-    }
-
-    const browser = await chromium.launch(launchOptions);
-
-    const context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-    });
-
-    // Add webId cookie
-    await context.addCookies([
-      {
-        name: 'webId',
-        value: generateWebId(),
-        domain: '.xiaohongshu.com',
-        path: '/',
-      },
-    ]);
+    const { browser, context } = await launchProfileContext(config.browser.headless, proxy);
 
     const page = await context.newPage();
 
@@ -228,24 +204,26 @@ export class LoginSessionManager {
 
     // 从页面状态提取 QR 码数据
     const loginData = await page.evaluate(
-      () => {
+      (selector: string) => {
         const state = (window as any).__INITIAL_STATE__;
         if (state?.login?.qrcodeInfo) {
-          return state.login.qrcodeInfo;
+          return { qrcode: state.login.qrcodeInfo.qrcode as string };
         }
+        const image = document.querySelector(selector) as HTMLImageElement | null;
+        if (image?.src) return { imageUrl: image.src };
         return null;
       },
-      null,
+      QR_CODE_SELECTOR,
       false,
     );
 
-    if (!loginData?.qrcode) {
+    if (!loginData?.qrcode && !loginData?.imageUrl) {
       await browser.close();
       throw new Error('Failed to extract QR code data from page state.');
     }
 
-    const qrCodeContent = `xhsdiscover://qrcode/login?qr_code=${loginData.qrcode}`;
-    const qrCodeUrl = this.generateQrCodeUrl(qrCodeContent);
+    const qrCodeContent = loginData.qrcode ? `xhsdiscover://qrcode/login?qr_code=${loginData.qrcode}` : '';
+    const qrCodeUrl = loginData.imageUrl || this.generateQrCodeUrl(qrCodeContent);
     log.info('Generated QR code URL from page state');
 
     const now = new Date();

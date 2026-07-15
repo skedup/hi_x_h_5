@@ -33,6 +33,25 @@ const LOG_LEVEL_MAP: Record<string, LogLevel> = {
 // Current log level from config
 let currentLogLevel = LOG_LEVEL_MAP[config.log.level] ?? LogLevel.DEBUG;
 
+const SENSITIVE_LOG_KEY =
+  /(?:account|user.?id|red.?id|nickname|phone|qr.?code|cookie|local.?storage|xsec|token|url|browser.?profile)/i;
+
+function redactLogData(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Error) return { name: value.name };
+  if (seen.has(value)) return '[Circular]';
+
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => redactLogData(item, seen));
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      SENSITIVE_LOG_KEY.test(key) ? '[REDACTED]' : redactLogData(item, seen),
+    ]),
+  );
+}
+
 // Log file path from config
 const LOG_DIR = paths.logs;
 const LOG_FILE = paths.logFile;
@@ -63,7 +82,7 @@ function formatMessage(level: LogLevel, module: string, message: string, data?: 
   if (data !== undefined) {
     if (typeof data === 'object') {
       try {
-        formatted += ` ${JSON.stringify(data)}`;
+        formatted += ` ${JSON.stringify(redactLogData(data))}`;
       } catch {
         formatted += ` [Object]`;
       }

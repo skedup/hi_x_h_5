@@ -8,11 +8,45 @@ import { chromium, Browser, BrowserContext, Page } from 'patchright';
 import { LoginUserInfo, FullUserProfile } from '../types.js';
 import { generateWebId } from '../utils/index.js';
 import { createLogger } from '../../core/logger.js';
-import { config } from '../../core/config.js';
+import { config, paths } from '../../core/config.js';
 import { BROWSER_ARGS } from './constants.js';
 
 // Create logger for browser module
 export const log = createLogger('browser');
+
+/**
+ * Launch the single persistent Chrome profile shared by login and business calls.
+ */
+export async function launchProfileContext(
+  headless = config.browser.headless,
+  proxy?: string,
+): Promise<{ browser: Browser; context: BrowserContext }> {
+  const context = await chromium.launchPersistentContext(paths.browserProfile, {
+    headless,
+    channel: 'chrome',
+    args: BROWSER_ARGS,
+    viewport: { width: 1920, height: 1080 },
+    ...(proxy ? { proxy: { server: proxy } } : {}),
+  });
+  const browser = context.browser();
+  if (!browser) {
+    await context.close();
+    throw new Error('Persistent Chrome context has no browser instance.');
+  }
+
+  const cookies = await context.cookies();
+  if (!cookies.some((cookie) => cookie.name === 'webId')) {
+    await context.addCookies([
+      {
+        name: 'webId',
+        value: generateWebId(),
+        domain: '.xiaohongshu.com',
+        path: '/',
+      },
+    ]);
+  }
+  return { browser, context };
+}
 
 /**
  * Options for BrowserClient initialization
@@ -54,36 +88,9 @@ export class BrowserContextManager {
    * Defaults to config.browser.headless (controlled by XHS_MCP_HEADLESS env)
    */
   async init(headless = config.browser.headless): Promise<void> {
-    const launchOptions: any = {
-      headless,
-      channel: 'chrome',
-      args: BROWSER_ARGS,
-    };
-
-    if (this.options.proxy) {
-      launchOptions.proxy = { server: this.options.proxy };
-    }
-
-    this.browser = await chromium.launch(launchOptions);
-
-    const contextOptions: any = {
-      viewport: { width: 1920, height: 1080 },
-    };
-
-    if (this.options.state) {
-      contextOptions.storageState = this.options.state;
-    }
-
-    this.context = await this.browser.newContext(contextOptions);
-
-    await this.context.addCookies([
-      {
-        name: 'webId',
-        value: generateWebId(),
-        domain: '.xiaohongshu.com',
-        path: '/',
-      },
-    ]);
+    const session = await launchProfileContext(headless, this.options.proxy);
+    this.browser = session.browser;
+    this.context = session.context;
   }
 
   /**
@@ -162,6 +169,9 @@ export class BrowserContextManager {
    */
   async deleteCookies(): Promise<{ success: boolean; error?: string }> {
     try {
+      const context = await this.ensureContext();
+      await context.clearCookies();
+
       // Clear internal state
       this.options.state = undefined;
 

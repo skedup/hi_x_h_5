@@ -211,7 +211,7 @@ export const EXPLORE_SELECTORS = {
 
 // QR code selector for login (matching Go project: .login-container .qrcode-img)
 export const QR_CODE_SELECTOR =
-  '.login-container .qrcode-img, #app > div:nth-child(1) > div > div.login-container > div.left > div.code-area > div.qrcode.force-light > img';
+  '.login-container .qrcode-img, img.qrcode-img, #app > div:nth-child(1) > div > div.login-container > div.left > div.code-area > div.qrcode.force-light > img';
 
 // Login status selector (matching Go project: .main-container .user .link-wrapper .channel)
 export const LOGIN_STATUS_SELECTOR = '.main-container .user .link-wrapper .channel';
