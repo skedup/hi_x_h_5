@@ -7,16 +7,18 @@
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { serve } from '@hono/node-server';
 import { createMcpServer } from './server.js';
 import { initDatabase } from './db/index.js';
 import { getAccountPool } from './core/account-pool.js';
+import { getLoginSessionManager } from './core/login-session.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { config } from './core/config.js';
 
 /**
  * Start the HTTP transport server for the MCP protocol.
- * Uses Hono as the HTTP framework and Bun as the runtime.
+ * Uses Hono as the HTTP framework and Node.js as the runtime.
  *
  * @param port - Port number to listen on (default: 18060)
  */
@@ -76,6 +78,7 @@ export async function startHttpServer(port: number = config.server.port) {
       });
 
       const mockReq = {
+        method: 'POST',
         headers,
         body,
       };
@@ -83,6 +86,10 @@ export async function startHttpServer(port: number = config.server.port) {
       let responseBody: any = null;
       let responseHeaders: Record<string, string> = {};
       let responseStatus = 200;
+      let resolveResponse: () => void = () => undefined;
+      const responseComplete = new Promise<void>((resolve) => {
+        resolveResponse = resolve;
+      });
 
       const mockRes = {
         writeHead: (status: number, headers?: Record<string, string>) => {
@@ -111,6 +118,7 @@ export async function startHttpServer(port: number = config.server.port) {
             }
             responseBody += typeof data === 'string' ? data : data.toString();
           }
+          resolveResponse();
           return mockRes;
         },
         on: () => mockRes,
@@ -119,6 +127,7 @@ export async function startHttpServer(port: number = config.server.port) {
       };
 
       await transport.handleRequest(mockReq as any, mockRes as any, body);
+      await responseComplete;
 
       // Build response
       const response = new Response(responseBody, {
@@ -201,22 +210,23 @@ export async function startHttpServer(port: number = config.server.port) {
   console.error(`Starting HTTP server on port ${port}...`);
   console.error(`MCP endpoint: http://localhost:${port}/mcp`);
 
+  const httpServer = serve({
+    port,
+    hostname: '127.0.0.1',
+    fetch: app.fetch,
+  });
+
   // Graceful shutdown
   const shutdown = async () => {
     console.error('Shutting down HTTP server...');
+    await getLoginSessionManager().shutdown();
     await pool.closeAll();
     db.close();
-    process.exit(0);
+    httpServer.close();
   };
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
-
-  // Start Bun server
-  Bun.serve({
-    port,
-    fetch: app.fetch,
-  });
 
   console.error(`HTTP server running on http://localhost:${port}`);
 }
