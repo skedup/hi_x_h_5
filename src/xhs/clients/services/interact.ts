@@ -85,6 +85,7 @@ export class InteractService {
         success: true,
         action: unlike ? 'unlike' : 'like',
         noteId,
+        alreadyDone: !shouldClick,
       };
     } catch (error) {
       return {
@@ -164,6 +165,7 @@ export class InteractService {
         success: true,
         action: unfavorite ? 'unfavorite' : 'favorite',
         noteId,
+        alreadyDone: !shouldClick,
       };
     } catch (error) {
       return {
@@ -228,11 +230,27 @@ export class InteractService {
       await submitBtn.click();
       await sleep(1000);
 
-      return { success: true };
+      const submitted = await page
+        .waitForFunction(
+          (selector) => {
+            const input = document.querySelector(selector);
+            if (!input) return false;
+            const value = input instanceof HTMLTextAreaElement ? input.value : input.textContent || '';
+            return value.trim().length === 0;
+          },
+          COMMENT_SELECTORS.commentInput,
+          { timeout: 3000 },
+        )
+        .then(() => true)
+        .catch(() => false);
+      return submitted
+        ? { success: true }
+        : { success: false, error: 'Comment outcome unconfirmed', sideEffectPossible: true };
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
+        sideEffectPossible: true,
       };
     } finally {
       await page.close();
@@ -311,11 +329,26 @@ export class InteractService {
       await submitBtn.click();
       await sleep(2000); // 等待 2 秒与 reference project 一致
 
-      return { success: true };
+      const submitted = await page
+        .waitForFunction(
+          (selector) => {
+            const input = document.querySelector(selector);
+            if (!input) return false;
+            return (input.textContent || '').trim().length === 0;
+          },
+          'div.input-box div.content-edit p.content-input',
+          { timeout: 3000 },
+        )
+        .then(() => true)
+        .catch(() => false);
+      return submitted
+        ? { success: true }
+        : { success: false, error: 'Reply outcome unconfirmed', sideEffectPossible: true };
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
+        sideEffectPossible: true,
       };
     } finally {
       await page.close();
@@ -506,6 +539,7 @@ export class InteractService {
         success: true,
         action: unlike ? 'unlike' : 'like',
         noteId,
+        alreadyDone: !shouldClick,
       };
     } catch (error) {
       return {

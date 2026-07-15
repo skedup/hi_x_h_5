@@ -34,7 +34,7 @@ const LOG_LEVEL_MAP: Record<string, LogLevel> = {
 let currentLogLevel = LOG_LEVEL_MAP[config.log.level] ?? LogLevel.DEBUG;
 
 const SENSITIVE_LOG_KEY =
-  /(?:account|user.?id|red.?id|nickname|phone|qr.?code|cookie|local.?storage|xsec|token|url|browser.?profile)/i;
+  /(?:account|user.?id|red.?id|nickname|phone|qr.?code|cookie|local.?storage|xsec|token|url|browser.?profile|title|content|path|error|message)/i;
 
 function redactLogData(value: unknown, seen = new WeakSet<object>()): unknown {
   if (value === null || typeof value !== 'object') return value;

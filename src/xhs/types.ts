@@ -295,6 +295,8 @@ export interface PublishResult {
   noteId?: string;
   /** Error message (if failed) */
   error?: string;
+  /** True when a click happened but the platform outcome could not be confirmed. */
+  sideEffectPossible?: boolean;
 }
 
 // ============================================================================
@@ -311,6 +313,8 @@ export interface InteractionResult {
   action: string;
   /** Target note ID */
   noteId: string;
+  /** True when the requested state already existed and no click was needed. */
+  alreadyDone?: boolean;
   /** Error message (if failed) */
   error?: string;
 }
@@ -325,4 +329,6 @@ export interface CommentResult {
   commentId?: string;
   /** Error message (if failed) */
   error?: string;
+  /** True when a click happened but the platform outcome could not be confirmed. */
+  sideEffectPossible?: boolean;
 }

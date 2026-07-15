@@ -18,6 +18,48 @@ import { runGraph } from '../core/image-processor/graph/index.js';
 
 const log = createLogger('draft');
 
+const EPHEMERAL_DRAFT_TTL_MS = 10 * 60 * 1000;
+const MAX_EPHEMERAL_DRAFTS = 32;
+type EphemeralDraft = {
+  title: string;
+  content: string;
+  tags: string[];
+  images: string[];
+  createdAt: number;
+};
+const ephemeralDrafts = new Map<string, EphemeralDraft>();
+
+function pruneEphemeralDrafts(now = Date.now()) {
+  for (const [draftId, draft] of ephemeralDrafts) {
+    if (now - draft.createdAt > EPHEMERAL_DRAFT_TTL_MS) ephemeralDrafts.delete(draftId);
+  }
+  while (ephemeralDrafts.size >= MAX_EPHEMERAL_DRAFTS) {
+    const oldest = ephemeralDrafts.keys().next().value;
+    if (!oldest) break;
+    ephemeralDrafts.delete(oldest);
+  }
+}
+
+function isSupportedImage(filePath: string) {
+  const stat = fs.lstatSync(filePath);
+  if (!stat.isFile() || stat.isSymbolicLink()) return false;
+  const header = Buffer.alloc(12);
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    fs.readSync(fd, header, 0, header.length, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === '.png')
+    return header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (extension === '.jpg' || extension === '.jpeg')
+    return header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+  return (
+    extension === '.webp' && header.subarray(0, 4).toString() === 'RIFF' && header.subarray(8, 12).toString() === 'WEBP'
+  );
+}
+
 /**
  * 数据库行转换为草稿对象
  */
@@ -59,6 +101,11 @@ export const draftTools: Tool[] = [
           items: { type: 'string' },
           description: 'Array of screenshot file paths to be processed and annotated',
         },
+        images: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Existing image paths to preserve without AI processing',
+        },
         tags: {
           type: 'array',
           items: { type: 'string' },
@@ -70,7 +117,7 @@ export const draftTools: Tool[] = [
           description: 'Visual style preset (default: minimal)',
         },
       },
-      required: ['title', 'content', 'screenshots'],
+      required: ['title', 'content'],
     },
   },
   {
@@ -185,17 +232,19 @@ export async function handleDraftTools(name: string, args: any, pool: AccountPoo
         .object({
           title: z.string(),
           content: z.string(),
-          screenshots: z.array(z.string()),
+          screenshots: z.array(z.string()).optional().default([]),
+          images: z.array(z.string()).optional().default([]),
           tags: z.array(z.string()).optional().default([]),
           style: z.enum(['minimal', 'colorful', 'dark', 'light']).optional(),
         })
+        .refine((value) => value.screenshots.length > 0 !== value.images.length > 0)
         .parse(args);
 
-      // 验证截图路径
-      for (const screenshotPath of params.screenshots) {
-        if (!fs.existsSync(screenshotPath)) {
+      // 验证输入图片路径
+      for (const imagePath of [...params.screenshots, ...params.images]) {
+        if (!fs.existsSync(imagePath) || (params.images.length > 0 && !isSupportedImage(imagePath))) {
           return {
-            content: [{ type: 'text', text: `Screenshot not found: ${screenshotPath}` }],
+            content: [{ type: 'text', text: 'Input image is missing or invalid' }],
             isError: true,
           };
         }
@@ -203,6 +252,22 @@ export async function handleDraftTools(name: string, args: any, pool: AccountPoo
 
       const draftId = randomUUID();
       const now = new Date().toISOString();
+
+      if (params.images.length > 0) {
+        pruneEphemeralDrafts();
+        ephemeralDrafts.set(draftId, {
+          title: params.title,
+          content: params.content,
+          tags: params.tags,
+          images: params.images,
+          createdAt: Date.now(),
+        });
+        return {
+          content: [
+            { type: 'text', text: JSON.stringify({ success: true, draftId, imageCount: params.images.length }) },
+          ],
+        };
+      }
 
       // 创建草稿目录
       const draftDir = paths.getDraftOutputPath(draftId);
@@ -472,15 +537,25 @@ export async function handleDraftTools(name: string, args: any, pool: AccountPoo
         .parse(args);
 
       // 获取草稿
-      const row = db.get('SELECT * FROM note_drafts WHERE id = ?', [params.draftId]) as any;
-      if (!row) {
+      pruneEphemeralDrafts();
+      const ephemeral = ephemeralDrafts.get(params.draftId);
+      if (ephemeral) ephemeralDrafts.delete(params.draftId);
+      const row = ephemeral ? null : (db.get('SELECT * FROM note_drafts WHERE id = ?', [params.draftId]) as any);
+      if (!ephemeral && !row) {
         return {
-          content: [{ type: 'text', text: `Draft not found: ${params.draftId}` }],
-          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                result: { success: false, errorCode: 'draft_not_found' },
+              }),
+            },
+          ],
         };
       }
 
-      const draft = {
+      const draft = ephemeral ?? {
         title: row.title,
         content: row.content,
         tags: JSON.parse(row.tags || '[]'),
@@ -489,10 +564,17 @@ export async function handleDraftTools(name: string, args: any, pool: AccountPoo
 
       // 验证图片存在
       for (const imagePath of draft.images) {
-        if (!fs.existsSync(imagePath)) {
+        if (!fs.existsSync(imagePath) || !isSupportedImage(imagePath)) {
           return {
-            content: [{ type: 'text', text: `Draft image not found: ${imagePath}` }],
-            isError: true,
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: true,
+                  result: { success: false, errorCode: 'invalid_image' },
+                }),
+              },
+            ],
           };
         }
       }
@@ -520,8 +602,8 @@ export async function handleDraftTools(name: string, args: any, pool: AccountPoo
       );
 
       // 更新草稿状态
-      const allSuccess = results.every((r) => r.success);
-      if (allSuccess) {
+      const allSuccess = results.every((r) => r.success && r.result?.success);
+      if (!ephemeral && allSuccess) {
         db.run('UPDATE note_drafts SET published_at = ?, updated_at = ? WHERE id = ?', [
           new Date().toISOString(),
           new Date().toISOString(),
@@ -532,26 +614,36 @@ export async function handleDraftTools(name: string, args: any, pool: AccountPoo
       // 格式化结果
       if (results.length === 1) {
         const r = results[0];
-        if (!r.success) {
+        if (!r.success || !r.result?.success) {
           return {
-            content: [{ type: 'text', text: `Publish failed: ${r.error}` }],
-            isError: true,
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: true,
+                  result: {
+                    success: false,
+                    errorCode: 'publish_failed',
+                    sideEffectPossible: r.result?.sideEffectPossible === true || !r.success,
+                  },
+                }),
+              },
+            ],
           };
         }
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(
-                {
+              text: JSON.stringify({
+                success: true,
+                draftId: params.draftId,
+                result: {
                   success: true,
-                  draftId: params.draftId,
-                  account: r.account,
-                  result: r.result,
+                  noteId: r.result.noteId,
+                  sideEffectPossible: r.result.sideEffectPossible,
                 },
-                null,
-                2,
-              ),
+              }),
             },
           ],
         };

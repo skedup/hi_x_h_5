@@ -217,9 +217,13 @@ export class PublishService {
       const resultUrl = page.url();
       log.debug('Result URL', { url: resultUrl });
 
-      if (resultUrl.includes('success') || resultUrl.includes('publish')) {
-        // Try to extract note ID from URL
-        const noteIdMatch = resultUrl.match(/note\/([a-zA-Z0-9]+)/);
+      const noteIdMatch = resultUrl.match(/\/(?:note|explore)\/([a-zA-Z0-9]+)/);
+      const successVisible = await page
+        .locator('text=发布成功')
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (resultUrl.includes('success') || noteIdMatch || successVisible) {
         log.info('Publish successful', { noteId: noteIdMatch?.[1] });
         return {
           success: true,
@@ -227,13 +231,18 @@ export class PublishService {
         };
       }
 
-      log.info('Publish completed');
-      return { success: true };
+      log.warn('Publish outcome could not be confirmed');
+      return {
+        success: false,
+        error: 'Publish outcome unconfirmed',
+        sideEffectPossible: true,
+      };
     } catch (error) {
       log.error('Publish failed', { error: error instanceof Error ? error.message : String(error) });
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
+        sideEffectPossible: true,
       };
     } finally {
       // Keep browser open briefly for user to see result

@@ -34,9 +34,9 @@ export class InteractionRepository {
       params.targetUserId || null,
       params.action,
       params.commentId || null,
-      params.commentContent || null,
+      null,
       params.success ? 1 : 0,
-      params.error || null,
+      null,
     );
     return info.lastInsertRowid as number;
   }

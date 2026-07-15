@@ -6,7 +6,6 @@
  */
 
 import { Hono } from 'hono';
-import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import { createMcpServer } from './server.js';
 import { initDatabase } from './db/index.js';
@@ -48,14 +47,13 @@ export async function startHttpServer(port: number = config.server.port) {
 
   const app = new Hono();
 
-  // Enable CORS for all origins
-  app.use(
-    '*',
-    cors({
-      origin: '*',
-      exposeHeaders: ['Mcp-Session-Id'],
-    }),
-  );
+  // MCP 仅供本机进程调用，拒绝浏览器页面跨源触发写工具。
+  app.use('/mcp', async (c, next) => {
+    if (c.req.header('origin')) {
+      return c.json({ error: 'Browser origins are not allowed' }, 403);
+    }
+    await next();
+  });
 
   // MCP endpoint using StreamableHTTPServerTransport
   app.post('/mcp', async (c) => {
