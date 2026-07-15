@@ -4,7 +4,7 @@
  * @module xhs/clients/services/publish
  */
 
-import { Page } from 'patchright';
+import { Locator, Page } from 'patchright';
 import { PublishContentParams, PublishVideoParams, PublishResult } from '../../types.js';
 import { sleep, resolveImagePaths, isHttpUrl } from '../../utils/index.js';
 import { config } from '../../../core/config.js';
@@ -201,42 +201,15 @@ export class PublishService {
 
       // Click publish button
       log.info('Clicking publish button...');
-      const publishBtn = await page.$(PUBLISH_SELECTORS.publishBtn);
+      const publishBtn = await this.resolvePublishButton(page);
       if (!publishBtn) {
-        log.error('Publish button not found');
-        return { success: false, error: 'Publish button not found' };
+        return { success: false, error: 'A unique enabled publish button was not found' };
       }
 
       await publishBtn.click();
       log.info('Publish button clicked');
 
-      // Wait for publish to complete
-      await sleep(3000);
-
-      // Check if publish succeeded
-      const resultUrl = page.url();
-      log.debug('Result URL', { url: resultUrl });
-
-      const noteIdMatch = resultUrl.match(/\/(?:note|explore)\/([a-zA-Z0-9]+)/);
-      const successVisible = await page
-        .locator('text=发布成功')
-        .first()
-        .isVisible()
-        .catch(() => false);
-      if (resultUrl.includes('success') || noteIdMatch || successVisible) {
-        log.info('Publish successful', { noteId: noteIdMatch?.[1] });
-        return {
-          success: true,
-          noteId: noteIdMatch?.[1],
-        };
-      }
-
-      log.warn('Publish outcome could not be confirmed');
-      return {
-        success: false,
-        error: 'Publish outcome unconfirmed',
-        sideEffectPossible: true,
-      };
+      return await this.waitForPublishOutcome(page);
     } catch (error) {
       log.error('Publish failed', { error: error instanceof Error ? error.message : String(error) });
       return {
@@ -245,11 +218,94 @@ export class PublishService {
         sideEffectPossible: true,
       };
     } finally {
-      // Keep browser open briefly for user to see result
-      await sleep(2000);
-      await page.close();
-      log.debug('Browser page closed');
+      if (config.browser.keepOpen) {
+        log.info('Keep open mode: publish page stays open for operator inspection');
+      } else {
+        await sleep(2000);
+        await page.close();
+        log.debug('Browser page closed');
+      }
     }
+  }
+
+  private async resolvePublishButton(page: Page): Promise<Locator | null> {
+    const candidates = page.getByRole('button', { name: '发布', exact: true });
+    const candidateCount = await candidates.count();
+    const visible: Locator[] = [];
+    for (let index = 0; index < candidateCount; index += 1) {
+      const candidate = candidates.nth(index);
+      if (await candidate.isVisible().catch(() => false)) visible.push(candidate);
+    }
+    log.info('Publish button candidates resolved', {
+      candidateCount,
+      visibleCount: visible.length,
+    });
+    if (visible.length !== 1 || !(await visible[0].isEnabled().catch(() => false))) {
+      log.error('Unique enabled publish button not found', {
+        candidateCount,
+        visibleCount: visible.length,
+      });
+      return null;
+    }
+    return visible[0];
+  }
+
+  private async waitForPublishOutcome(page: Page): Promise<PublishResult> {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const resultUrl = page.url();
+      const noteIdMatch = resultUrl.match(/\/(?:note|explore)\/([a-zA-Z0-9]+)/);
+      const successVisible = await page
+        .getByText('发布成功', { exact: true })
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (resultUrl.includes('success') || noteIdMatch || successVisible) {
+        log.info('Publish successful', { noteId: noteIdMatch?.[1] });
+        return { success: true, noteId: noteIdMatch?.[1] };
+      }
+
+      const parsedUrl = new URL(resultUrl);
+      const route = `${parsedUrl.pathname}${parsedUrl.search}`;
+      const draftRoute = /(?:^|[/?#&=_-])draft(?:s|box)?(?:$|[/?#&=_-])/i.test(route);
+      const draftNoticeVisible = await page
+        .getByText(/已(?:保存|存入)(?:至|到)?草稿箱/)
+        .first()
+        .isVisible()
+        .catch(() => false);
+      const draftBoxVisible = await page
+        .getByText('草稿箱', { exact: true })
+        .first()
+        .isVisible()
+        .catch(() => false);
+      const editorVisible = await page
+        .locator(PUBLISH_SELECTORS.titleInput)
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (draftRoute || draftNoticeVisible || (draftBoxVisible && !editorVisible)) {
+        log.warn('Publish was saved as a draft instead of being published');
+        return { success: false, error: 'Content was saved as a draft' };
+      }
+
+      const failureVisible = await page
+        .getByText(/发布失败|发布受限|暂时无法发布|请稍后重试/)
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (failureVisible) {
+        log.warn('Publish was rejected by the page');
+        return { success: false, error: 'Publish was rejected by the page' };
+      }
+      await sleep(500);
+    }
+
+    log.warn('Publish outcome could not be confirmed');
+    return {
+      success: false,
+      error: 'Publish outcome unconfirmed',
+      sideEffectPossible: true,
+    };
   }
 
   /**
@@ -412,9 +468,9 @@ export class PublishService {
       }
 
       // 点击发布
-      const publishBtn = await page.$(PUBLISH_SELECTORS.publishBtn);
+      const publishBtn = await this.resolvePublishButton(page);
       if (!publishBtn) {
-        return { success: false, error: 'Publish button not found' };
+        return { success: false, error: 'A unique enabled publish button was not found' };
       }
 
       await publishBtn.click();

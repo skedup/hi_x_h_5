@@ -109,8 +109,6 @@ export const PUBLISH_SELECTORS = {
   contentEditor: 'div.ql-editor',
   /** 内容输入框（备选选择器） */
   contentTextbox: '[role="textbox"]',
-  /** 发布按钮 */
-  publishBtn: 'div.publish-page-publish-btn button, button.publishBtn',
   /** 话题标签容器 */
   topicContainer: '#creator-editor-topic-container .item',
   /** 定时发布单选按钮 */
