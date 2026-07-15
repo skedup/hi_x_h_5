@@ -79,6 +79,7 @@ export class XhsDatabase {
     }
     // Enable foreign key constraints
     this.db.pragma('foreign_keys = ON');
+    this.db.pragma('secure_delete = ON');
 
     // Initialize repositories
     this.accounts = new AccountRepository(this.db);
@@ -104,6 +105,16 @@ export class XhsDatabase {
       this.db.pragma('wal_checkpoint(TRUNCATE)');
       this.db.exec('VACUUM');
       this.db.pragma('wal_checkpoint(TRUNCATE)');
+    }
+    const scrubMarker = 'kindred.operation_history_scrub.v1';
+    const scrubComplete = this.config.get<boolean>(scrubMarker) === true;
+    if (scrubbedRows === 0 && !scrubComplete) {
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+      this.db.exec('VACUUM');
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+    }
+    if (!scrubComplete) {
+      this.config.set(scrubMarker, true);
     }
 
     // 数据库迁移：添加新列到 account_profiles 表
