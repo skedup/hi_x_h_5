@@ -6,6 +6,7 @@
  */
 
 import Database from 'better-sqlite3';
+import { chmodSync, existsSync } from 'node:fs';
 import { paths, ensureDirectories } from '../core/paths.js';
 import { SCHEMA_SQL } from './schema.js';
 
@@ -66,9 +67,16 @@ export class XhsDatabase {
    * @param dbPath - Path to the SQLite database file
    */
   constructor(dbPath: string = paths.database) {
+    process.umask(0o077);
     this.db = new Database(dbPath);
     // Enable WAL mode for better write performance
     this.db.pragma('journal_mode = WAL');
+    if (dbPath !== ':memory:') {
+      for (const suffix of ['', '-wal', '-shm']) {
+        const file = `${dbPath}${suffix}`;
+        if (existsSync(file)) chmodSync(file, 0o600);
+      }
+    }
     // Enable foreign key constraints
     this.db.pragma('foreign_keys = ON');
 
@@ -90,6 +98,13 @@ export class XhsDatabase {
   async init(): Promise<void> {
     await ensureDirectories();
     this.db.exec(SCHEMA_SQL);
+
+    const scrubbedRows = this.operations.scrubPayloads();
+    if (scrubbedRows > 0) {
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+      this.db.exec('VACUUM');
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+    }
 
     // 数据库迁移：添加新列到 account_profiles 表
     this.migrateAccountProfiles();

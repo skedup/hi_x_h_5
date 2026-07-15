@@ -74,14 +74,24 @@ export class OperationRepository {
     const info = stmt.run(
       params.accountId,
       params.action,
-      params.targetId || null,
-      params.params ? JSON.stringify(params.params) : null,
-      params.result ? JSON.stringify(params.result) : null,
+      null,
+      null,
+      null,
       params.success ? 1 : 0,
-      params.error || null,
+      null,
       params.durationMs || null,
     );
     return info.lastInsertRowid as number;
+  }
+
+  /** 清除旧版本已经落盘的请求、响应和错误正文。 */
+  scrubPayloads(): number {
+    const stmt = this.db.prepare(`
+      UPDATE operation_logs
+      SET target_id = NULL, params = NULL, result = NULL, error = NULL
+      WHERE target_id IS NOT NULL OR params IS NOT NULL OR result IS NOT NULL OR error IS NOT NULL
+    `);
+    return stmt.run().changes;
   }
 
   /**
