@@ -13,6 +13,7 @@ import { AccountPool } from '../core/account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { paths } from '../core/config.js';
 import { executeWithMultipleAccounts, MultiAccountParams } from '../core/multi-account.js';
+import { graphemeLength, computeTypingPlan } from '../xhs/utils/index.js';
 import { createLogger } from '../core/logger.js';
 import { runGraph } from '../core/image-processor/graph/index.js';
 
@@ -230,7 +231,9 @@ export async function handleDraftTools(name: string, args: any, pool: AccountPoo
     case 'xhs_create_draft': {
       const params = z
         .object({
-          title: z.string(),
+          title: z
+            .string()
+            .refine((s) => graphemeLength(s) <= 20, { message: 'Title exceeds 20 characters (grapheme)' }),
           content: z.string(),
           screenshots: z.array(z.string()).optional().default([]),
           images: z.array(z.string()).optional().default([]),
@@ -402,7 +405,10 @@ export async function handleDraftTools(name: string, args: any, pool: AccountPoo
       const params = z
         .object({
           draftId: z.string(),
-          title: z.string().optional(),
+          title: z
+            .string()
+            .refine((s) => graphemeLength(s) <= 20, { message: 'Title exceeds 20 characters (grapheme)' })
+            .optional(),
           content: z.string().optional(),
           tags: z.array(z.string()).optional(),
           images: z.array(z.string()).optional(),
@@ -598,7 +604,20 @@ export async function handleDraftTools(name: string, args: any, pool: AccountPoo
             scheduleTime: params.scheduleTime,
           });
         },
-        { logParams: { draftId: params.draftId, title: draft.title } },
+        {
+          logParams: { draftId: params.draftId, title: draft.title },
+          // 账户锁等待随正文输入预算缩放，避免长文占用锁超时（第三轮 P1）
+          lockTimeout:
+            computeTypingPlan(draft.content ?? '', {
+              minDelay: 45,
+              maxDelay: 170,
+              reviseGapMin: 4,
+              reviseGapMax: 12,
+              reviseMax: 1,
+              reviseChance: 0.8,
+              defaultMaxDurationMs: 60000,
+            }).maxDurationMs + 30000,
+        },
       );
 
       // 更新草稿状态

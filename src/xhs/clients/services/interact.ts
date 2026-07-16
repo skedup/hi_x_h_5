@@ -5,7 +5,7 @@
  */
 
 import { InteractionResult, CommentResult } from '../../types.js';
-import { sleep, navigateWithRetry } from '../../utils/index.js';
+import { sleep, navigateWithRetry, typeLikeHuman, jitteredSleep, rateLimitedSleep } from '../../utils/index.js';
 import { BrowserContextManager } from '../context.js';
 import { REQUEST_INTERVAL, INTERACTION_SELECTORS, COMMENT_SELECTORS } from '../constants.js';
 import { createLogger } from '../../../core/logger.js';
@@ -33,7 +33,7 @@ export class InteractService {
     try {
       let url = `https://www.xiaohongshu.com/explore/${noteId}`;
       if (xsecToken) {
-        url += `?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=pc_feed`;
+        url += `?xsec_token=${encodeURIComponent(xsecToken)}`;
       }
 
       // 带重试的页面导航
@@ -46,7 +46,7 @@ export class InteractService {
           error: accessError,
         };
       }
-      await sleep(REQUEST_INTERVAL);
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
       // 获取当前点赞状态
       const isLiked = await page.evaluate(
@@ -70,7 +70,7 @@ export class InteractService {
         const likeBtn = await page.$(INTERACTION_SELECTORS.likeButton);
         if (likeBtn) {
           await likeBtn.click();
-          await sleep(500);
+          await jitteredSleep(500);
         } else {
           return {
             success: false,
@@ -114,7 +114,7 @@ export class InteractService {
     try {
       let url = `https://www.xiaohongshu.com/explore/${noteId}`;
       if (xsecToken) {
-        url += `?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=pc_feed`;
+        url += `?xsec_token=${encodeURIComponent(xsecToken)}`;
       }
 
       // 带重试的页面导航
@@ -127,7 +127,7 @@ export class InteractService {
           error: accessError,
         };
       }
-      await sleep(REQUEST_INTERVAL);
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
       // 获取当前收藏状态
       const isCollected = await page.evaluate(
@@ -150,7 +150,7 @@ export class InteractService {
         const collectBtn = await page.$(INTERACTION_SELECTORS.collectButton);
         if (collectBtn) {
           await collectBtn.click();
-          await sleep(500);
+          await jitteredSleep(500);
         } else {
           return {
             success: false,
@@ -194,7 +194,7 @@ export class InteractService {
     try {
       let url = `https://www.xiaohongshu.com/explore/${noteId}`;
       if (xsecToken) {
-        url += `?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=pc_feed`;
+        url += `?xsec_token=${encodeURIComponent(xsecToken)}`;
       }
 
       // 带重试的页面导航
@@ -202,13 +202,13 @@ export class InteractService {
       if (accessError) {
         return { success: false, error: accessError };
       }
-      await sleep(REQUEST_INTERVAL);
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
       // 点击评论输入框触发器
       const inputTrigger = await page.$(COMMENT_SELECTORS.commentInputTrigger);
       if (inputTrigger) {
         await inputTrigger.click();
-        await sleep(500);
+        await jitteredSleep(500);
       }
 
       // 输入评论内容
@@ -218,8 +218,8 @@ export class InteractService {
       }
 
       await commentInput.click();
-      await page.keyboard.type(content);
-      await sleep(300);
+      await typeLikeHuman(page, content);
+      await jitteredSleep(300);
 
       // 点击提交按钮
       const submitBtn = await page.$(COMMENT_SELECTORS.submitButton);
@@ -228,7 +228,7 @@ export class InteractService {
       }
 
       await submitBtn.click();
-      await sleep(1000);
+      await jitteredSleep(1000);
 
       const submitted = await page
         .waitForFunction(
@@ -274,7 +274,7 @@ export class InteractService {
     try {
       let url = `https://www.xiaohongshu.com/explore/${noteId}`;
       if (xsecToken) {
-        url += `?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=pc_feed`;
+        url += `?xsec_token=${encodeURIComponent(xsecToken)}`;
       }
 
       // 带重试的页面导航
@@ -282,10 +282,10 @@ export class InteractService {
       if (accessError) {
         return { success: false, error: accessError };
       }
-      await sleep(1000); // 与 reference project 一致
+      await jitteredSleep(1000); // 与 reference project 一致
 
       // 等待评论区加载
-      await sleep(2000);
+      await jitteredSleep(2000);
 
       // 查找目标评论元素（使用 #comment-${commentId} 选择器）
       const commentEl = await this.findCommentElement(page, commentId);
@@ -295,7 +295,7 @@ export class InteractService {
 
       // 滚动到评论位置
       await commentEl.scrollIntoViewIfNeeded();
-      await sleep(1000);
+      await jitteredSleep(1000);
 
       // 查找并点击回复按钮（使用 .right .interactions .reply 选择器）
       const replyBtn = await commentEl.$('.right .interactions .reply');
@@ -304,7 +304,7 @@ export class InteractService {
       }
 
       await replyBtn.click();
-      await sleep(1000);
+      await jitteredSleep(1000);
 
       // 输入回复内容（使用与 reference project 相同的选择器）
       const commentInput = await page.$('div.input-box div.content-edit p.content-input');
@@ -312,13 +312,9 @@ export class InteractService {
         return { success: false, error: 'Reply input not found' };
       }
 
-      // 使用 evaluate 直接设置内容（模拟 rod 的 Input 方法）
-      await commentInput.evaluate((el: HTMLElement, text: string) => {
-        el.textContent = text;
-        // 触发 input 事件让 Vue 检测到变化
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-      }, content);
-      await sleep(500);
+      await commentInput.click();
+      await typeLikeHuman(page, content);
+      await jitteredSleep(500);
 
       // 提交回复（使用与 reference project 相同的选择器）
       const submitBtn = await page.$('div.bottom button.submit');
@@ -327,7 +323,7 @@ export class InteractService {
       }
 
       await submitBtn.click();
-      await sleep(2000); // 等待 2 秒与 reference project 一致
+      await jitteredSleep(2000); // 等待 2 秒与 reference project 一致
 
       const submitted = await page
         .waitForFunction(
@@ -381,7 +377,7 @@ export class InteractService {
         commentsArea.scrollIntoView({ behavior: 'smooth' });
       }
     });
-    await sleep(1000);
+    await jitteredSleep(1000);
 
     // 滚动后再次尝试查找
     el = await page.$(selector);
@@ -469,7 +465,7 @@ export class InteractService {
     try {
       let url = `https://www.xiaohongshu.com/explore/${noteId}`;
       if (xsecToken) {
-        url += `?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=pc_feed`;
+        url += `?xsec_token=${encodeURIComponent(xsecToken)}`;
       }
       this.logger.debug('导航到帖子页面', { url });
 
@@ -484,10 +480,10 @@ export class InteractService {
           error: accessError,
         };
       }
-      await sleep(1000); // 与 reference project 一致
+      await jitteredSleep(1000); // 与 reference project 一致
 
       // 等待评论区加载
-      await sleep(2000);
+      await jitteredSleep(2000);
 
       // 查找目标评论元素
       const commentEl = await this.findCommentElement(page, commentId);
@@ -502,7 +498,7 @@ export class InteractService {
 
       // 滚动到评论位置
       await commentEl.scrollIntoViewIfNeeded();
-      await sleep(500);
+      await jitteredSleep(500);
 
       // 查找点赞按钮
       const likeBtn = await commentEl.$('.like .like-wrapper');
@@ -527,12 +523,9 @@ export class InteractService {
       const shouldClick = (unlike && isLiked) || (!unlike && !isLiked);
 
       if (shouldClick) {
-        // 使用 dispatchEvent 触发真实点击事件（Vue 组件需要这种方式）
-        await likeBtn.evaluate((el: Element) => {
-          const event = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-          el.dispatchEvent(event);
-        });
-        await sleep(500);
+        // 真实点击（CDP 鼠标事件，isTrusted=true，规避 dispatchEvent 的 isTrusted=false）
+        await likeBtn.click();
+        await jitteredSleep(500);
       }
 
       return {

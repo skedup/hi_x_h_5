@@ -23,6 +23,166 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * 带抖动的等待，打破固定时钟尖峰（蓝军报告 03 §P1-1/§P1-4）。
+ * 仍走真实 setTimeout，仅把间隔随机化，避免平台建立时钟指纹。
+ * 对长等待（>=2000ms，多为页面加载/上传/发布成功等待）自动收紧抖动系数，
+ * 防止被抖得过短导致功能失败（视频上传、发布轮询等）。
+ *
+ * 注意：本函数做**对称**抖动（±ratio），只用于非限流类的节奏等待
+ * （页面就绪、轮询间隔等）。承担限流的 REQUEST_INTERVAL 必须用
+ * `rateLimitedSleep`，禁止用本函数，否则最早请求会比配置值提前，
+ * 违反 A4 DoD 的"安全下限"。
+ *
+ * @param base - 基准毫秒数
+ * @param ratio - 抖动幅度（默认 0.4，即 ±40%）；长等待自动限到 0.2
+ */
+export async function jitteredSleep(base: number, ratio = 0.4): Promise<void> {
+  const r = base >= 2000 ? Math.min(ratio, 0.2) : ratio;
+  const factor = 1 + (Math.random() * 2 - 1) * r;
+  await sleep(Math.max(1, Math.round(base * factor)));
+}
+
+/**
+ * 限流专用等待：仅**正向**抖动，结果永远 >= 配置下限 base。
+ * 用于承担限流职责的 REQUEST_INTERVAL——最早一次请求也绝不比配置值提前，
+ * 保证限流安全（蓝军报告 / A4 DoD "变量区间 + 安全下限"）。
+ * 一旦提前触发请求，限流就失效，故此处刻意不做对称抖动。
+ *
+ * @param base - 基准毫秒数（安全下限，请求至少等待这么久）
+ * @param ratio - 正向抖动幅度（默认 0.4，即 [base, base*1.4]）
+ */
+export async function rateLimitedSleep(base: number, ratio = 0.4): Promise<void> {
+  await sleep(Math.round(base * (1 + Math.random() * ratio)));
+}
+
+/**
+ * 按字素簇（grapheme cluster）裁剪长度，避免 UTF-16 code unit 截断破坏
+ * emoji / 代理对 / 组合字符（第二轮 P1：String.slice 会留下孤立高代理 0xD83D）。
+ * 优先用 Intl.Segmenter(grapheme)；不可用时回退 Array.from（按码点，对代理对仍安全）。
+ */
+export function truncateGrapheme(str: string, max: number): string {
+  if (max <= 0) return '';
+  if (str.length <= max) return str; // 每个字素 ≥1 code unit ⇒ 字素数 ≤ code unit 数
+  const Seg = (Intl as unknown as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
+  if (Seg) {
+    const seg = new Seg('zh', { granularity: 'grapheme' });
+    const out: string[] = [];
+    let count = 0;
+    for (const { segment } of seg.segment(str)) {
+      if (count >= max) break;
+      out.push(segment);
+      count += 1;
+    }
+    return out.join('');
+  }
+  return Array.from(str).slice(0, max).join('');
+}
+
+/**
+ * 判定字段最终值是否与期望一致（发布前阻断残缺/拼接正文，第二轮 P0）。
+ * - input：精确相等。
+ * - contenteditable：归一化（折叠空白、去首尾）后相等，容忍 <br>/格式噪声。
+ * 返回 null 表示一致；返回字符串表示不一致原因（供阻断发布 + 日志）。
+ */
+export function fieldValueMismatch(
+  expected: string,
+  actual: string,
+  isContentEditable: boolean,
+): string | null {
+  if (isContentEditable) {
+    // 仅归一明确的 DOM 渲染差异：CRLF→LF、连续空格/制表符折叠为单空格、
+    // 去首尾空白；保留语义空格与换行（第三轮 P0：原实现删除全部空白会放过正文空白丢失）。
+    const norm = (s: string) =>
+      s.replace(/\r\n?/g, '\n').replace(/[ \t]+/g, ' ').replace(/^\s+|\s+$/g, '');
+    return norm(actual) === norm(expected) ? null : 'contenteditable value mismatch after typing';
+  }
+  return actual === expected ? null : 'input value mismatch after typing';
+}
+
+/**
+ * 计算字符串的字素（grapheme）长度，与服务层 truncateGrapheme 保持一致：
+ * 优先 Intl.Segmenter(grapheme)，回退 Array.from（按码点，emoji/代理对安全）。
+ * 用于工具层/草稿层的长度校验，避免 String.length（UTF-16 code unit）误伤 emoji
+ * （第三轮 P1：'19 ASCII + 😀' = 20 字素 / 21 UTF-16 unit，按 length 会误拒）。
+ */
+export function graphemeLength(str: string): number {
+  const Seg = (Intl as unknown as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
+  if (Seg) {
+    let count = 0;
+    for (const _ of new Seg('zh', { granularity: 'grapheme' }).segment(str)) count += 1;
+    return count;
+  }
+  return Array.from(str).length;
+}
+
+/**
+ * 按字点数自适应计算逐字输入预算，使合法长正文能在 deadline 内完成且不全文中止
+ * （第三轮 P1：原固定 60s 上限会让 1000 字正文稳定抛 AbortError）。
+ * - 估算默认节奏下总耗时 = 字数 ×(均延迟 + 修订分摊 + 停顿分摊)。
+ * - 若估算超过 CAP_MS，按比例压缩延迟（自适应节奏），把总耗时压到 CAP 附近，
+ *   避免长时间占用账户锁。
+ * - maxDurationMs 同步缩放（留安全余量），并设硬上限避免无限占用锁。
+ * 返回值可直接展开进 typeLikeHuman 选项；账户锁等待应取 maxDurationMs + 余量。
+ */
+export interface TypingPlanInput {
+  minDelay?: number;
+  maxDelay?: number;
+  reviseGapMin?: number;
+  reviseGapMax?: number;
+  reviseMax?: number;
+  reviseChance?: number;
+  pauseChance?: number;
+  pauseMin?: number;
+  pauseMax?: number;
+  defaultMaxDurationMs?: number;
+}
+export interface TypingPlan {
+  minDelay: number;
+  maxDelay: number;
+  maxDurationMs: number;
+}
+export function computeTypingPlan(text: string, base: TypingPlanInput = {}): TypingPlan {
+  const minDelay = base.minDelay ?? 45;
+  const maxDelay = base.maxDelay ?? 170;
+  const reviseGapMin = base.reviseGapMin ?? 0;
+  const reviseGapMax = base.reviseGapMax ?? 0;
+  const reviseMax = base.reviseMax ?? 1;
+  const reviseChance = base.reviseChance ?? 0.85;
+  const pauseChance = base.pauseChance ?? 0.05;
+  const pauseMin = base.pauseMin ?? 350;
+  const pauseMax = base.pauseMax ?? 1300;
+  const defaultMaxDurationMs = base.defaultMaxDurationMs ?? 60000;
+
+  const n = Array.from(text).length;
+  if (n === 0) {
+    return { minDelay, maxDelay, maxDurationMs: defaultMaxDurationMs };
+  }
+  const meanDelay = (minDelay + maxDelay) / 2;
+  const meanGap = reviseGapMin > 0 && reviseGapMax > 0 ? (reviseGapMin + reviseGapMax) / 2 : 0;
+  // 每次修订回删 reviseMax 字 + 重输 reviseMax 字，按间距均摊到每字
+  const reviseOverheadPerChar =
+    meanGap > 0
+      ? (reviseChance * reviseMax * (meanDelay + (minDelay + maxDelay) / 4)) / meanGap
+      : 0;
+  const pauseOverheadPerChar = pauseChance * ((pauseMin + pauseMax) / 2);
+  const perChar = meanDelay + reviseOverheadPerChar + pauseOverheadPerChar;
+
+  const CAP_MS = 150000; // 2.5min 输入上限，避免长期占用账户锁
+  const estMs = n * perChar;
+  let planMin = minDelay;
+  let planMax = maxDelay;
+  let budget = Math.max(defaultMaxDurationMs, Math.ceil(estMs) + 5000);
+  if (estMs > CAP_MS) {
+    const scale = CAP_MS / estMs; // <1，压缩延迟使总耗时逼近 CAP
+    planMin = Math.max(12, Math.round(minDelay * scale));
+    planMax = Math.max(planMin + 20, Math.round(maxDelay * scale));
+    budget = CAP_MS + 10000;
+  }
+  budget = Math.min(budget, 240000); // 硬上限 4min，防锁无限占用
+  return { minDelay: planMin, maxDelay: planMax, maxDurationMs: budget };
+}
+
+/**
  * Generate a webId cookie value to bypass slider verification.
  * Format: 32 hex characters (e.g., "1234567890abcdef1234567890abcdef")
  * @returns Random webId string
@@ -38,6 +198,129 @@ export function generateWebId(): string {
  */
 function randomBetween(min: number, max: number): number {
   return min + Math.random() * (max - min);
+}
+
+/**
+ * 拟人化逐字输入的可选参数。
+ */
+export interface TypeLikeHumanOptions {
+  minDelay?: number;
+  maxDelay?: number;
+  pauseChance?: number;
+  pauseMin?: number;
+  pauseMax?: number;
+  /**
+   * 随机回删的最小间距（码点数）。与 reviseGapMax 一起随机化修订发生位置，
+   * 制造"删除/修订"信号且避免固定周期形成机器特征（第二轮 P1）。
+   * 0 或省略 = 关闭修订。
+   */
+  reviseGapMin?: number;
+  /**
+   * 随机回删的最大间距（码点数）。每次修订机会后重新在
+   * [reviseGapMin, reviseGapMax] 间取随机间距，使轨迹非周期。
+   */
+  reviseGapMax?: number;
+  /**
+   * 单次修订回删并重输的码点数（默认 1）。
+   */
+  reviseMax?: number;
+  /**
+   * 每个修订机会触发的概率门控（默认 0.85），进一步打散节奏。
+   */
+  reviseChance?: number;
+  /**
+   * 单次输入允许的最大修订次数（硬上限，防聚类 + 防过长）。
+   * 0 或省略 = 自动上限 min(ceil(码点数 * 0.08), 64)。
+   */
+  maxRevisions?: number;
+  /**
+   * 软上限：累计输入耗时超过该值（ms）即抛 AbortError 中断（不再静默返回成功），
+   * 由上层 finally 释放账户锁并阻断发布。防止长文（1000 字≈149s）无限占用锁。默认 60000。
+   */
+  maxDurationMs?: number;
+  /**
+   * 取消信号：aborted 时立即中断并抛出 AbortError。
+   * 调用方须在 finally 中释放页面操作与账户锁。
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * 拟人化逐字输入（A2）：
+ * - 每个字符之间加入可变延迟与偶发长停顿，消除无 delay keyboard.type 的
+ *   亚毫秒输入突发（蓝军报告 04 §3.2/§3.3），单字符间隔 CV > 0。
+ * - 按码点切分（Array.from），正确处理代理对/emoji。
+ * - 偶发"删除/修订"：回删若干字符后重输（可信 Backspace），满足 A2 DoD
+ *   的"存在删除/修订"；中文路径无 composition 事件属平台已知限制，经可信
+ *   通道无法模拟 IME composition，故 DoD 收缩为可测量的"删除/修订 + 间隔方差"。
+ * - 支持取消（AbortSignal）与软上限（maxDurationMs），避免长文阻塞账户锁。
+ * 全程走真实键盘通道（isTrusted=true 的可信事件），仅把节奏拟人化。
+ */
+export async function typeLikeHuman(
+  page: Page,
+  text: string,
+  options?: TypeLikeHumanOptions,
+): Promise<void> {
+  const minDelay = options?.minDelay ?? 45;
+  const maxDelay = options?.maxDelay ?? 170;
+  const pauseChance = options?.pauseChance ?? 0.05;
+  const pauseMin = options?.pauseMin ?? 350;
+  const pauseMax = options?.pauseMax ?? 1300;
+  const reviseGapMin = options?.reviseGapMin ?? 0;
+  const reviseGapMax = options?.reviseGapMax ?? 0;
+  const reviseMax = options?.reviseMax ?? 1;
+  const reviseChance = options?.reviseChance ?? 0.85;
+  const maxDurationMs = options?.maxDurationMs ?? 60000;
+  const signal = options?.signal;
+
+  const chars = Array.from(text); // 按码点切分，正确处理代理对/emoji
+  // 修订硬上限：0/省略 → 自动 min(ceil(码点数*0.08), 64)
+  const maxRevisions =
+    options?.maxRevisions && options.maxRevisions > 0
+      ? options.maxRevisions
+      : Math.min(Math.ceil(chars.length * 0.08), 64);
+
+  const start = Date.now();
+  let i = 0;
+  let revisions = 0;
+  // 下一个修订机会发生的位置（随机间距，非固定周期）
+  let nextReviseAt =
+    reviseGapMin > 0
+      ? i + Math.floor(randomBetween(reviseGapMin, reviseGapMax + 1))
+      : Number.MAX_SAFE_INTEGER;
+  while (i < chars.length) {
+    if (signal?.aborted) {
+      throw new DOMException('typeLikeHuman aborted', 'AbortError');
+    }
+    if (Date.now() - start > maxDurationMs) {
+      // 软上限命中：停止键入，剩余内容不输入（避免长文阻塞账户锁）
+      throw new DOMException('typeLikeHuman timeout: maxDurationMs exceeded, input incomplete', 'AbortError');
+    }
+    await page.keyboard.type(chars[i]);
+    await sleep(randomBetween(minDelay, maxDelay));
+    i += 1;
+
+    // 人类修订：回删若干字符后重输，制造删除/修订信号（可信事件，不引入 isTrusted=false）
+    if (i >= nextReviseAt && revisions < maxRevisions && Math.random() < reviseChance) {
+      const back = Math.min(i, reviseMax);
+      const redo = chars.slice(i - back, i);
+      for (let k = 0; k < back; k++) {
+        await page.keyboard.press('Backspace');
+        await sleep(randomBetween(Math.max(10, minDelay / 2), maxDelay / 2));
+      }
+      for (const ch of redo) {
+        await page.keyboard.type(ch);
+        await sleep(randomBetween(minDelay, maxDelay));
+      }
+      revisions += 1;
+      // 重新随机下一次修订间距
+      nextReviseAt = i + Math.floor(randomBetween(reviseGapMin, reviseGapMax + 1));
+    }
+
+    if (Math.random() < pauseChance) {
+      await sleep(randomBetween(pauseMin, pauseMax));
+    }
+  }
 }
 
 /**

@@ -6,10 +6,55 @@
 
 import { Locator, Page } from 'patchright';
 import { PublishContentParams, PublishVideoParams, PublishResult } from '../../types.js';
-import { sleep, resolveImagePaths, isHttpUrl } from '../../utils/index.js';
+import { sleep, resolveImagePaths, isHttpUrl, typeLikeHuman, jitteredSleep, truncateGrapheme, fieldValueMismatch, computeTypingPlan, type TypeLikeHumanOptions } from '../../utils/index.js';
 import { config } from '../../../core/config.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS, PUBLISH_SELECTORS, URLS } from '../constants.js';
+
+/** 平台标题长度上限（小红书标题 ≤ 20 字） */
+const PUBLISH_TITLE_MAX = 20;
+/** 平台正文长度上限（小红书正文 ≤ 1000 字） */
+const PUBLISH_CONTENT_MAX = 1000;
+
+/**
+ * 按标题/正文字数自适应生成 typeLikeHuman 选项（第三轮 P1）：
+ * 长正文自动缩放 maxDurationMs 并压缩延迟，使能在 deadline 内完成且不全文中止。
+ * 调用方应将 maxDurationMs 同步到账户锁等待（lockTimeout）。
+ */
+function titleTypingOptions(title: string): TypeLikeHumanOptions {
+  return {
+    reviseGapMin: 3,
+    reviseGapMax: 9,
+    reviseMax: 1,
+    reviseChance: 0.85,
+    ...computeTypingPlan(title, {
+      minDelay: 45,
+      maxDelay: 170,
+      reviseGapMin: 3,
+      reviseGapMax: 9,
+      reviseMax: 1,
+      reviseChance: 0.85,
+      defaultMaxDurationMs: 20000,
+    }),
+  };
+}
+function contentTypingOptions(content: string): TypeLikeHumanOptions {
+  return {
+    reviseGapMin: 4,
+    reviseGapMax: 12,
+    reviseMax: 1,
+    reviseChance: 0.8,
+    ...computeTypingPlan(content, {
+      minDelay: 45,
+      maxDelay: 170,
+      reviseGapMin: 4,
+      reviseGapMax: 12,
+      reviseMax: 1,
+      reviseChance: 0.8,
+      defaultMaxDurationMs: 60000,
+    }),
+  };
+}
 
 /**
  * Publish service - handles content publishing
@@ -63,7 +108,7 @@ export class PublishService {
 
       // Wait for page to stabilize (matching Go project: WaitLoad + 2 seconds)
       log.debug('Waiting for page to stabilize...');
-      await sleep(2000);
+      await jitteredSleep(2000);
 
       // 等待网络空闲，超时则继续
       try {
@@ -71,7 +116,7 @@ export class PublishService {
       } catch {
         log.warn('Network idle timeout, continuing...');
       }
-      await sleep(1000);
+      await jitteredSleep(1000);
 
       // 检查是否被重定向到登录页面
       const currentUrl = page.url();
@@ -97,7 +142,7 @@ export class PublishService {
       // Click image upload tab (matching Go project: mustClickPublishTab)
       log.debug('Clicking upload image tab...');
       await this.clickPublishTab(page, '上传图文');
-      await sleep(1000);
+      await jitteredSleep(1000);
 
       // Upload images
       log.debug('Looking for upload input...');
@@ -135,55 +180,79 @@ export class PublishService {
       // Wait for upload complete (matching Go project: waitForUploadComplete)
       log.debug('Waiting for upload complete...');
       await this.waitForUploadComplete(page, validPaths.length);
-      await sleep(2000);
+      await jitteredSleep(2000);
 
-      // Fill title
+      // Fill title（恢复"替换"语义 + 长度上限 + 软上限防锁阻塞）
       log.debug('Filling title...');
-      const titleInput = await page.$(PUBLISH_SELECTORS.titleInput);
-      if (titleInput) {
-        await titleInput.fill(params.title);
-        log.info('Title set', { title: params.title });
+      const title = truncateGrapheme(params.title ?? '', PUBLISH_TITLE_MAX);
+      if (title.length < (params.title ?? '').length) {
+        log.warn('Title truncated to platform limit', { limit: PUBLISH_TITLE_MAX });
+      }
+      const titleInput = page.locator(PUBLISH_SELECTORS.titleInput).first();
+      if ((await titleInput.count()) > 0) {
+        await this.fillFieldLikeHuman(
+          page,
+          titleInput,
+          title,
+          titleTypingOptions(title),
+          false,
+        );
+        log.info('Title set', { title });
       } else {
         log.warn('Title input not found');
       }
 
-      // Fill content
+      // Fill content（恢复"替换"语义 + 长度上限 + 软上限防锁阻塞）
       log.debug('Filling content...');
-      const contentEditor = await page.$(PUBLISH_SELECTORS.contentEditor);
-      if (contentEditor) {
-        await contentEditor.click();
-        await page.keyboard.type(params.content);
+      const content = truncateGrapheme(params.content ?? '', PUBLISH_CONTENT_MAX);
+      if (content.length < (params.content ?? '').length) {
+        log.warn('Content truncated to platform limit', { limit: PUBLISH_CONTENT_MAX });
+      }
+      const contentEditor = page.locator(PUBLISH_SELECTORS.contentEditor).first();
+      if ((await contentEditor.count()) > 0) {
+        await this.fillFieldLikeHuman(
+          page,
+          contentEditor,
+          content,
+          contentTypingOptions(content),
+          true,
+        );
         log.info('Content set');
       } else {
-        const contentTextbox = await page.$(PUBLISH_SELECTORS.contentTextbox);
-        if (contentTextbox) {
-          await contentTextbox.click();
-          await page.keyboard.type(params.content);
+        const contentTextbox = page.locator(PUBLISH_SELECTORS.contentTextbox).first();
+        if ((await contentTextbox.count()) > 0) {
+          await this.fillFieldLikeHuman(
+            page,
+            contentTextbox,
+            content,
+            contentTypingOptions(content),
+            true,
+          );
           log.info('Content set (via textbox)');
         } else {
           log.warn('Content editor not found');
         }
       }
 
-      await sleep(1000);
+      await jitteredSleep(1000);
 
       // Add tags
       if (params.tags && params.tags.length > 0) {
         log.debug('Adding tags', { tags: params.tags });
         for (const tag of params.tags) {
-          await page.keyboard.type(`#${tag}`);
-          await sleep(500);
+          await typeLikeHuman(page, `#${tag}`);
+          await jitteredSleep(500);
 
           // Wait for and click tag suggestion
           const suggestion = await page.$(`${PUBLISH_SELECTORS.topicContainer}:has-text("${tag}")`);
           if (suggestion) {
             await suggestion.click();
-            await sleep(300);
+            await jitteredSleep(300);
           } else {
             // Press space to confirm tag
             await page.keyboard.press('Space');
           }
-          await sleep(300);
+          await jitteredSleep(300);
         }
         log.info('Tags added');
       }
@@ -194,7 +263,7 @@ export class PublishService {
         const scheduleRadio = await page.$(PUBLISH_SELECTORS.scheduleRadio);
         if (scheduleRadio) {
           await scheduleRadio.click();
-          await sleep(500);
+          await jitteredSleep(500);
           log.warn('Schedule time selection not fully implemented', { time: params.scheduleTime });
         }
       }
@@ -221,10 +290,74 @@ export class PublishService {
       if (config.browser.keepOpen) {
         log.info('Keep open mode: publish page stays open for operator inspection');
       } else {
-        await sleep(2000);
+        await jitteredSleep(2000);
         await page.close();
         log.debug('Browser page closed');
       }
+    }
+  }
+
+  /**
+   * 拟人化填入字段，并恢复替换语义（第二轮 P0/P1 整改）。
+   * - 输入前跨平台全选（ControlOrMeta+A，兼容 macOS）清空，避免把内容追加到残留/草稿文本之后；
+   * - 清空后断言字段为空，残留则再清一次，仍失败则抛错阻断发布；
+   * - 输入后经 fieldValueMismatch 校验最终值，不一致抛错阻断发布（防残缺/拼接正文）。
+   * - 输入超时/取消由 typeLikeHuman 抛 AbortError，由上层 finally 释放账户锁。
+   *
+   * @param locator 目标字段（input 或 contenteditable）
+   * @param text 要键入的内容（调用方需已用 truncateGrapheme 做字素裁剪）
+   * @param options typeLikeHuman 选项（reviseGapMin/Max / reviseChance / maxRevisions / maxDurationMs / signal）
+   * @param isContentEditable 是否 contenteditable（影响取值与断言方式）
+   */
+  private async fillFieldLikeHuman(
+    page: Page,
+    locator: Locator,
+    text: string,
+    options: TypeLikeHumanOptions,
+    isContentEditable: boolean,
+  ): Promise<void> {
+    await locator.click();
+    // 恢复替换语义：跨平台全选（macOS 用 Meta/Cmd、Win/Linux 用 Control）后删除
+    await page.keyboard.press('ControlOrMeta+A');
+    await sleep(40);
+    await page.keyboard.press('Backspace');
+    await sleep(40);
+
+    // 断言已清空；残留则再尝试一次，仍失败则阻断发布（防拼接残缺正文）。
+    // 读取失败一律抛错 fail-closed（第三轮 P0：不得用期望正文兜底放行）。
+    const readField = async (): Promise<string> => {
+      if (isContentEditable) {
+        // contenteditable 用 innerText 保留键入的换行（textContent 会丢失 \n），
+        // 以便 fieldValueMismatch 校验语义换行未被吞掉。
+        const v = await locator.innerText().catch(() => undefined);
+        if (v === undefined) throw new Error('field read failed (contenteditable), abort publish');
+        return v;
+      }
+      const v = await locator.inputValue().catch(() => undefined);
+      if (v === undefined) throw new Error('field read failed (input), abort publish');
+      return v;
+    };
+
+    const before = await readField();
+    if (before.trim().length > 0) {
+      await locator.click({ clickCount: 3 }).catch(() => {});
+      await page.keyboard.press('ControlOrMeta+A');
+      await page.keyboard.press('Backspace');
+      await sleep(40);
+      const before2 = await readField();
+      if (before2.trim().length > 0) {
+        throw new Error('field clear failed: residual content remains, abort publish');
+      }
+    }
+
+    // 逐字输入（超时/取消抛 AbortError，由上层 finally 释放锁并阻断发布）
+    await typeLikeHuman(page, text, options);
+
+    // 输入后校验最终值：不一致则阻断发布（防残缺/拼接正文）
+    const after = await readField();
+    const mismatch = fieldValueMismatch(text, after, isContentEditable);
+    if (mismatch) {
+      throw new Error(`field value incomplete/mismatched after typing, abort publish (${mismatch})`);
     }
   }
 
@@ -297,7 +430,7 @@ export class PublishService {
         log.warn('Publish was rejected by the page');
         return { success: false, error: 'Publish was rejected by the page' };
       }
-      await sleep(500);
+      await jitteredSleep(500);
     }
 
     log.warn('Publish outcome could not be confirmed');
@@ -334,7 +467,7 @@ export class PublishService {
             log.debug('Tab is blocked, trying to remove overlay...');
             // Try to click empty area to dismiss popover
             await page.mouse.click(400, 50);
-            await sleep(200);
+            await jitteredSleep(200);
             continue;
           }
 
@@ -344,7 +477,7 @@ export class PublishService {
         }
       }
 
-      await sleep(200);
+      await jitteredSleep(200);
     }
 
     log.warn('Publish tab not found', { tabName });
@@ -404,13 +537,13 @@ export class PublishService {
       });
 
       await page.waitForLoadState('networkidle').catch(() => {});
-      await sleep(2000);
+      await jitteredSleep(2000);
 
       // 点击"上传视频"标签
       const videoTab = await page.$(PUBLISH_SELECTORS.uploadVideoTab);
       if (videoTab) {
         await videoTab.click();
-        await sleep(1000);
+        await jitteredSleep(1000);
       }
 
       // 上传视频
@@ -426,44 +559,57 @@ export class PublishService {
       await page.waitForSelector('.upload-success, .video-preview, .cover-container', {
         timeout: TIMEOUTS.VIDEO_UPLOAD,
       });
-      await sleep(2000);
+      await jitteredSleep(2000);
 
       // 如果提供了封面图，上传封面
       if (params.coverPath) {
         const coverInput = await page.$('.cover-upload input, [class*="cover"] input[type="file"]');
         if (coverInput) {
           await coverInput.setInputFiles(params.coverPath);
-          await sleep(2000);
+          await jitteredSleep(2000);
         }
       }
 
-      // 填写标题
-      const titleInput = await page.$(PUBLISH_SELECTORS.titleInput);
-      if (titleInput) {
-        await titleInput.fill(params.title);
+      // 填写标题（恢复"替换"语义 + 长度上限）
+      const title = truncateGrapheme(params.title ?? '', PUBLISH_TITLE_MAX);
+      const titleInput = page.locator(PUBLISH_SELECTORS.titleInput).first();
+      if ((await titleInput.count()) > 0) {
+        await this.fillFieldLikeHuman(
+          page,
+          titleInput,
+          title,
+          titleTypingOptions(title),
+          false,
+        );
       }
 
-      // 填写内容
-      const contentEditor = await page.$(PUBLISH_SELECTORS.contentEditor);
-      if (contentEditor) {
-        await contentEditor.click();
-        await page.keyboard.type(params.content);
+      // 填写内容（恢复"替换"语义 + 长度上限）
+      const content = truncateGrapheme(params.content ?? '', PUBLISH_CONTENT_MAX);
+      const contentEditor = page.locator(PUBLISH_SELECTORS.contentEditor).first();
+      if ((await contentEditor.count()) > 0) {
+        await this.fillFieldLikeHuman(
+          page,
+          contentEditor,
+          content,
+          contentTypingOptions(content),
+          true,
+        );
       }
 
-      await sleep(1000);
+      await jitteredSleep(1000);
 
       // 添加标签
       if (params.tags && params.tags.length > 0) {
         for (const tag of params.tags) {
-          await page.keyboard.type(`#${tag}`);
-          await sleep(500);
+          await typeLikeHuman(page, `#${tag}`);
+          await jitteredSleep(500);
           const suggestion = await page.$(`${PUBLISH_SELECTORS.topicContainer}:has-text("${tag}")`);
           if (suggestion) {
             await suggestion.click();
           } else {
             await page.keyboard.press('Space');
           }
-          await sleep(300);
+          await jitteredSleep(300);
         }
       }
 
@@ -474,7 +620,7 @@ export class PublishService {
       }
 
       await publishBtn.click();
-      await sleep(3000);
+      await jitteredSleep(3000);
 
       return { success: true };
     } catch (error) {
@@ -484,7 +630,7 @@ export class PublishService {
         error: error instanceof Error ? error.message : String(error),
       };
     } finally {
-      await sleep(2000);
+      await jitteredSleep(2000);
       await page.close();
     }
   }

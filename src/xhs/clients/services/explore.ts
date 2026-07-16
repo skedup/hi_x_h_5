@@ -6,7 +6,7 @@
 
 import { Page } from 'patchright';
 import { BrowserContextManager, log } from '../context.js';
-import { sleep } from '../../utils/index.js';
+import { sleep, typeLikeHuman, jitteredSleep } from '../../utils/index.js';
 import { config } from '../../../core/config.js';
 import { getDatabase, ExploreSessionResult } from '../../../db/index.js';
 import {
@@ -175,7 +175,7 @@ export class ExploreService {
       log.info('Navigating to explore page');
       await page.goto('https://www.xiaohongshu.com/explore', { waitUntil: 'domcontentloaded' });
       await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-      await sleep(2000);
+      await jitteredSleep(2000);
 
       // 等待 __INITIAL_STATE__ 加载
       await page.waitForFunction(() => (window as any).__INITIAL_STATE__?.feed?.feeds, {
@@ -528,11 +528,11 @@ export class ExploreService {
 
       // 先滚动到可见区域
       await cover.scrollIntoViewIfNeeded();
-      await sleep(300);
+      await jitteredSleep(300);
 
-      // 用原生 click（Playwright click 可能被拦截）
-      await cover.evaluate((el: HTMLElement) => el.click());
-      await sleep(500);
+      // 真实鼠标点击（force 跳过可操作性断言但仍是 CDP 真实事件，isTrusted=true，规避 el.click() 的 isTrusted=false）
+      await cover.click({ force: true });
+      await jitteredSleep(500);
 
       // 等待 modal 出现
       await page.waitForSelector(EXPLORE_SELECTORS.noteContainer, { timeout: 5000 });
@@ -613,7 +613,7 @@ export class ExploreService {
 
       // 点赞
       await likeBtn.click();
-      await sleep(500);
+      await jitteredSleep(500);
       return true;
     } catch (error) {
       log.warn('Failed to like in modal', { error });
@@ -656,7 +656,7 @@ export class ExploreService {
 
       // 点赞
       await likeBtn.click();
-      await sleep(500);
+      await jitteredSleep(500);
       log.debug('Liked comment', { commentId });
       return true;
     } catch (error) {
@@ -678,7 +678,7 @@ export class ExploreService {
       }
 
       await inputArea.click();
-      await sleep(500);
+      await jitteredSleep(500);
 
       // 输入评论内容
       const commentInput = await page.$(EXPLORE_SELECTORS.commentInput);
@@ -687,12 +687,10 @@ export class ExploreService {
         return false;
       }
 
-      await commentInput.evaluate((el: HTMLElement, text: string) => {
-        el.textContent = text;
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-      }, content);
+      await commentInput.click();
+      await typeLikeHuman(page, content);
 
-      await sleep(500);
+      await jitteredSleep(500);
 
       // 点击提交按钮
       const submitBtn = await page.$(EXPLORE_SELECTORS.commentSubmit);
@@ -702,7 +700,7 @@ export class ExploreService {
       }
 
       await submitBtn.click();
-      await sleep(2000);
+      await jitteredSleep(2000);
       return true;
     } catch (error) {
       log.warn('Failed to comment in modal', { error });
@@ -719,13 +717,13 @@ export class ExploreService {
       const closeBtn = await page.$(EXPLORE_SELECTORS.closeButton);
       if (closeBtn) {
         await closeBtn.click();
-        await sleep(500);
+        await jitteredSleep(500);
         return;
       }
 
       // 备选：按 ESC
       await page.keyboard.press('Escape');
-      await sleep(500);
+      await jitteredSleep(500);
     } catch (error) {
       log.warn('Failed to close modal', { error });
       // 尝试按 ESC

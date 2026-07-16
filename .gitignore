@@ -29,3 +29,6 @@ npm-debug.log*
 
 # Reference projects
 reference_projects/
+
+# Internal blue-team reports (not for VCS)
+docs/blue/
