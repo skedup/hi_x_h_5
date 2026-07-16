@@ -183,15 +183,6 @@ export function computeTypingPlan(text: string, base: TypingPlanInput = {}): Typ
 }
 
 /**
- * Generate a webId cookie value to bypass slider verification.
- * Format: 32 hex characters (e.g., "1234567890abcdef1234567890abcdef")
- * @returns Random webId string
- */
-export function generateWebId(): string {
-  return crypto.randomBytes(16).toString('hex');
-}
-
-/**
  * Generate a random number within a range.
  * @param min - Minimum value (inclusive)
  * @param max - Maximum value (exclusive)

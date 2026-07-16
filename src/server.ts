@@ -20,6 +20,10 @@ import { draftTools, handleDraftTools } from './tools/draft.js';
 import { creatorTools, handleCreatorTools } from './tools/creator.js';
 import { notificationTools, handleNotificationTools } from './tools/notification.js';
 import { exploreTools, handleExploreTools } from './tools/explore.js';
+import { recordHumanActivity } from './core/liveness.js';
+
+// 写工具集合（P2-2 读写能力分级）定义于 core/audit.ts，此处再导出以兼容既有引用
+export { WRITE_TOOL_NAMES } from './core/audit.js';
 
 /**
  * Create and configure the MCP server.
@@ -65,6 +69,8 @@ export function createMcpServer(pool: AccountPool, db: XhsDatabase): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
+      // C3.2：每次工具调用即一次人工确认/值守活动，重置无人确认计时
+      recordHumanActivity();
       const { name, arguments: args } = request.params;
 
       // Route to appropriate handler

@@ -12,9 +12,9 @@ export const BROWSER_ARGS = [
   '--disable-setuid-sandbox',
   '--disable-blink-features=AutomationControlled', // Disable automation control flag
   '--disable-infobars', // Disable info bars
-  '--disable-background-timer-throttling',
-  '--disable-backgrounding-occluded-windows',
-  '--disable-renderer-backgrounding',
+  // 注：已移除 --disable-background-timer-throttling / --disable-backgrounding-occluded-windows
+  // / --disable-renderer-backgrounding（C3.2 / 07 门禁 #2）。写操作不应依赖后台节流禁用
+  // 来维持无人值守运行；息屏自保由 core/liveness.ts 的显示器 asleep 门禁处理。
   '--disable-notifications', // 禁用通知弹窗
   '--disable-features=ExternalProtocolDialog', // 禁用"访问其他应用"对话框
   '--disable-session-crashed-bubble', // 禁用"意外关闭"恢复提示

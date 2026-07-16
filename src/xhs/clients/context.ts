@@ -6,7 +6,6 @@
 
 import { chromium, Browser, BrowserContext, Page } from 'patchright';
 import { LoginUserInfo, FullUserProfile } from '../types.js';
-import { generateWebId } from '../utils/index.js';
 import { createLogger } from '../../core/logger.js';
 import { config, paths } from '../../core/config.js';
 import { BROWSER_ARGS } from './constants.js';
@@ -39,15 +38,11 @@ export async function launchProfileContext(
   }
 
   const cookies = await context.cookies();
+  // C3.1（02 P0-2）：不再伪造 webId。平台会在正常页面流程中通过响应 Cookie 自然发放；
+  // 客户端随机值缺少服务端发放记录，反而形成强反作弊特征。缺失时保持为空，交由平台
+  // 首访补发——不 fail-closed 阻断（正常导航即补发），仅记录提示供运维观察。
   if (!cookies.some((cookie) => cookie.name === 'webId')) {
-    await context.addCookies([
-      {
-        name: 'webId',
-        value: generateWebId(),
-        domain: '.xiaohongshu.com',
-        path: '/',
-      },
-    ]);
+    log.debug('webId 缺失，将交由平台在正常页面流程中自然发放（不伪造）');
   }
   return { browser, context };
 }

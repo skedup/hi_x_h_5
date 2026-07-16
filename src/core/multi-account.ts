@@ -11,6 +11,7 @@ import { XhsClient } from '../xhs/index.js';
 import { createLogger } from './logger.js';
 import { sleep } from '../xhs/utils/index.js';
 import { getCooccurrenceGuard } from './antidetect.js';
+import { isWriteAllowed } from './liveness.js';
 
 const log = createLogger('multi-account');
 
@@ -91,6 +92,18 @@ export async function executeWithAccount<T>(
       account: accountIdOrName,
       success: false,
       error: `Account not found: ${accountIdOrName}`,
+    };
+  }
+
+  // C3.2 息屏/无人值守自保：写操作需设备在场，否则停写（仅 shadow/停止）
+  const live = isWriteAllowed();
+  if (!live.allowed) {
+    return {
+      account: account?.name ?? accountIdOrName,
+      success: false,
+      skipped: true,
+      error: `liveness_paused:${live.reason ?? 'unknown'}`,
+      durationMs: 0,
     };
   }
 

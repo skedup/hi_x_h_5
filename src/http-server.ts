@@ -6,6 +6,7 @@
  */
 
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { serve } from '@hono/node-server';
 import { createMcpServer } from './server.js';
 import { initDatabase } from './db/index.js';
@@ -14,6 +15,40 @@ import { getLoginSessionManager } from './core/login-session.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { config } from './core/config.js';
+import { evaluateAuthorization } from './core/audit.js';
+import { startLivenessMonitor } from './core/liveness.js';
+
+/**
+ * C3.3（P2-2）本地 HTTP MCP 鉴权与读写能力分级。
+ * 返回 null 表示放行；否则返回应直接返回的 JSON-RPC 错误 Response。
+ */
+function jsonRpcError(c: Context, code: number, message: string, httpStatus: number): Response {
+  return c.json({ jsonrpc: '2.0', error: { code, message }, id: null }, httpStatus as 401 | 403);
+}
+
+function authorizeMcp(c: Context, body: any): Response | null {
+  const { bearerToken, bearerTokenReadonly, bulkConfirmToken } = config.server;
+
+  const authz = c.req.header('authorization') || '';
+  const m = authz.match(/^Bearer\s+(.+)$/i);
+  const presented = m ? m[1].trim() : '';
+  const confirmHeader = c.req.header('x-xhs-write-confirm') || '';
+
+  const decision = evaluateAuthorization({
+    presentedToken: presented,
+    tool: body?.method === 'tools/call' ? (body.params?.name as string | undefined) : undefined,
+    args: body?.method === 'tools/call' ? (body.params?.arguments as Record<string, any> | undefined) : undefined,
+    bearerToken,
+    bearerTokenReadonly,
+    bulkConfirmToken,
+    confirmHeader,
+  });
+
+  if (!decision.ok) {
+    return jsonRpcError(c, decision.code ?? -32000, decision.message ?? 'Forbidden', decision.httpStatus ?? 403);
+  }
+  return null;
+}
 
 /**
  * Start the HTTP transport server for the MCP protocol.
@@ -25,6 +60,9 @@ export async function startHttpServer(port: number = config.server.port) {
   // Initialize database and account pool
   const db = await initDatabase();
   const pool = getAccountPool(db);
+
+  // C3.2 启动息屏自保轮询（darwin + 已启用时生效；非 darwin/未启用为 no-op）
+  startLivenessMonitor();
 
   /**
    * Create a new MCP server and transport for each request.
@@ -61,12 +99,16 @@ export async function startHttpServer(port: number = config.server.port) {
     let transport: StreamableHTTPServerTransport | null = null;
 
     try {
+      // 先解析 body 再做 C3.3 鉴权/读写分级/批量确认（body 仅可读取一次，后续复用）
+      const body = await c.req.json();
+      const reject = authorizeMcp(c, body);
+      if (reject) return reject;
+
       const result = await getOrCreateServer();
       server = result.server;
       transport = result.transport;
 
-      // Get the raw request body
-      const body = await c.req.json();
+      // Get the raw request body (已提前解析并复用)
 
       // Create a mock Express-like request/response for the transport
       // StreamableHTTPServerTransport expects Express-style req/res

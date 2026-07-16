@@ -33,6 +33,12 @@ function makeCfg(overrides: any = {}) {
       enabled: true,
       ...(overrides.dedup || {}),
     },
+    liveness: {
+      enabled: true,
+      pollIntervalMs: 15000,
+      idleTimeoutMs: 0,
+      ...(overrides.liveness || {}),
+    },
   };
 }
 
