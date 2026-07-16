@@ -13,6 +13,7 @@ import { AccountPool } from '../core/account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { paths } from '../core/config.js';
 import { executeWithMultipleAccounts, MultiAccountParams } from '../core/multi-account.js';
+import { sha256OfFiles, sha256OfText } from '../core/antidetect.js';
 import { graphemeLength, computeTypingPlan } from '../xhs/utils/index.js';
 import { createLogger } from '../core/logger.js';
 import { runGraph } from '../core/image-processor/graph/index.js';
@@ -606,6 +607,8 @@ export async function handleDraftTools(name: string, args: any, pool: AccountPoo
         },
         {
           logParams: { draftId: params.draftId, title: draft.title },
+          // C2.4 跨账号相同媒体 + 正文硬拦截（媒体 SHA-256 + 正文 SHA-256）
+          dedupKey: `publish:${sha256OfFiles(draft.images)}:${sha256OfText(draft.content ?? '')}`,
           // 账户锁等待随正文输入预算缩放，避免长文占用锁超时（第三轮 P1）
           lockTimeout:
             computeTypingPlan(draft.content ?? '', {

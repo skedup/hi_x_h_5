@@ -8,6 +8,11 @@
 import { AccountPool } from './account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { XhsClient } from '../xhs/index.js';
+import { createLogger } from './logger.js';
+import { sleep } from '../xhs/utils/index.js';
+import { getCooccurrenceGuard } from './antidetect.js';
+
+const log = createLogger('multi-account');
 
 /**
  * 指定使用哪个账户执行操作的参数
@@ -47,6 +52,8 @@ export interface OperationResult<T> {
   error?: string;
   /** 操作耗时（毫秒） */
   durationMs?: number;
+  /** 被共现守卫跳过（预算/冷却/熔断/去重/xsec 绑定）时为 true */
+  skipped?: boolean;
 }
 
 /**
@@ -72,6 +79,10 @@ export async function executeWithAccount<T>(
   options?: {
     logParams?: any;
     lockTimeout?: number;
+    /** C2.4 跨账号去重键（相同键被其他账号占用则跳过本账号动作） */
+    dedupKey?: string;
+    /** C2.2 本账号意图使用的 xsecToken（用于跨账号复用检测） */
+    xsecToken?: string;
   },
 ): Promise<OperationResult<T>> {
   const account = pool.getAccount(accountIdOrName);
@@ -83,8 +94,27 @@ export async function executeWithAccount<T>(
     };
   }
 
+  // C2.1/C2.2/C2.3/C2.4 动作前核查：预算/冷却/熔断/去重/xsec 绑定
+  const guard = getCooccurrenceGuard();
+  const before = guard.beforeAction({
+    accountId: account.id,
+    action,
+    dedupKey: options?.dedupKey,
+    xsecToken: options?.xsecToken,
+  });
+  if (!before.allow) {
+    return {
+      account: account.name,
+      success: false,
+      skipped: true,
+      error: before.reason,
+      durationMs: 0,
+    };
+  }
+
   const startTime = Date.now();
   let release: (() => void) | null = null;
+  let outcome: { success: boolean; error?: string; result?: T } = { success: false };
 
   try {
     // Acquire lock
@@ -103,52 +133,66 @@ export async function executeWithAccount<T>(
       client,
     });
 
-    const durationMs = Date.now() - startTime;
-
-    // Log success
-    db.operations.log({
-      accountId: account.id,
-      action,
-      params: options?.logParams,
-      result: result as any,
-      success: true,
-      durationMs,
-    });
-
-    // Touch account
-    pool.touchAccount(account.id);
-
-    return {
-      account: account.name,
-      success: true,
-      result,
-      durationMs,
-    };
+    outcome = { success: true, result };
   } catch (error) {
-    const durationMs = Date.now() - startTime;
-    const errorMessage = error instanceof Error ? error.message : String(error);
-
-    // Log failure
-    db.operations.log({
-      accountId: account.id,
-      action,
-      params: options?.logParams,
+    outcome = {
       success: false,
-      error: errorMessage,
-      durationMs,
-    });
-
-    return {
-      account: account.name,
-      success: false,
-      error: errorMessage,
-      durationMs,
+      error: error instanceof Error ? error.message : String(error),
     };
   } finally {
     if (release) {
       release();
     }
   }
+
+  const durationMs = Date.now() - startTime;
+
+  // C2.3/C2.4/C2.2 动作后回填：预算/熔断/去重/token 绑定
+  guard.afterAction({
+    accountId: account.id,
+    action,
+    success: outcome.success,
+    error: outcome.error,
+    result: outcome.result,
+    dedupKey: options?.dedupKey,
+    xsecToken: options?.xsecToken,
+  });
+
+  if (outcome.success) {
+    // Log success
+    db.operations.log({
+      accountId: account.id,
+      action,
+      params: options?.logParams,
+      result: outcome.result as any,
+      success: true,
+      durationMs,
+    });
+    // Touch account
+    pool.touchAccount(account.id);
+    return {
+      account: account.name,
+      success: true,
+      result: outcome.result,
+      durationMs,
+    };
+  }
+
+  // Log failure
+  db.operations.log({
+    accountId: account.id,
+    action,
+    params: options?.logParams,
+    success: false,
+    error: outcome.error,
+    durationMs,
+  });
+  return {
+    account: account.name,
+    success: false,
+    error: outcome.error,
+    durationMs,
+  };
 }
 
 /**
@@ -180,6 +224,10 @@ export async function executeWithMultipleAccounts<T>(
     logParams?: any;
     lockTimeout?: number;
     sequential?: boolean; // Run operations sequentially instead of in parallel
+    /** C2.4 跨账号去重键 */
+    dedupKey?: string;
+    /** C2.2 本账号意图使用的 xsecToken */
+    xsecToken?: string;
   },
 ): Promise<OperationResult<T>[]> {
   // 确定要使用的账户列表
@@ -231,16 +279,45 @@ export async function executeWithMultipleAccounts<T>(
   }
 
   // 执行操作
-  if (options?.sequential) {
-    // 串行执行：按顺序在每个账户上执行
+  const guard = getCooccurrenceGuard();
+  // C2.1 默认开启共现抑制即改为串行；显式 sequential=false 且未启用共现时才并行
+  const useSequential = options?.sequential === true || guard.isCooccurrenceEnabled();
+
+  if (useSequential) {
+    // 串行执行：按顺序在每个账户上执行，账号间插入随机冷却（C2.1）
     const results: OperationResult<T>[] = [];
-    for (const accountName of accountNames) {
+    for (let i = 0; i < accountNames.length; i++) {
+      const accountName = accountNames[i];
       const result = await executeWithAccount(pool, db, accountName, action, operation, options);
       results.push(result);
+
+      // C2.3 熔断触发：取消剩余队列，进入人工（不继续对其他账号动作）
+      if (result.skipped && result.error === 'circuit_breaker_tripped') {
+        log.warn('熔断触发，取消剩余多账号队列', { trippedAt: accountName });
+        for (let j = i + 1; j < accountNames.length; j++) {
+          results.push({
+            account: accountNames[j],
+            success: false,
+            skipped: true,
+            error: 'queue_cancelled_circuit_breaker',
+            durationMs: 0,
+          });
+        }
+        break;
+      }
+
+      // 账号间冷却（最后一个账号后不等待）
+      if (i < accountNames.length - 1) {
+        const cooldown = guard.interAccountCooldownMs();
+        if (cooldown > 0) {
+          log.info('账号间冷却（共现抑制）', { ms: cooldown });
+          await sleep(cooldown);
+        }
+      }
     }
     return results;
   } else {
-    // 并行执行：同时在所有账户上执行（默认）
+    // 并行执行：同时在所有账户上执行
     const promises = accountNames.map((accountName) =>
       executeWithAccount(pool, db, accountName, action, operation, options),
     );

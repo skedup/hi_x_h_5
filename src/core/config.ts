@@ -111,6 +111,51 @@ export const config = {
   },
 
   /**
+   * 反检测：多账号共现抑制（波次 C / C2）
+   * 所有子项均可通过环境变量独立关闭，便于单独回滚。
+   */
+  antiDetect: {
+    /** C2.1 改并行→串行 + 账号间随机抖动 */
+    cooccurrence: {
+      /** 总开关：开启后多账号写操作改为串行 + 账号间冷却 */
+      enabled: parseBoolean(process.env.XHS_MCP_AD_COOCCURRENCE, true),
+      /** 是否串行执行（默认 true；false 时退回并行） */
+      sequential: true,
+      /** 账号间随机冷却区间（毫秒），消除同步尖峰（如 30–120s） */
+      interAccountCooldownMs: [30000, 120000] as [number, number],
+    },
+    /** C2.2 xsecToken 绑定：禁止跨账号复用同一 token */
+    xsecTokenBinding: {
+      /** 总开关 */
+      enabled: parseBoolean(process.env.XHS_MCP_AD_XSEC, true),
+      /** block: 跨账号复用直接拦截；warn: 仅告警放行（默认，避免误伤正常多账号） */
+      mode: (process.env.XHS_MCP_AD_XSEC_MODE as 'block' | 'warn') || 'warn',
+    },
+    /** C2.3 中央限额/熔断（按账号预算、冷却、连续失败熔断进入人工） */
+    quota: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_QUOTA, true),
+      /** 每账号每小时动作预算 */
+      perAccountHourly: parseInteger(process.env.XHS_MCP_AD_QUOTA_HOURLY, 60),
+      /** 每账号每日动作预算 */
+      perAccountDaily: parseInteger(process.env.XHS_MCP_AD_QUOTA_DAILY, 300),
+      /** 单账号动作后最小冷却（毫秒），叠加在 REQUEST_INTERVAL 之上 */
+      cooldownMsAfterAction: parseInteger(process.env.XHS_MCP_AD_QUOTA_COOLDOWN, 5000),
+      /** 连续失败达到该次数即熔断进入人工 */
+      consecutiveFailuresToTrip: parseInteger(process.env.XHS_MCP_AD_QUOTA_TRIP, 3),
+      /** 命中即熔断的验证码/风控关键字（大小写不敏感，匹配 error 或 result） */
+      captchaErrorPatterns: (
+        process.env.XHS_MCP_AD_QUOTA_PATTERNS
+          ? process.env.XHS_MCP_AD_QUOTA_PATTERNS.split(',').map((s) => s.trim()).filter(Boolean)
+          : ['验证码', 'captcha', 'verify', '安全验证', '滑块', 'sliding', 'risk', '风控', '429']
+      ) as string[],
+    },
+    /** C2.4 跨账号 content/media 去重（相同评论正文 / 相同媒体硬拦截；同 target 点赞靠串行+冷却缓解时序共现） */
+    dedup: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_DEDUP, true),
+    },
+  },
+
+  /**
    * 图片处理配置
    */
   imageProcessor: {

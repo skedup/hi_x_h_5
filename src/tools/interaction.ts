@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { AccountPool } from '../core/account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { executeWithMultipleAccounts, MultiAccountParams, resolveAccount } from '../core/multi-account.js';
+import { sha256OfText } from '../core/antidetect.js';
 
 /**
  * Interaction tool definitions for MCP.
@@ -241,7 +242,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
 
           return result;
         },
-        { logParams: { noteId: params.noteId, unlike: params.unlike } },
+        { logParams: { noteId: params.noteId, unlike: params.unlike }, xsecToken: params.xsecToken },
       );
 
       if (results.length === 1) {
@@ -289,7 +290,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
 
           return result;
         },
-        { logParams: { noteId: params.noteId, unfavorite: params.unfavorite } },
+        { logParams: { noteId: params.noteId, unfavorite: params.unfavorite }, xsecToken: params.xsecToken },
       );
 
       if (results.length === 1) {
@@ -339,7 +340,12 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
 
           return result;
         },
-        { logParams: { noteId: params.noteId } },
+        {
+          logParams: { noteId: params.noteId },
+          // C2.4 跨账号相同评论正文硬拦截
+          dedupKey: `comment_text:${sha256OfText(params.content)}`,
+          xsecToken: params.xsecToken,
+        },
       );
 
       if (results.length === 1) {
@@ -391,7 +397,12 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
 
           return result;
         },
-        { logParams: { noteId: params.noteId, commentId: params.commentId } },
+        {
+          logParams: { noteId: params.noteId, commentId: params.commentId },
+          // C2.4 跨账号相同回复正文硬拦截
+          dedupKey: `reply_text:${sha256OfText(params.content)}`,
+          xsecToken: params.xsecToken,
+        },
       );
 
       return {
@@ -435,7 +446,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
 
           return result;
         },
-        { logParams: { noteId: params.noteId, commentId: params.commentId, unlike: params.unlike } },
+        { logParams: { noteId: params.noteId, commentId: params.commentId, unlike: params.unlike }, xsecToken: params.xsecToken },
       );
 
       if (results.length === 1) {
