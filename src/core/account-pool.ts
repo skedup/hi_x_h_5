@@ -7,6 +7,7 @@
 import { XhsClient } from '../xhs/index.js';
 import { XhsDatabase, Account, getDatabase } from '../db/index.js';
 import { AccountLock, getAccountLock } from './account-lock.js';
+import { finalizeLoginProfile, removeProfileDir } from './profile.js';
 
 /**
  * XhsClient 实例池，用于多账户管理
@@ -71,6 +72,7 @@ export class AccountPool {
     const client = new XhsClient({
       accountId: account.id,
       accountName: account.name,
+      profileId: account.profileId,
       state: account.state,
       proxy: account.proxy,
       onStateChange: async (state) => {
@@ -143,6 +145,7 @@ export class AccountPool {
       const client = new XhsClient({
         accountId: account.id,
         proxy: proxy || account.proxy,
+        profileId: account.profileId,
         onStateChange: async (state) => {
           this.db.accounts.updateState(account.id, state);
         },
@@ -175,6 +178,7 @@ export class AccountPool {
     state: any,
     proxy?: string,
     userId?: string,
+    opts?: { profileId?: string; sessionId?: string },
   ): Promise<{ account: Account; isExisting: boolean }> {
     // 通过 userId 检测已有账户（重新登录场景）
     if (userId) {
@@ -189,6 +193,16 @@ export class AccountPool {
             this.clients.delete(existingAccount.id);
           }
 
+          // 确定最终 profileId：保留原 profile_id；旧账号首次重登录则分配候选值（不可变）
+          const finalProfileId = existingAccount.profileId ?? opts?.profileId;
+          if (!existingAccount.profileId && finalProfileId) {
+            this.db.accounts.setProfileId(existingAccount.id, finalProfileId);
+          }
+          // 转正登录会话的临时目录为该账号正式 profile 目录
+          if (opts?.sessionId && finalProfileId) {
+            finalizeLoginProfile(opts.sessionId, finalProfileId);
+          }
+
           // 更新 session state
           this.db.accounts.updateState(existingAccount.id, state);
           if (proxy !== undefined) {
@@ -199,6 +213,7 @@ export class AccountPool {
           const client = new XhsClient({
             accountId: existingAccount.id,
             accountName: existingAccount.name,
+            profileId: finalProfileId,
             state,
             proxy: proxy ?? existingAccount.proxy,
             onStateChange: async (newState) => {
@@ -219,12 +234,18 @@ export class AccountPool {
       accountName = `${nickname}_${Date.now()}`;
     }
 
-    const account = this.db.accounts.create(accountName, proxy);
+    const finalProfileId = opts?.profileId;
+    const account = this.db.accounts.create(accountName, proxy, finalProfileId);
     this.db.accounts.updateState(account.id, state);
+    // 转正登录会话的临时目录为该账号正式 profile 目录
+    if (opts?.sessionId && finalProfileId) {
+      finalizeLoginProfile(opts.sessionId, finalProfileId);
+    }
 
     const client = new XhsClient({
       accountId: account.id,
       accountName: account.name,
+      profileId: finalProfileId,
       state,
       proxy: account.proxy,
       onStateChange: async (newState) => {
@@ -263,6 +284,9 @@ export class AccountPool {
       await client.close();
       this.clients.delete(account.id);
     }
+
+    // 清理该账号的独立 profile 目录（隔离数据不残留）
+    removeProfileDir(account.profileId);
 
     // Delete from database
     return this.db.accounts.delete(account.id);

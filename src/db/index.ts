@@ -119,6 +119,7 @@ export class XhsDatabase {
 
     // 数据库迁移：添加新列到 account_profiles 表
     this.migrateAccountProfiles();
+    this.migrateAccounts();
     const noteTokenMarker = 'kindred.my_notes_token_scrub.v1';
     const noteTokenScrubComplete = this.config.get<boolean>(noteTokenMarker) === true;
     const scrubbedNoteTokens = this.myNotes.scrubTokens();
@@ -151,6 +152,26 @@ export class XhsDatabase {
         this.db.exec(sql);
       } catch (e: any) {
         // 忽略 "duplicate column name" 错误
+        if (!e.message?.includes('duplicate column name')) {
+          throw e;
+        }
+      }
+    }
+  }
+
+  /**
+   * 迁移 accounts 表，添加 profile_id 列（反检测 C1：每账号独立浏览器 profile）。
+   * SQLite 不支持 IF NOT EXISTS，所以需要捕获 "duplicate column name" 错误。
+   */
+  private migrateAccounts(): void {
+    const migrations = [
+      'ALTER TABLE accounts ADD COLUMN profile_id TEXT',
+    ];
+
+    for (const sql of migrations) {
+      try {
+        this.db.exec(sql);
+      } catch (e: any) {
         if (!e.message?.includes('duplicate column name')) {
           throw e;
         }

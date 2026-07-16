@@ -17,6 +17,8 @@ export interface Account {
   name: string;
   /** Optional proxy server URL for this account */
   proxy?: string;
+  /** Immutable internal profile ID (random UUID) for the isolated browser profile dir */
+  profileId?: string;
   /** Playwright storage state (cookies, localStorage) */
   state?: any;
   /** Account status: active, suspended, or banned */
@@ -40,21 +42,22 @@ export class AccountRepository {
   /**
    * Create a new account
    */
-  create(name: string, proxy?: string): Account {
+  create(name: string, proxy?: string, profileId?: string): Account {
     const id = randomUUID();
     const now = new Date().toISOString();
 
     const stmt = this.db.prepare(`
-      INSERT INTO accounts (id, name, proxy, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO accounts (id, name, proxy, profile_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
 
-    stmt.run(id, name, proxy || null, now, now);
+    stmt.run(id, name, proxy || null, profileId || null, now, now);
 
     return {
       id,
       name,
       proxy,
+      profileId,
       status: 'active',
       createdAt: new Date(now),
       updatedAt: new Date(now),
@@ -77,6 +80,26 @@ export class AccountRepository {
     const stmt = this.db.prepare('SELECT * FROM accounts WHERE name = ?');
     const row = stmt.get(name) as AccountRow | undefined;
     return row ? this.rowToAccount(row) : null;
+  }
+
+  /**
+   * Get account by immutable profile ID
+   */
+  findByProfileId(profileId: string): Account | null {
+    const stmt = this.db.prepare('SELECT * FROM accounts WHERE profile_id = ?');
+    const row = stmt.get(profileId) as AccountRow | undefined;
+    return row ? this.rowToAccount(row) : null;
+  }
+
+  /**
+   * 为尚无 profile_id 的旧账号首次分配（不可变：仅当当前为 NULL 时写入）。
+   */
+  setProfileId(id: string, profileId: string): void {
+    const now = new Date().toISOString();
+    const stmt = this.db.prepare(
+      'UPDATE accounts SET profile_id = ?, updated_at = ? WHERE id = ? AND profile_id IS NULL',
+    );
+    stmt.run(profileId, now, id);
   }
 
   /**
@@ -161,6 +184,7 @@ export class AccountRepository {
       id: row.id,
       name: row.name,
       proxy: row.proxy || undefined,
+      profileId: row.profile_id || undefined,
       state: row.state ? JSON.parse(row.state) : undefined,
       status: row.status,
       lastLoginAt: row.last_login_at ? new Date(row.last_login_at) : undefined,

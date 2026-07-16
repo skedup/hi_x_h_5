@@ -27,6 +27,8 @@ export interface XhsClientOptions {
   accountId?: string;
   /** Account name for this client instance */
   accountName?: string;
+  /** Immutable internal profile ID for the isolated browser profile dir */
+  profileId?: string;
   /** Playwright storage state (cookies, localStorage) for session persistence */
   state?: any;
   /** Proxy server URL (e.g., "http://proxy:8080") */
@@ -61,6 +63,7 @@ export class XhsClient {
     this.options = options;
     this.browserClient = new BrowserClient({
       accountId: options.accountId,
+      profileId: options.profileId,
       state: options.state,
       proxy: options.proxy,
       onStateChange: options.onStateChange,

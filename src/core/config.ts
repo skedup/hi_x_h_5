@@ -166,9 +166,13 @@ export const paths = {
   get database() {
     return path.join(config.data.dir, 'data.db');
   },
-  /** 持久化 Chrome profile */
+  /** 持久化 Chrome profile（旧版单一共享目录；保留用于向后兼容 profile_id=null 的账号） */
   get browserProfile() {
     return path.join(config.data.dir, 'browser-profile');
+  },
+  /** 每账号独立浏览器 profile 目录（基于内部随机 profile_id，隔离 Cookie/LocalStorage/设备盐） */
+  getBrowserProfileDir(profileId: string) {
+    return path.join(config.data.dir, 'browser-profiles', profileId);
   },
   /** 下载目录 */
   get downloads() {

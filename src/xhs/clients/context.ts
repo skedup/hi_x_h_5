@@ -15,13 +15,17 @@ import { BROWSER_ARGS } from './constants.js';
 export const log = createLogger('browser');
 
 /**
- * Launch the single persistent Chrome profile shared by login and business calls.
+ * Launch a persistent Chrome profile context rooted at the given directory.
+ * 每个账号应使用独立的 profileDir（基于内部随机 profile_id），以隔离
+ * Cookie / localStorage / IndexedDB / ServiceWorker / 设备指纹盐。
+ * @param profileDir 持久化 user-data-dir 路径
  */
 export async function launchProfileContext(
+  profileDir: string,
   headless = config.browser.headless,
   proxy?: string,
 ): Promise<{ browser: Browser; context: BrowserContext }> {
-  const context = await chromium.launchPersistentContext(paths.browserProfile, {
+  const context = await chromium.launchPersistentContext(profileDir, {
     headless,
     channel: 'chrome',
     args: BROWSER_ARGS,
@@ -54,9 +58,11 @@ export async function launchProfileContext(
 export interface BrowserClientOptions {
   /** Account ID for this client instance */
   accountId?: string;
+  /** Immutable internal profile ID for the isolated browser profile dir */
+  profileId?: string;
   /** Playwright storage state (cookies, localStorage) as JSON object */
   state?: any;
-  /** Proxy server URL */
+  /** Proxy server URL (bound to the profile) */
   proxy?: string;
   /** Callback to save state when it changes */
   onStateChange?: (state: any) => void | Promise<void>;
@@ -88,7 +94,11 @@ export class BrowserContextManager {
    * Defaults to config.browser.headless (controlled by XHS_MCP_HEADLESS env)
    */
   async init(headless = config.browser.headless): Promise<void> {
-    const session = await launchProfileContext(headless, this.options.proxy);
+    // 每账号独立 profile 目录；旧账号（profile_id=null）回退旧全局共享目录以向后兼容
+    const profileDir = this.options.profileId
+      ? paths.getBrowserProfileDir(this.options.profileId)
+      : paths.browserProfile;
+    const session = await launchProfileContext(profileDir, headless, this.options.proxy);
     this.browser = session.browser;
     this.context = session.context;
   }

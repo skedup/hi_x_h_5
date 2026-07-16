@@ -7,6 +7,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { AccountPool } from '../core/account-pool.js';
+import { generateProfileId } from '../core/profile.js';
 import { XhsDatabase } from '../db/index.js';
 import { getLoginSessionManager, LoginSession } from '../core/login-session.js';
 import { getPrompt, setPrompt, PromptType, deleteAccountPrompts } from '../core/prompt-manager.js';
@@ -370,6 +371,7 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
             state,
             session.proxy,
             userInfo.userId,
+            { profileId: generateProfileId(), sessionId: params.sessionId },
           );
 
           // Save user profile（优先使用完整资料）
@@ -505,6 +507,7 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
             state,
             session.proxy,
             userInfo.userId,
+            { profileId: generateProfileId(), sessionId: params.sessionId },
           );
 
           // Save user profile（优先使用完整资料）
