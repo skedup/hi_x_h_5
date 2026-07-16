@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { AccountPool } from '../core/account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { executeWithMultipleAccounts, MultiAccountParams } from '../core/multi-account.js';
+import { graphemeLength, computeTypingPlan } from '../xhs/utils/index.js';
 
 /**
  * Publishing tool definitions for MCP.
@@ -78,7 +79,9 @@ export async function handlePublishTools(name: string, args: any, pool: AccountP
     case 'xhs_publish_video': {
       const params = z
         .object({
-          title: z.string().max(20),
+          title: z
+            .string()
+            .refine((s) => graphemeLength(s) <= 20, { message: 'Title exceeds 20 characters (grapheme)' }),
           content: z.string(),
           videoPath: z.string(),
           coverPath: z.string().optional(),
@@ -128,6 +131,17 @@ export async function handlePublishTools(name: string, args: any, pool: AccountP
         {
           logParams: { title: params.title, videoPath: params.videoPath },
           sequential: true,
+          // 账户锁等待随正文输入预算缩放，避免长文占用锁超时（第三轮 P1）
+          lockTimeout:
+            computeTypingPlan(params.content ?? '', {
+              minDelay: 45,
+              maxDelay: 170,
+              reviseGapMin: 4,
+              reviseGapMax: 12,
+              reviseMax: 1,
+              reviseChance: 0.8,
+              defaultMaxDurationMs: 60000,
+            }).maxDurationMs + 30000,
         },
       );
 

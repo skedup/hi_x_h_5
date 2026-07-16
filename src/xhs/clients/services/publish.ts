@@ -6,7 +6,7 @@
 
 import { Locator, Page } from 'patchright';
 import { PublishContentParams, PublishVideoParams, PublishResult } from '../../types.js';
-import { sleep, resolveImagePaths, isHttpUrl, typeLikeHuman, jitteredSleep, truncateGrapheme, fieldValueMismatch, type TypeLikeHumanOptions } from '../../utils/index.js';
+import { sleep, resolveImagePaths, isHttpUrl, typeLikeHuman, jitteredSleep, truncateGrapheme, fieldValueMismatch, computeTypingPlan, type TypeLikeHumanOptions } from '../../utils/index.js';
 import { config } from '../../../core/config.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS, PUBLISH_SELECTORS, URLS } from '../constants.js';
@@ -15,6 +15,46 @@ import { TIMEOUTS, PUBLISH_SELECTORS, URLS } from '../constants.js';
 const PUBLISH_TITLE_MAX = 20;
 /** 平台正文长度上限（小红书正文 ≤ 1000 字） */
 const PUBLISH_CONTENT_MAX = 1000;
+
+/**
+ * 按标题/正文字数自适应生成 typeLikeHuman 选项（第三轮 P1）：
+ * 长正文自动缩放 maxDurationMs 并压缩延迟，使能在 deadline 内完成且不全文中止。
+ * 调用方应将 maxDurationMs 同步到账户锁等待（lockTimeout）。
+ */
+function titleTypingOptions(title: string): TypeLikeHumanOptions {
+  return {
+    reviseGapMin: 3,
+    reviseGapMax: 9,
+    reviseMax: 1,
+    reviseChance: 0.85,
+    ...computeTypingPlan(title, {
+      minDelay: 45,
+      maxDelay: 170,
+      reviseGapMin: 3,
+      reviseGapMax: 9,
+      reviseMax: 1,
+      reviseChance: 0.85,
+      defaultMaxDurationMs: 20000,
+    }),
+  };
+}
+function contentTypingOptions(content: string): TypeLikeHumanOptions {
+  return {
+    reviseGapMin: 4,
+    reviseGapMax: 12,
+    reviseMax: 1,
+    reviseChance: 0.8,
+    ...computeTypingPlan(content, {
+      minDelay: 45,
+      maxDelay: 170,
+      reviseGapMin: 4,
+      reviseGapMax: 12,
+      reviseMax: 1,
+      reviseChance: 0.8,
+      defaultMaxDurationMs: 60000,
+    }),
+  };
+}
 
 /**
  * Publish service - handles content publishing
@@ -154,7 +194,7 @@ export class PublishService {
           page,
           titleInput,
           title,
-          { reviseGapMin: 3, reviseGapMax: 9, reviseMax: 1, reviseChance: 0.85, maxDurationMs: 20000 },
+          titleTypingOptions(title),
           false,
         );
         log.info('Title set', { title });
@@ -174,7 +214,7 @@ export class PublishService {
           page,
           contentEditor,
           content,
-          { reviseGapMin: 4, reviseGapMax: 12, reviseMax: 1, reviseChance: 0.8, maxDurationMs: 60000 },
+          contentTypingOptions(content),
           true,
         );
         log.info('Content set');
@@ -185,7 +225,7 @@ export class PublishService {
             page,
             contentTextbox,
             content,
-            { reviseGapMin: 4, reviseGapMax: 12, reviseMax: 1, reviseChance: 0.8, maxDurationMs: 60000 },
+            contentTypingOptions(content),
             true,
           );
           log.info('Content set (via textbox)');
@@ -283,18 +323,28 @@ export class PublishService {
     await page.keyboard.press('Backspace');
     await sleep(40);
 
-    // 断言已清空；残留则再尝试一次，仍失败则阻断发布（防拼接残缺正文）
-    const before = isContentEditable
-      ? ((await locator.textContent().catch(() => '')) ?? '')
-      : (await locator.inputValue().catch(() => ''));
+    // 断言已清空；残留则再尝试一次，仍失败则阻断发布（防拼接残缺正文）。
+    // 读取失败一律抛错 fail-closed（第三轮 P0：不得用期望正文兜底放行）。
+    const readField = async (): Promise<string> => {
+      if (isContentEditable) {
+        // contenteditable 用 innerText 保留键入的换行（textContent 会丢失 \n），
+        // 以便 fieldValueMismatch 校验语义换行未被吞掉。
+        const v = await locator.innerText().catch(() => undefined);
+        if (v === undefined) throw new Error('field read failed (contenteditable), abort publish');
+        return v;
+      }
+      const v = await locator.inputValue().catch(() => undefined);
+      if (v === undefined) throw new Error('field read failed (input), abort publish');
+      return v;
+    };
+
+    const before = await readField();
     if (before.trim().length > 0) {
       await locator.click({ clickCount: 3 }).catch(() => {});
       await page.keyboard.press('ControlOrMeta+A');
       await page.keyboard.press('Backspace');
       await sleep(40);
-      const before2 = isContentEditable
-        ? ((await locator.textContent().catch(() => '')) ?? '')
-        : (await locator.inputValue().catch(() => ''));
+      const before2 = await readField();
       if (before2.trim().length > 0) {
         throw new Error('field clear failed: residual content remains, abort publish');
       }
@@ -304,9 +354,7 @@ export class PublishService {
     await typeLikeHuman(page, text, options);
 
     // 输入后校验最终值：不一致则阻断发布（防残缺/拼接正文）
-    const after = isContentEditable
-      ? ((await locator.textContent().catch(() => text)) ?? text)
-      : (await locator.inputValue().catch(() => text));
+    const after = await readField();
     const mismatch = fieldValueMismatch(text, after, isContentEditable);
     if (mismatch) {
       throw new Error(`field value incomplete/mismatched after typing, abort publish (${mismatch})`);
@@ -530,7 +578,7 @@ export class PublishService {
           page,
           titleInput,
           title,
-          { reviseGapMin: 3, reviseGapMax: 9, reviseMax: 1, reviseChance: 0.85, maxDurationMs: 20000 },
+          titleTypingOptions(title),
           false,
         );
       }
@@ -543,7 +591,7 @@ export class PublishService {
           page,
           contentEditor,
           content,
-          { reviseGapMin: 4, reviseGapMax: 12, reviseMax: 1, reviseChance: 0.8, maxDurationMs: 60000 },
+          contentTypingOptions(content),
           true,
         );
       }

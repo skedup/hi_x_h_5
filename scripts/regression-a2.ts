@@ -11,13 +11,18 @@
  *  4. 超时：maxDurationMs 到期抛 AbortError（不再静默发布残缺正文）。
  *  5. 非周期修订：修订间距不恒等（随机化），且修订总数受 maxRevisions 上限约束。
  *  6. 字素裁剪：emoji / ZWJ 组合字符不被 UTF-16 截断破坏。
- *  7. 字段完整性：input 精确相等；contenteditable 归一化相等；不一致判定为非 null。
+ *  7. 字段完整性：input 精确相等；contenteditable 保留语义空格/换行后相等；
+ *     不一致（含换行丢失）判定为非 null（第三轮 P0）。
+ *  8. 字素长度：graphemeLength 按字素计数，emoji 标题不被 UTF-16 误拒（第三轮 P1）。
+ *  9. 长正文预算：computeTypingPlan 按字素缩放 deadline 并压缩延迟，合法长文不再被截断（第三轮 P1）。
  */
 import type { Page } from 'patchright';
 import {
   typeLikeHuman,
   truncateGrapheme,
   fieldValueMismatch,
+  graphemeLength,
+  computeTypingPlan,
 } from '../src/xhs/utils/index.js';
 
 interface Call {
@@ -160,11 +165,57 @@ async function main() {
 
   assert(truncateGrapheme('hello', 3) === 'hel', '短串按字素截断为 hel');
 
-  // --- 7. 字段完整性判定 ---
+  // --- 7. 字段完整性判定（第三轮 P0：不得放过换行/空格丢失）---
   assert(fieldValueMismatch('abc', 'abc', false) === null, 'input 精确相等 → 一致');
   assert(fieldValueMismatch('abc', 'ab', false) !== null, 'input 残缺 → 不一致（应阻断）');
-  assert(fieldValueMismatch('a b', 'a  b', true) === null, 'contenteditable 空白归一化后相等 → 一致');
+  // 关键回归：正文换行被吞必须判定为不一致（旧实现删除全部空白会放过）
+  assert(
+    fieldValueMismatch('第一段\n第二段', '第一段第二段', true) !== null,
+    'contenteditable 换行丢失 → 不一致（应阻断，放过即漏检）',
+  );
+  // 语义单空格保留：归一化后相等才判一致
+  assert(fieldValueMismatch('a b', 'a b', true) === null, 'contenteditable 单空格一致 → 一致');
+  assert(fieldValueMismatch('a b', 'a  b', true) === null, 'contenteditable 多空格折叠后相等 → 一致');
   assert(fieldValueMismatch('abc', 'abx', true) !== null, 'contenteditable 内容不符 → 不一致（应阻断）');
+
+  // --- 8. grapheme 长度校验（第三轮 P1：工具层不得按 UTF-16 误拒 emoji）---
+  const emojiTitle = 'a'.repeat(19) + '😀';
+  assert(graphemeLength(emojiTitle) === 20, `graphemeLength 计字素（${graphemeLength(emojiTitle)} == 20）`);
+  assert(graphemeLength('😀') === 1, '单个 emoji 计 1 字素');
+  // 工具层若按 String.length(UTF-16) 会得 21 而误拒，这里确认 20 字素合规
+  assert(graphemeLength(emojiTitle) <= 20, '20 字素标题通过工具层上限校验');
+
+  // --- 9. 长正文输入预算自适应（第三轮 P1：合法长文不再被 60s 截断）---
+  const shortPlan = computeTypingPlan('短标题', {
+    minDelay: 45,
+    maxDelay: 170,
+    reviseGapMin: 3,
+    reviseGapMax: 9,
+    reviseMax: 1,
+    reviseChance: 0.85,
+    defaultMaxDurationMs: 20000,
+  });
+  assert(
+    shortPlan.maxDurationMs === 20000 && shortPlan.minDelay === 45,
+    `短文预算不变（maxDurationMs=${shortPlan.maxDurationMs}, minDelay=${shortPlan.minDelay}）`,
+  );
+
+  const longText = '这'.repeat(1000);
+  const longPlan = computeTypingPlan(longText, {
+    minDelay: 45,
+    maxDelay: 170,
+    reviseGapMin: 4,
+    reviseGapMax: 12,
+    reviseMax: 1,
+    reviseChance: 0.8,
+    defaultMaxDurationMs: 60000,
+  });
+  assert(longPlan.maxDurationMs > 60000, `长正文预算缩放 > 60s（=${longPlan.maxDurationMs}ms，不再静默截断）`);
+  assert(longPlan.maxDurationMs <= 240000, `长正文预算设上限 ≤ 240s（=${longPlan.maxDurationMs}ms）`);
+  assert(longPlan.minDelay < 45, `长正文自适应压缩延迟（minDelay=${longPlan.minDelay} < 45）`);
+  // 账户锁等待策略：应取 maxDurationMs + 余量（≥ 长文预算）
+  const lockTimeout = longPlan.maxDurationMs + 30000;
+  assert(lockTimeout >= longPlan.maxDurationMs, `账户锁等待同步缩放（lockTimeout=${lockTimeout}ms）`);
 
   console.log('\nAll A2 regression checks passed.');
 }
