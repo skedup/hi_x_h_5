@@ -13,6 +13,7 @@ import { sleep } from '../xhs/utils/index.js';
 import { getCooccurrenceGuard } from './antidetect.js';
 import { isWriteAllowed } from './liveness.js';
 import { config } from './config.js';
+import type { ToolCapability } from './audit.js';
 
 const log = createLogger('multi-account');
 
@@ -56,6 +57,8 @@ export interface OperationResult<T> {
   durationMs?: number;
   /** 被共现守卫跳过（预算/冷却/熔断/去重/xsec 绑定）时为 true */
   skipped?: boolean;
+  /** 本账号动作后触发熔断（蓝军 #5，供多账号队列即时取消剩余账号） */
+  trippedNow?: boolean;
 }
 
 /**
@@ -85,6 +88,13 @@ export async function executeWithAccount<T>(
     dedupKey?: string;
     /** C2.2 本账号意图使用的 xsecToken（用于跨账号复用检测） */
     xsecToken?: string;
+    /**
+     * 动作能力分级（蓝军 #3）：
+     * - 'write'   默认；受全部反检测门禁（账号状态/息屏/headless/预算熔断去重）约束；
+     * - 'read'    只读：不受息屏/headless/预算熔断门禁（不伪造人工活动）；
+     * - 'control' 本机控制（如停止浏览）：无条件放行，永远可用于脱离自动化。
+     */
+    capability?: ToolCapability;
   },
 ): Promise<OperationResult<T>> {
   const account = pool.getAccount(accountIdOrName);
@@ -96,9 +106,13 @@ export async function executeWithAccount<T>(
     };
   }
 
-  // 蓝军 #1：非 active 账号（如 migration_required / suspended / banned）拒绝平台操作；
-  // 恢复路径 xhs_add_account 不经此汇聚点，不受影响。
-  if (account.status !== 'active') {
+  // 蓝军 #3：能力分级。read/control 不受账号状态/息屏/headless 反检测门禁约束；
+  // 仅 write 受全部门禁约束。默认按 write 处理（fail-safe）。
+  const cap: ToolCapability = options?.capability ?? 'write';
+
+  // 蓝军 #1：非 active 账号（migration_required / suspended / banned）拒绝写操作；
+  // 恢复路径 xhs_add_account 不经此汇聚点。read/control（如停止浏览）即便账号非 active 也应放行。
+  if (cap === 'write' && account.status !== 'active') {
     return {
       account: account.name,
       success: false,
@@ -108,45 +122,49 @@ export async function executeWithAccount<T>(
     };
   }
 
-  // C3.2 息屏/无人值守自保：写操作需设备在场，否则停写（仅 shadow/停止）
-  const live = isWriteAllowed();
-  if (!live.allowed) {
-    return {
-      account: account?.name ?? accountIdOrName,
-      success: false,
-      skipped: true,
-      error: `liveness_paused:${live.reason ?? 'unknown'}`,
-      durationMs: 0,
-    };
+  // C3.2 息屏/无人值守自保：仅 write 需设备在场，否则停写（read/control 不受限）
+  if (cap === 'write') {
+    const live = isWriteAllowed();
+    if (!live.allowed) {
+      return {
+        account: account?.name ?? accountIdOrName,
+        success: false,
+        skipped: true,
+        error: `liveness_paused:${live.reason ?? 'unknown'}`,
+        durationMs: 0,
+      };
+    }
+
+    // B1 headless 门禁：仅 write 拒绝 headless（强制 headful 以保留设备在场语义）
+    if (config.antiDetect.headlessWriteGate.enabled && config.browser.headless) {
+      return {
+        account: account?.name ?? accountIdOrName,
+        success: false,
+        skipped: true,
+        error: 'headless_write_blocked',
+        durationMs: 0,
+      };
+    }
   }
 
-  // B1 headless 门禁：写操作拒绝 headless（强制 headful 以保留设备在场语义）
-  if (config.antiDetect.headlessWriteGate.enabled && config.browser.headless) {
-    return {
-      account: account?.name ?? accountIdOrName,
-      success: false,
-      skipped: true,
-      error: 'headless_write_blocked',
-      durationMs: 0,
-    };
-  }
-
-  // C2.1/C2.2/C2.3/C2.4 动作前核查：预算/冷却/熔断/去重/xsec 绑定
+  // C2.1/C2.2/C2.3/C2.4 动作前核查（原子检查+预占）：仅 write 调用
   const guard = getCooccurrenceGuard();
-  const before = guard.beforeAction({
-    accountId: account.id,
-    action,
-    dedupKey: options?.dedupKey,
-    xsecToken: options?.xsecToken,
-  });
-  if (!before.allow) {
-    return {
-      account: account.name,
-      success: false,
-      skipped: true,
-      error: before.reason,
-      durationMs: 0,
-    };
+  if (cap === 'write') {
+    const before = await guard.beforeAction({
+      accountId: account.id,
+      action,
+      dedupKey: options?.dedupKey,
+      xsecToken: options?.xsecToken,
+    });
+    if (!before.allow) {
+      return {
+        account: account.name,
+        success: false,
+        skipped: true,
+        error: before.reason,
+        durationMs: 0,
+      };
+    }
   }
 
   const startTime = Date.now();
@@ -184,16 +202,20 @@ export async function executeWithAccount<T>(
 
   const durationMs = Date.now() - startTime;
 
-  // C2.3/C2.4/C2.2 动作后回填：预算/熔断/去重/token 绑定
-  guard.afterAction({
-    accountId: account.id,
-    action,
-    success: outcome.success,
-    error: outcome.error,
-    result: outcome.result,
-    dedupKey: options?.dedupKey,
-    xsecToken: options?.xsecToken,
-  });
+  // C2.3/C2.4/C2.2 动作后回填：预算/熔断/去重/token 绑定（仅 write 调用守卫）
+  let trippedNow = false;
+  if (cap === 'write') {
+    const after = await guard.afterAction({
+      accountId: account.id,
+      action,
+      success: outcome.success,
+      error: outcome.error,
+      result: outcome.result,
+      dedupKey: options?.dedupKey,
+      xsecToken: options?.xsecToken,
+    });
+    trippedNow = after.trippedNow;
+  }
 
   if (outcome.success) {
     // Log success
@@ -212,6 +234,7 @@ export async function executeWithAccount<T>(
       success: true,
       result: outcome.result,
       durationMs,
+      trippedNow,
     };
   }
 
@@ -229,6 +252,7 @@ export async function executeWithAccount<T>(
     success: false,
     error: outcome.error,
     durationMs,
+    trippedNow,
   };
 }
 
@@ -265,6 +289,8 @@ export async function executeWithMultipleAccounts<T>(
     dedupKey?: string;
     /** C2.2 本账号意图使用的 xsecToken */
     xsecToken?: string;
+    /** 动作能力分级（蓝军 #3），透传至 executeWithAccount */
+    capability?: ToolCapability;
   },
 ): Promise<OperationResult<T>[]> {
   // 确定要使用的账户列表
@@ -328,8 +354,9 @@ export async function executeWithMultipleAccounts<T>(
       const result = await executeWithAccount(pool, db, accountName, action, operation, options);
       results.push(result);
 
-      // C2.3 熔断触发：取消剩余队列，进入人工（不继续对其他账号动作）
-      if (result.skipped && result.error === 'circuit_breaker_tripped') {
+      // C2.3 熔断触发（蓝军 #5：以 afterAction 返回的 trippedNow 即时判定）：
+      // 取消剩余队列，进入人工，不继续对其他账号动作。
+      if (result.trippedNow) {
         log.warn('熔断触发，取消剩余多账号队列', { trippedAt: accountName });
         for (let j = i + 1; j < accountNames.length; j++) {
           results.push({

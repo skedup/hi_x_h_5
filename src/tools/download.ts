@@ -206,7 +206,7 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
         const note = await ctx.client.getNote(params.noteId, params.xsecToken);
         apiRequest = ctx.client.request;
         return note;
-      });
+      }, { capability: 'read' });
 
       const r = results[0];
       if (!r.success || !r.result) {
@@ -316,7 +316,7 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
         const note = await ctx.client.getNote(params.noteId, params.xsecToken);
         apiRequest = ctx.client.request;
         return note;
-      });
+      }, { capability: 'read' });
 
       const r = results[0];
       if (!r.success || !r.result) {

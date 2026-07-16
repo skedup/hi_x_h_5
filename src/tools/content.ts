@@ -175,7 +175,7 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         async (ctx) => {
           return await ctx.client.search(params.keyword, params.count, params.timeout, filters);
         },
-        { logParams: { keyword: params.keyword, count: params.count } },
+        { logParams: { keyword: params.keyword, count: params.count }, capability: 'read' },
       );
 
       // For single account, return simple format
@@ -238,7 +238,7 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         async (ctx) => {
           return await ctx.client.getNote(params.noteId, params.xsecToken);
         },
-        { logParams: { noteId: params.noteId } },
+        { logParams: { noteId: params.noteId }, capability: 'read' },
       );
 
       const r = results[0];
@@ -347,7 +347,7 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         async (ctx) => {
           return await ctx.client.getUserProfile(params.userId, params.xsecToken);
         },
-        { logParams: { userId: params.userId } },
+        { logParams: { userId: params.userId }, capability: 'read' },
       );
 
       const r = results[0];
@@ -381,7 +381,7 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
 
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'list_feeds', async (ctx) => {
         return await ctx.client.listFeeds();
-      });
+      }, { capability: 'read' });
 
       const r = results[0];
       if (!r.success) {

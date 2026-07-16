@@ -221,7 +221,7 @@ export async function handleExploreTools(name: string, args: any, pool: AccountP
       const result = await executeWithAccount(pool, db, resolved.account, 'stop_explore', async (ctx) => {
         const stoppedSessions = ctx.client.stopExplore(params.sessionId);
         return { stoppedSessions };
-      });
+      }, { capability: 'control' });
 
       if (!result.success) {
         return {

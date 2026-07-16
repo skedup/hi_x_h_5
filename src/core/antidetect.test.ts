@@ -1,6 +1,7 @@
 /**
  * @fileoverview 反检测守卫单元测试（离线、无需真实账号）。
  * 覆盖 C2.1–C2.4：账号间冷却、跨账号去重、中央限额/熔断、xsecToken 绑定。
+ * beforeAction/afterAction 为异步（原子预占+回滚，蓝军 #4/#5），测试内统一 await。
  * @module core/antidetect.test
  */
 import { describe, it, expect } from 'bun:test';
@@ -65,80 +66,91 @@ describe('C2.1 账号间冷却', () => {
 });
 
 describe('C2.4 跨账号去重', () => {
-  it('相同去重键被其他账号占用则拦截，同账号放行', () => {
+  it('相同去重键被其他账号占用则拦截，同账号放行', async () => {
     const g = new CooccurrenceGuard(makeCfg());
-    expect(g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'k' }).allow).toBe(true);
-    g.afterAction({ accountId: A, action: 'comment', success: true, dedupKey: 'k' });
+    // 首次使用即原子预占去重键，无需等 afterAction（蓝军 #4）
+    expect((await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'k' })).allow).toBe(true);
     // 其他账号被拦截
-    expect(g.beforeAction({ accountId: B, action: 'comment', dedupKey: 'k' }).allow).toBe(false);
+    expect((await g.beforeAction({ accountId: B, action: 'comment', dedupKey: 'k' })).allow).toBe(false);
     // 原账号仍放行
-    expect(g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'k' }).allow).toBe(true);
+    expect((await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'k' })).allow).toBe(true);
   });
-  it('禁用去重时不拦截', () => {
+  it('禁用去重时不拦截', async () => {
     const g = new CooccurrenceGuard(makeCfg({ dedup: { enabled: false } }));
-    g.afterAction({ accountId: A, action: 'comment', success: true, dedupKey: 'k' });
-    expect(g.beforeAction({ accountId: B, action: 'comment', dedupKey: 'k' }).allow).toBe(true);
+    expect((await g.beforeAction({ accountId: B, action: 'comment', dedupKey: 'k' })).allow).toBe(true);
   });
 });
 
 describe('C2.3 中央限额/熔断', () => {
-  it('超过每小时预算则拦截', () => {
+  it('超过每小时预算则拦截', async () => {
     const g = new CooccurrenceGuard(makeCfg());
-    expect(g.beforeAction({ accountId: A, action: 'like' }).allow).toBe(true);
-    g.afterAction({ accountId: A, action: 'like', success: true });
-    expect(g.beforeAction({ accountId: A, action: 'like' }).allow).toBe(true);
-    g.afterAction({ accountId: A, action: 'like', success: true });
-    expect(g.beforeAction({ accountId: A, action: 'like' }).allow).toBe(false);
+    expect((await g.beforeAction({ accountId: A, action: 'like' })).allow).toBe(true);
+    await g.afterAction({ accountId: A, action: 'like', success: true });
+    expect((await g.beforeAction({ accountId: A, action: 'like' })).allow).toBe(true);
+    await g.afterAction({ accountId: A, action: 'like', success: true });
+    expect((await g.beforeAction({ accountId: A, action: 'like' })).allow).toBe(false);
   });
-  it('动作后冷却中拦截', () => {
+  it('动作后冷却中拦截', async () => {
     const g = new CooccurrenceGuard(makeCfg({ quota: { enabled: true, perAccountHourly: 99, perAccountDaily: 99, cooldownMsAfterAction: 10_000, consecutiveFailuresToTrip: 99, captchaErrorPatterns: [] } }));
-    expect(g.beforeAction({ accountId: A, action: 'like' }).allow).toBe(true);
-    g.afterAction({ accountId: A, action: 'like', success: true });
-    expect(g.beforeAction({ accountId: A, action: 'like' }).allow).toBe(false);
+    expect((await g.beforeAction({ accountId: A, action: 'like' })).allow).toBe(true);
+    await g.afterAction({ accountId: A, action: 'like', success: true });
+    expect((await g.beforeAction({ accountId: A, action: 'like' })).allow).toBe(false);
   });
-  it('命中验证码关键字即熔断', () => {
+  it('命中验证码关键字即熔断', async () => {
     const g = new CooccurrenceGuard(makeCfg());
-    g.afterAction({ accountId: A, action: 'like', success: false, error: '出现验证码，请完成验证' });
-    expect(g.beforeAction({ accountId: A, action: 'like' }).allow).toBe(false);
+    await g.afterAction({ accountId: A, action: 'like', success: false, error: '出现验证码，请完成验证' });
+    expect((await g.beforeAction({ accountId: A, action: 'like' })).allow).toBe(false);
   });
-  it('连续失败达阈值熔断', () => {
+  it('连续失败达阈值熔断', async () => {
     const g = new CooccurrenceGuard(makeCfg({ quota: { enabled: true, perAccountHourly: 99, perAccountDaily: 99, cooldownMsAfterAction: 0, consecutiveFailuresToTrip: 2, captchaErrorPatterns: [] } }));
-    g.afterAction({ accountId: A, action: 'like', success: false, error: 'network' });
-    expect(g.beforeAction({ accountId: A, action: 'like' }).allow).toBe(true);
-    g.afterAction({ accountId: A, action: 'like', success: false, error: 'network' });
-    expect(g.beforeAction({ accountId: A, action: 'like' }).allow).toBe(false);
+    await g.afterAction({ accountId: A, action: 'like', success: false, error: 'network' });
+    expect((await g.beforeAction({ accountId: A, action: 'like' })).allow).toBe(true);
+    await g.afterAction({ accountId: A, action: 'like', success: false, error: 'network' });
+    expect((await g.beforeAction({ accountId: A, action: 'like' })).allow).toBe(false);
   });
-  it('成功重置连续失败计数', () => {
+  it('成功重置连续失败计数', async () => {
     const g = new CooccurrenceGuard(makeCfg({ quota: { enabled: true, perAccountHourly: 99, perAccountDaily: 99, cooldownMsAfterAction: 0, consecutiveFailuresToTrip: 2, captchaErrorPatterns: [] } }));
-    g.afterAction({ accountId: A, action: 'like', success: false, error: 'e' });
-    g.afterAction({ accountId: A, action: 'like', success: true });
-    g.afterAction({ accountId: A, action: 'like', success: false, error: 'e' });
-    expect(g.beforeAction({ accountId: A, action: 'like' }).allow).toBe(true);
+    await g.afterAction({ accountId: A, action: 'like', success: false, error: 'e' });
+    await g.afterAction({ accountId: A, action: 'like', success: true });
+    await g.afterAction({ accountId: A, action: 'like', success: false, error: 'e' });
+    expect((await g.beforeAction({ accountId: A, action: 'like' })).allow).toBe(true);
+  });
+  it('执行失败回滚预算计数（蓝军 #5）', async () => {
+    const g = new CooccurrenceGuard(makeCfg({ quota: { enabled: true, perAccountHourly: 1, perAccountDaily: 99, cooldownMsAfterAction: 0, consecutiveFailuresToTrip: 99, captchaErrorPatterns: [] } }));
+    await g.afterAction({ accountId: A, action: 'like', success: false, error: 'boom' });
+    // 预算已回滚，下一次仍允许
+    expect((await g.beforeAction({ accountId: A, action: 'like' })).allow).toBe(true);
+  });
+  it('业务失败（验证码但 HTTP 成功）也触发熔断（蓝军 #5）', async () => {
+    const g = new CooccurrenceGuard(makeCfg({ quota: { enabled: true, perAccountHourly: 99, perAccountDaily: 99, cooldownMsAfterAction: 0, consecutiveFailuresToTrip: 99, captchaErrorPatterns: ['验证码'] } }));
+    const r = await g.afterAction({ accountId: A, action: 'like', success: true, result: { needVerify: true } });
+    expect(r.trippedNow).toBe(true);
+    expect(g.isTripped(A)).toBe(true);
   });
 });
 
 describe('C2.2 xsecToken 绑定', () => {
-  it('warn 模式：跨账号复用放行但记录', () => {
+  it('warn 模式：跨账号复用放行但记录', async () => {
     const g = new CooccurrenceGuard(makeCfg({ xsecTokenBinding: { enabled: true, mode: 'warn' } }));
-    expect(g.beforeAction({ accountId: A, action: 'like', xsecToken: 'tok' }).allow).toBe(true);
-    g.afterAction({ accountId: A, action: 'like', success: true, xsecToken: 'tok' });
-    expect(g.beforeAction({ accountId: B, action: 'like', xsecToken: 'tok' }).allow).toBe(true);
+    expect((await g.beforeAction({ accountId: A, action: 'like', xsecToken: 'tok' })).allow).toBe(true);
+    await g.afterAction({ accountId: A, action: 'like', success: true, xsecToken: 'tok' });
+    expect((await g.beforeAction({ accountId: B, action: 'like', xsecToken: 'tok' })).allow).toBe(true);
   });
-  it('block 模式：跨账号复用直接拦截', () => {
+  it('block 模式：跨账号复用直接拦截', async () => {
     const g = new CooccurrenceGuard(makeCfg({ xsecTokenBinding: { enabled: true, mode: 'block' } }));
-    expect(g.beforeAction({ accountId: A, action: 'like', xsecToken: 'tok' }).allow).toBe(true);
-    g.afterAction({ accountId: A, action: 'like', success: true, xsecToken: 'tok' });
-    const r = g.beforeAction({ accountId: B, action: 'like', xsecToken: 'tok' });
+    expect((await g.beforeAction({ accountId: A, action: 'like', xsecToken: 'tok' })).allow).toBe(true);
+    await g.afterAction({ accountId: A, action: 'like', success: true, xsecToken: 'tok' });
+    const r = await g.beforeAction({ accountId: B, action: 'like', xsecToken: 'tok' });
     expect(r.allow).toBe(false);
     expect(r.reason).toBe('xsec_token_bound_to_other_account');
   });
 });
 
 describe('reset', () => {
-  it('重置后状态清空', () => {
+  it('重置后状态清空', async () => {
     const g = new CooccurrenceGuard(makeCfg());
-    g.afterAction({ accountId: A, action: 'like', success: true, dedupKey: 'k', xsecToken: 't' });
+    await g.afterAction({ accountId: A, action: 'like', success: true, dedupKey: 'k', xsecToken: 't' });
     g.reset();
-    expect(g.beforeAction({ accountId: B, action: 'like', dedupKey: 'k', xsecToken: 't' }).allow).toBe(true);
+    expect((await g.beforeAction({ accountId: B, action: 'like', dedupKey: 'k', xsecToken: 't' })).allow).toBe(true);
   });
 });
