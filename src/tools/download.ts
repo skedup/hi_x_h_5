@@ -79,10 +79,16 @@ function tryParseUrl(u: string): URL | null {
 }
 
 /**
- * 判断 URL 是否同源（小红书主域）。用于推导一致的 Sec-Fetch-Site（蓝军 #8）。
+ * 推导 URL 与小红书主站的站点关系，用于生成一致的 Sec-Fetch-Site（蓝军 #8 / R2-8）。
+ * 浏览器页面固定在 www.xiaohongshu.com，据此判定：
+ * - 'same-origin'：仅 www.xiaohongshu.com 本身（与页面同源）；
+ * - 'same-site'：同注册域其它主机（如 xiaohongshu.com 裸域、sns.xiaohongshu.com 等子域），但非同源；
+ * - 'cross-site'：其它注册域（如 sns-img.xhscdn.com 等 CDN），绝不可自称 same-origin。
  */
-function isXhsSameOrigin(u: URL): boolean {
-  return u.hostname === 'xiaohongshu.com' || u.hostname.endsWith('.xiaohongshu.com');
+function classifyXhsSite(u: URL): 'same-origin' | 'same-site' | 'cross-site' {
+  if (u.hostname === 'www.xiaohongshu.com') return 'same-origin';
+  if (u.hostname === 'xiaohongshu.com' || u.hostname.endsWith('.xiaohongshu.com')) return 'same-site';
+  return 'cross-site';
 }
 
 /**
@@ -110,7 +116,7 @@ export async function downloadFile(
   if (apiRequest) {
     // 按最终 URL 推导一致的 Fetch Metadata（蓝军 #8：跨站 CDN 不能自称 same-origin，视频不能自称 image）
     const parsed = tryParseUrl(url);
-    const site = parsed && isXhsSameOrigin(parsed) ? 'same-origin' : 'cross-site';
+    const site = parsed ? classifyXhsSite(parsed) : 'cross-site';
     const dest = resourceType === 'video' ? 'video' : 'image';
     const resp = await apiRequest.get(url, {
       headers: {
@@ -206,6 +212,8 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'get_note_for_download', async (ctx) => {
         const note = await ctx.client.getNote(params.noteId, params.xsecToken);
         apiRequest = ctx.client.request;
+        // 蓝军 #6 / R2-1：提取即登记来源账号，用实际执行提取的 ctx.accountId（fail-closed）
+        getCooccurrenceGuard().bindXsecSource(params.xsecToken, ctx.accountId);
         return note;
       }, { capability: 'read' });
 
@@ -217,11 +225,7 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
         };
       }
 
-      // 蓝军 #6：xsecToken 在「提取」即登记来源账号，后续写操作须同源（fail-closed）
-      {
-        const owner = pool.getAccount(params.account);
-        if (owner) getCooccurrenceGuard().bindXsecSource(params.xsecToken, owner.id);
-      }
+      // 蓝军 #6：xsecToken 来源绑定已在上面的提取回调（ctx.accountId）内完成（fail-closed）
 
       // 蓝军 #9 冷启动出口保护：指定账号但浏览器 context 仍未初始化时，禁止回退直连（fail-closed）
       if (params.account && !apiRequest) {
@@ -322,6 +326,8 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'get_note_for_download', async (ctx) => {
         const note = await ctx.client.getNote(params.noteId, params.xsecToken);
         apiRequest = ctx.client.request;
+        // 蓝军 #6 / R2-1：提取即登记来源账号，用实际执行提取的 ctx.accountId（fail-closed）
+        getCooccurrenceGuard().bindXsecSource(params.xsecToken, ctx.accountId);
         return note;
       }, { capability: 'read' });
 
@@ -333,11 +339,7 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
         };
       }
 
-      // 蓝军 #6：xsecToken 在「提取」即登记来源账号，后续写操作须同源（fail-closed）
-      {
-        const owner = pool.getAccount(params.account);
-        if (owner) getCooccurrenceGuard().bindXsecSource(params.xsecToken, owner.id);
-      }
+      // 蓝军 #6：xsecToken 来源绑定已在上面的提取回调（ctx.accountId）内完成（fail-closed）
 
       // 蓝军 #9 冷启动出口保护：指定账号但浏览器 context 仍未初始化时，禁止回退直连（fail-closed）
       if (params.account && !apiRequest) {

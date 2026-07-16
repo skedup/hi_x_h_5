@@ -85,8 +85,8 @@ describe('蓝军 #3 能力分级门禁', () => {
   });
   beforeEach(() => getCooccurrenceGuard().reset());
 
-  it('只读能力绕过账号状态门禁（migration_required 仍可读取）', async () => {
-    const account = { id: 'rd', name: 'rd', status: 'migration_required' };
+  it('只读能力绕过账号状态门禁（suspended 仍可读取）', async () => {
+    const account = { id: 'rd', name: 'rd', status: 'suspended' };
     const { pool, db } = makeMocks(account);
     let called = false;
     const res = await executeWithAccount(pool, db, 'rd', 'search', async () => {
@@ -95,6 +95,20 @@ describe('蓝军 #3 能力分级门禁', () => {
     }, { capability: 'read' });
     expect(called).toBe(true);
     expect(res.success).toBe(true);
+  });
+
+  it('R2-6 migration_required 账号对所有能力拒绝触网（避免回退共享 profile）', async () => {
+    const account = { id: 'mig', name: 'mig', status: 'migration_required' };
+    const { pool, db } = makeMocks(account);
+    let called = false;
+    const res = await executeWithAccount(pool, db, 'mig', 'search', async () => {
+      called = true;
+      return 'ok';
+    }, { capability: 'read' });
+    expect(called).toBe(false);
+    expect(res.success).toBe(false);
+    expect(res.skipped).toBe(true);
+    expect(res.error).toContain('migration_required');
   });
 
   it('控制能力（停止）即便 headless 也无条件放行，而写操作被 headless 门禁拦截', async () => {

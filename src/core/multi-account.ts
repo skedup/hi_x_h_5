@@ -106,11 +106,24 @@ export async function executeWithAccount<T>(
     };
   }
 
+  // 蓝军 #1 + R2-6：migration_required 账号必须重登录绑定独立 profile 后方可触网。
+  // 任何「触碰浏览器」的操作（含 read/control）一律拒绝，避免 account-pool 以 profileId=null
+  // 回退共享 profile 目录而破坏账号隔离。仅本地管理/重登录（xhs_add_account）不经此汇聚点。
+  if (account.status === 'migration_required') {
+    return {
+      account: account.name,
+      success: false,
+      skipped: true,
+      error: `account_inactive:migration_required`,
+      durationMs: 0,
+    };
+  }
+
   // 蓝军 #3：能力分级。read/control 不受账号状态/息屏/headless 反检测门禁约束；
   // 仅 write 受全部门禁约束。默认按 write 处理（fail-safe）。
   const cap: ToolCapability = options?.capability ?? 'write';
 
-  // 蓝军 #1：非 active 账号（migration_required / suspended / banned）拒绝写操作；
+  // 蓝军 #1：非 active 账号（suspended / banned）拒绝写操作；
   // 恢复路径 xhs_add_account 不经此汇聚点。read/control（如停止浏览）即便账号非 active 也应放行。
   if (cap === 'write' && account.status !== 'active') {
     return {
@@ -149,8 +162,9 @@ export async function executeWithAccount<T>(
 
   // C2.1/C2.2/C2.3/C2.4 动作前核查（原子检查+预占）：仅 write 调用
   const guard = getCooccurrenceGuard();
+  let before: Awaited<ReturnType<typeof guard.beforeAction>> | null = null;
   if (cap === 'write') {
-    const before = await guard.beforeAction({
+    before = await guard.beforeAction({
       accountId: account.id,
       action,
       dedupKey: options?.dedupKey,
@@ -172,8 +186,11 @@ export async function executeWithAccount<T>(
   let outcome: { success: boolean; error?: string; result?: T } = { success: false };
 
   try {
-    // Acquire lock
-    release = await pool.acquireLock(account.id, action, options?.lockTimeout);
+    // Acquire lock（R2-4：control 本机控制操作——如停止浏览——不取业务锁，
+    // 以免被正在进行的长任务写锁阻塞，保证可随时打断/脱离自动化）
+    if (cap !== 'control') {
+      release = await pool.acquireLock(account.id, action, options?.lockTimeout);
+    }
 
     // Get client
     const client = await pool.getClient(account.id);
@@ -213,6 +230,7 @@ export async function executeWithAccount<T>(
       result: outcome.result,
       dedupKey: options?.dedupKey,
       xsecToken: options?.xsecToken,
+      reservation: before?.reservation,
     });
     trippedNow = after.trippedNow;
   }

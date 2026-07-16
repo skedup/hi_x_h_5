@@ -35,6 +35,15 @@ describe('蓝军 #8 Fetch Metadata 与 URL 一致', () => {
     expect(calls[0].opts.headers['Sec-Fetch-Dest']).toBe('image');
   });
 
+  it('R2-8 同注册域子域（sns.xiaohongshu.com）→ Sec-Fetch-Site: same-site（不再误标 same-origin）', async () => {
+    const { apiRequest, calls } = makeApiRequest();
+    await downloadFile('https://sns.xiaohongshu.com/foo.jpg', '/tmp/_xhs_dl_sub.jpg', apiRequest, {
+      resourceType: 'image',
+    });
+    expect(calls[0].opts.headers['Sec-Fetch-Site']).toBe('same-site');
+    expect(calls[0].opts.headers['Sec-Fetch-Dest']).toBe('image');
+  });
+
   it('视频资源 → Sec-Fetch-Dest: video（不再自称 image）', async () => {
     const { apiRequest, calls } = makeApiRequest();
     await downloadFile('https://v.xhscdn.com/a.mp4', '/tmp/_xhs_dl_vid.mp4', apiRequest, {

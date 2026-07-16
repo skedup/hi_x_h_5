@@ -16,7 +16,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { config } from './core/config.js';
 import { evaluateAuthorization, authorizeMessages } from './core/audit.js';
-import { startLivenessMonitor } from './core/liveness.js';
+import { startLivenessMonitor, recordHumanActivity } from './core/liveness.js';
 
 /**
  * C3.3（P2-2）本地 HTTP MCP 鉴权与读写能力分级。
@@ -233,6 +233,15 @@ export async function startHttpServer(port: number = config.server.port) {
   // Health check endpoint
   app.get('/health', (c) => {
     return c.json({ status: 'ok', server: 'xhs-mcp', version: '2.0.0' });
+  });
+
+  // R2-11：独立、短时、本机「人工在场」确认通道。仅本机（服务绑定 127.0.0.1）可调，
+  // 用于重置无人值守计时（idleTimeoutMs）。任何远程 MCP 调用都不会刷新在场状态
+  // （见 server.ts 蓝军 #7），这是人工确认的唯一可信入口，避免空闲超时后写操作被永久锁死。
+  // 用法（本机）：curl -X POST http://127.0.0.1:<port>/confirm-presence
+  app.post('/confirm-presence', (c) => {
+    recordHumanActivity();
+    return c.json({ ok: true, message: 'presence confirmed' });
   });
 
   // Info endpoint

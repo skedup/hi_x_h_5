@@ -174,7 +174,12 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         multiParams,
         'search',
         async (ctx) => {
-          return await ctx.client.search(params.keyword, params.count, params.timeout, filters);
+          const items = await ctx.client.search(params.keyword, params.count, params.timeout, filters);
+          // 蓝军 #6 / R2-1：每个提取到的 xsecToken 绑定到实际执行提取的账号（fail-closed）
+          for (const it of items) {
+            getCooccurrenceGuard().bindXsecSource(it.xsecToken, ctx.accountId);
+          }
+          return items;
         },
         { logParams: { keyword: params.keyword, count: params.count }, capability: 'read' },
       );
@@ -237,7 +242,10 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         multiParams,
         'get_note',
         async (ctx) => {
-          return await ctx.client.getNote(params.noteId, params.xsecToken);
+          const note = await ctx.client.getNote(params.noteId, params.xsecToken);
+          // 蓝军 #6 / R2-1：提取即登记来源账号，用实际执行提取的 ctx.accountId（fail-closed）
+          getCooccurrenceGuard().bindXsecSource(params.xsecToken, ctx.accountId);
+          return note;
         },
         { logParams: { noteId: params.noteId }, capability: 'read' },
       );
@@ -250,11 +258,7 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         };
       }
 
-      // 蓝军 #6：xsecToken 提取即登记来源账号，后续写操作须同源（fail-closed）
-      {
-        const owner = pool.getAccount(params.account);
-        if (owner) getCooccurrenceGuard().bindXsecSource(params.xsecToken, owner.id);
-      }
+      // 蓝军 #6：xsecToken 来源绑定已在上面的提取回调（ctx.accountId）内完成（fail-closed）
 
       if (!r.result) {
         return {
@@ -352,7 +356,10 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         multiParams,
         'user_profile',
         async (ctx) => {
-          return await ctx.client.getUserProfile(params.userId, params.xsecToken);
+          const prof = await ctx.client.getUserProfile(params.userId, params.xsecToken);
+          // 蓝军 #6 / R2-1：提取即登记来源账号（xsecToken 可选时用实际提取账号）
+          if (params.xsecToken) getCooccurrenceGuard().bindXsecSource(params.xsecToken, ctx.accountId);
+          return prof;
         },
         { logParams: { userId: params.userId }, capability: 'read' },
       );
@@ -365,11 +372,7 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         };
       }
 
-      // 蓝军 #6：xsecToken 提取即登记来源账号，后续写操作须同源（fail-closed）
-      {
-        const owner = pool.getAccount(params.account);
-        if (owner) getCooccurrenceGuard().bindXsecSource(params.xsecToken, owner.id);
-      }
+      // 蓝军 #6：xsecToken 来源绑定已在上面的提取回调（ctx.accountId）内完成（fail-closed）
 
       if (!r.result) {
         return {
@@ -393,7 +396,12 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
       const multiParams: MultiAccountParams = { account: params.account };
 
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'list_feeds', async (ctx) => {
-        return await ctx.client.listFeeds();
+        const feeds = await ctx.client.listFeeds();
+        // 蓝军 #6 / R2-1：feed 中每个 xsecToken 绑定到实际提取账号（fail-closed）
+        for (const it of feeds as any[]) {
+          if (it?.xsecToken) getCooccurrenceGuard().bindXsecSource(it.xsecToken, ctx.accountId);
+        }
+        return feeds;
       }, { capability: 'read' });
 
       const r = results[0];

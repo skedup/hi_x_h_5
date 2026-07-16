@@ -164,6 +164,28 @@ describe('C2.2 xsecToken 绑定', () => {
   });
 });
 
+describe('R2-9 失败精确回滚预占', () => {
+  it('执行失败时回滚本次新占用的去重键与 token，避免永久锁死', async () => {
+    const g = new CooccurrenceGuard(
+      makeCfg({ quota: { enabled: true, perAccountHourly: 99, perAccountDaily: 99, cooldownMsAfterAction: 0, consecutiveFailuresToTrip: 99, captchaErrorPatterns: [] } }),
+    );
+    const b1 = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'k', xsecToken: 't' });
+    expect(b1.allow).toBe(true);
+    expect(b1.reservation?.dedupKey).toBe('k');
+    expect(b1.reservation?.xsecToken).toBe('t');
+    // 执行失败 → 回滚本次新占用
+    await g.afterAction({ accountId: A, action: 'comment', success: false, dedupKey: 'k', xsecToken: 't', reservation: b1.reservation });
+    // 回滚后 B 可占用同一 dedupKey/token（非永久锁死）
+    expect((await g.beforeAction({ accountId: B, action: 'comment', dedupKey: 'k', xsecToken: 't' })).allow).toBe(true);
+  });
+  it('执行成功不回滚占用（内容已落库，去重应保持）', async () => {
+    const g = new CooccurrenceGuard(makeCfg());
+    const b1 = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'k2' });
+    await g.afterAction({ accountId: A, action: 'comment', success: true, dedupKey: 'k2', reservation: b1.reservation });
+    expect((await g.beforeAction({ accountId: B, action: 'comment', dedupKey: 'k2' })).allow).toBe(false);
+  });
+});
+
 describe('reset', () => {
   it('重置后状态清空', async () => {
     const g = new CooccurrenceGuard(makeCfg());

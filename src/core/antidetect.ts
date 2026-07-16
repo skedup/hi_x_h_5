@@ -42,6 +42,26 @@ export interface BeforeActionInput {
 }
 
 /**
+ * beforeAction 新占用的资源（仅记录本次调用「新写入」的条目，用于失败/取消时精确回滚）。
+ * 已存在（非本次占用）的条目不在此列，回滚时不会误删他人/既有的绑定（R2-9）。
+ */
+export interface PolicyReservation {
+  /** 本次新占用的跨账号去重键 */
+  dedupKey?: string;
+  /** 本次新绑定的 xsecToken */
+  xsecToken?: string;
+}
+
+/**
+ * 动作前核查返回：allow=false 携带 skip 原因；reservation 为本次新占用的资源（R2-9）。
+ */
+export interface BeforeActionResult {
+  allow: boolean;
+  reason?: string;
+  reservation?: PolicyReservation;
+}
+
+/**
  * 动作后回填入参。
  */
 export interface AfterActionInput {
@@ -52,6 +72,8 @@ export interface AfterActionInput {
   result?: any;
   dedupKey?: string;
   xsecToken?: string;
+  /** beforeAction 返回的本次新占用资源；失败/取消时精确回滚（R2-9） */
+  reservation?: PolicyReservation;
 }
 
 /**
@@ -113,7 +135,7 @@ export class CooccurrenceGuard {
    * 仅对 write 能力的动作调用（read/control 在调用方已短路，见 #3）。
    * @returns allow=false 时携带 reason（skip 原因），调用方应跳过该账号动作。
    */
-  async beforeAction(input: BeforeActionInput): Promise<{ allow: boolean; reason?: string }> {
+  async beforeAction(input: BeforeActionInput): Promise<BeforeActionResult> {
     return this.policyMutex.run(async () => {
       const q = this.cfg.quota;
       const d = this.cfg.dedup;
@@ -159,6 +181,9 @@ export class CooccurrenceGuard {
       }
 
       // —— 原子预占（检查通过即占用，避免并发双计/越限）——
+      // R2-9：仅记录「本次新占用」的资源，供失败/取消时精确回滚（不回滚既有/他人绑定）。
+      let reservedDedup: string | undefined;
+      let reservedToken: string | undefined;
       if (q.enabled) {
         this.recordCount(this.hourly, input.accountId, q.perAccountHourly, 3_600_000);
         this.recordCount(this.daily, input.accountId, q.perAccountDaily, 86_400_000);
@@ -166,12 +191,14 @@ export class CooccurrenceGuard {
       }
       if (d.enabled && input.dedupKey && !this.dedupSeen.has(input.dedupKey)) {
         this.dedupSeen.set(input.dedupKey, input.accountId);
+        reservedDedup = input.dedupKey;
       }
       if (this.cfg.xsecTokenBinding.enabled && input.xsecToken && !this.tokenBindings.has(input.xsecToken)) {
         this.tokenBindings.set(input.xsecToken, input.accountId);
+        reservedToken = input.xsecToken;
       }
 
-      return { allow: true };
+      return { allow: true, reservation: { dedupKey: reservedDedup, xsecToken: reservedToken } };
     });
   }
 
@@ -184,6 +211,17 @@ export class CooccurrenceGuard {
   async afterAction(input: AfterActionInput): Promise<{ trippedNow: boolean }> {
     const q = this.cfg.quota;
     if (!q.enabled) return { trippedNow: false };
+
+    // R2-9：执行失败（或取消）时精确回滚本次新占用的去重/Token 预占，
+    // 仅在条目仍归属于本账号时回滚，避免误删他人/既有的绑定。
+    if (!input.success && input.reservation) {
+      if (input.reservation.dedupKey && this.dedupSeen.get(input.reservation.dedupKey) === input.accountId) {
+        this.dedupSeen.delete(input.reservation.dedupKey);
+      }
+      if (input.reservation.xsecToken && this.tokenBindings.get(input.reservation.xsecToken) === input.accountId) {
+        this.tokenBindings.delete(input.reservation.xsecToken);
+      }
+    }
 
     // 业务失败判定：执行失败 / 验证码 / 平台风控（即便 HTTP 200）
     const captcha =
@@ -286,13 +324,13 @@ export class CooccurrenceGuard {
   }
 
   /**
-   * 平台级业务失败判定（蓝军 #5）：即便 HTTP 执行成功、outcome.success=true，
-   * 只要返回体表明验证码/风控/频率限制，也应触发熔断。
+   * 平台级硬风控判定（蓝军 #5 / R2-10）：仅当返回体明确表明验证码/风控/频率限制时才算「硬风险」，
+   * 触发即时熔断。普通的「业务失败」（如 success:false 但无风控信号）不再算硬风险，
+   * 改为按连续失败阈值累计（见 afterAction 的 consecutiveFailuresToTrip），避免首次即熔断。
    */
   private isBusinessFailure(result: any): boolean {
     if (!result || typeof result !== 'object') return false;
     if (result.needVerify) return true;
-    if (typeof result.success === 'boolean' && result.success === false) return true;
     if (typeof result.status === 'number' && (result.status === 429 || result.status === 403)) return true;
     return false;
   }

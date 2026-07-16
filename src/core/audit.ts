@@ -123,14 +123,17 @@ export function evaluateAuthorization(input: AuthorizationInput): AuthDecision {
     bearerTokenReadonly !== bearerToken
   );
 
-  if (readonlyScope) {
-    const cap = tool ? TOOL_CAPABILITIES[tool] : undefined;
+  if (readonlyScope && tool !== undefined) {
+    // 仅对真实工具调用（tools/call）做只读分级；MCP 协议方法（initialize/list/ping/
+    // notifications/*）本身不带工具名（tool=undefined），不受 readonly scope 约束，
+    // 否则 readonly token 连初始化连接都会被 403 拒绝（R2-5）。
+    const cap = TOOL_CAPABILITIES[tool];
     if (cap === 'write' || cap === undefined) {
       return {
         ok: false,
         httpStatus: 403,
         code: -32000,
-        message: `Forbidden: read-only token cannot invoke "${tool ?? 'unknown'}"`,
+        message: `Forbidden: read-only token cannot invoke "${tool}"`,
       };
     }
   }

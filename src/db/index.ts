@@ -164,6 +164,11 @@ export class XhsDatabase {
    * SQLite 不支持 IF NOT EXISTS，所以需要捕获 "duplicate column name" 错误。
    */
   private migrateAccounts(): void {
+    // R2-7：旧库 accounts 表的 CHECK 约束可能不含 'migration_required'，
+    // 导致 legacyProfilesRequireMigration 的 UPDATE 触发 CHECK 失败被吞、旧账号仍 active（fail-open）。
+    // 先重建表应用新 CHECK，再迁移 profile_id 列。
+    this.rebuildAccountsForMigration();
+
     const migrations = [
       'ALTER TABLE accounts ADD COLUMN profile_id TEXT',
     ];
@@ -177,6 +182,38 @@ export class XhsDatabase {
         }
       }
     }
+  }
+
+  /**
+   * R2-7：若 accounts 表 CHECK 约束不含 'migration_required'（升级前的旧库），
+   * 在事务内重建该表以应用新约束（已含则跳过）。重建仅复制既有列，不丢数据。
+   */
+  private rebuildAccountsForMigration(): void {
+    const row = this.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'")
+      .get() as { sql?: string } | undefined;
+    if (!row?.sql || row.sql.includes('migration_required')) return;
+
+    this.db.exec(`
+      PRAGMA foreign_keys=OFF;
+      CREATE TABLE accounts_new (
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        proxy TEXT,
+        profile_id TEXT,
+        state JSON,
+        status TEXT DEFAULT 'active' CHECK(status IN ('active','suspended','banned','migration_required')),
+        last_login_at DATETIME,
+        last_active_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT INTO accounts_new (id, name, proxy, profile_id, state, status, last_login_at, last_active_at, created_at, updated_at)
+        SELECT id, name, proxy, profile_id, state, status, last_login_at, last_active_at, created_at, updated_at FROM accounts;
+      DROP TABLE accounts;
+      ALTER TABLE accounts_new RENAME TO accounts;
+      PRAGMA foreign_keys=ON;
+    `);
   }
 
   /**
