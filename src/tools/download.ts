@@ -67,33 +67,56 @@ export const downloadTools: Tool[] = [
 ];
 
 /**
+ * 解析 URL（失败返回 null，避免崩溃）。
+ */
+function tryParseUrl(u: string): URL | null {
+  try {
+    return new URL(u);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 判断 URL 是否同源（小红书主域）。用于推导一致的 Sec-Fetch-Site（蓝军 #8）。
+ */
+function isXhsSameOrigin(u: URL): boolean {
+  return u.hostname === 'xiaohongshu.com' || u.hostname.endsWith('.xiaohongshu.com');
+}
+
+/**
  * B2（04 §6）下载出口统一：账号相关下载复用同一浏览器会话的 APIRequestContext，
- * 自动携带该账号的 Cookie 与代理出口，并补齐 Referer/Sec-Fetch 头，使下载请求与
- * 页面请求在 egress IP / Cookie / 会话头上一致，消除 Node fetch 直连的无头特征。
+ * 自动携带该账号的 Cookie 与代理出口，并补齐与最终 URL 一致的 Referer/Sec-Fetch 头，
+ * 使下载请求与页面请求在 egress IP / Cookie / 会话头上一致，消除 Node fetch 直连的无头特征。
  *
  * 提供了 apiRequest 时走它；否则回退到普通 http/https 直连（保留无账号会话时的原行为）。
  *
- * @param url - Source URL
- * @param destPath - Destination file path
+ * @param url - 源 URL
+ * @param destPath - 目标文件路径
  * @param apiRequest - 账号浏览器上下文的 APIRequestContext（可能为 null）
- * @param headers - 额外请求头（覆盖默认 Sec-Fetch 等）
- * @returns Object containing file size
+ * @param options.resourceType - 资源类型，决定 Sec-Fetch-Dest（蓝军 #8：视频不能自称 image）
+ * @param options.headers - 额外请求头（覆盖默认 Sec-Fetch 等）
  */
-async function downloadFile(
+export async function downloadFile(
   url: string,
   destPath: string,
   apiRequest?: APIRequestContext | null,
-  headers: Record<string, string> = {},
+  options: { resourceType?: 'image' | 'video'; headers?: Record<string, string> } = {},
 ): Promise<{ size: number }> {
+  const { resourceType = 'image', headers = {} } = options;
   await fs.ensureDir(path.dirname(destPath));
 
   if (apiRequest) {
+    // 按最终 URL 推导一致的 Fetch Metadata（蓝军 #8：跨站 CDN 不能自称 same-origin，视频不能自称 image）
+    const parsed = tryParseUrl(url);
+    const site = parsed && isXhsSameOrigin(parsed) ? 'same-origin' : 'cross-site';
+    const dest = resourceType === 'video' ? 'video' : 'image';
     const resp = await apiRequest.get(url, {
       headers: {
         Referer: 'https://www.xiaohongshu.com/',
-        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Site': site,
         'Sec-Fetch-Mode': 'no-cors',
-        'Sec-Fetch-Dest': 'image',
+        'Sec-Fetch-Dest': dest,
         ...headers,
       },
     });
@@ -178,16 +201,30 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
       let apiRequest: APIRequestContext | null = null;
       const multiParams: MultiAccountParams = { account: params.account };
 
-      // First get the note details
+      // 先取笔记详情（触发浏览器 context 初始化），再读取 request（蓝军 #9 冷启动修复）
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'get_note_for_download', async (ctx) => {
+        const note = await ctx.client.getNote(params.noteId, params.xsecToken);
         apiRequest = ctx.client.request;
-        return await ctx.client.getNote(params.noteId, params.xsecToken);
+        return note;
       });
 
       const r = results[0];
       if (!r.success || !r.result) {
         return {
           content: [{ type: 'text', text: `Failed to get note: ${r.error || 'Note not found'}` }],
+          isError: true,
+        };
+      }
+
+      // 蓝军 #9 冷启动出口保护：指定账号但浏览器 context 仍未初始化时，禁止回退直连（fail-closed）
+      if (params.account && !apiRequest) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Account egress unavailable: browser context not initialized for account "${params.account}". Refusing direct download to protect egress consistency.`,
+            },
+          ],
           isError: true,
         };
       }
@@ -216,7 +253,7 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
         const destPath = path.join(downloadDir, filename);
 
         try {
-          const result = await downloadFile(img.url, destPath, apiRequest);
+          const result = await downloadFile(img.url, destPath, apiRequest, { resourceType: 'image' });
 
           // Record in database
           db.downloads.record({
@@ -274,16 +311,30 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
       let apiRequest: APIRequestContext | null = null;
       const multiParams: MultiAccountParams = { account: params.account };
 
-      // Get the note details
+      // 先取笔记详情（触发浏览器 context 初始化），再读取 request（蓝军 #9 冷启动修复）
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'get_note_for_download', async (ctx) => {
+        const note = await ctx.client.getNote(params.noteId, params.xsecToken);
         apiRequest = ctx.client.request;
-        return await ctx.client.getNote(params.noteId, params.xsecToken);
+        return note;
       });
 
       const r = results[0];
       if (!r.success || !r.result) {
         return {
           content: [{ type: 'text', text: `Failed to get note: ${r.error || 'Note not found'}` }],
+          isError: true,
+        };
+      }
+
+      // 蓝军 #9 冷启动出口保护：指定账号但浏览器 context 仍未初始化时，禁止回退直连（fail-closed）
+      if (params.account && !apiRequest) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Account egress unavailable: browser context not initialized for account "${params.account}". Refusing direct download to protect egress consistency.`,
+            },
+          ],
           isError: true,
         };
       }
@@ -304,7 +355,7 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
       const destPath = path.join(downloadDir, filename);
 
       try {
-        const result = await downloadFile(note.video.url, destPath, apiRequest);
+        const result = await downloadFile(note.video.url, destPath, apiRequest, { resourceType: 'video' });
 
         // Record in database
         db.downloads.record({

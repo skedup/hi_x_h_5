@@ -7,37 +7,70 @@
  */
 
 /**
- * 写工具集合（P2-2 读写能力分级）。
- * 这些工具会产生平台侧副作用 / 账号配置变更 / 本地文件写入，持只读 bearer token 时一律拒绝。
- * 与各 tools 模块的工具定义保持同步；新增写工具须在此登记，否则默认按读处理（更宽松）。
+ * 工具能力登记（P1 审计 fail-open 修复 / 蓝军 #11）。
+ * 每个注册到 MCP server 的工具都必须在此显式声明能力：
+ * - 'read'    无平台副作用的只读工具（含本地只读查询）
+ * - 'control' 本机会话控制类（如停止浏览），非平台写，只读 token 亦可使用
+ * - 'write'   产生平台侧副作用 / 本地文件写入 / 账号配置变更的工具
+ * 未知或未分类工具对只读 token 一律 fail-closed（拒绝）。
+ * server.ts 启动时断言 allTools 全部登记，缺失即启动失败。
  */
-export const WRITE_TOOL_NAMES = new Set<string>([
-  // 互动（点赞/收藏/评论/回复/删 cookie）
-  'xhs_like_feed',
-  'xhs_favorite_feed',
-  'xhs_post_comment',
-  'xhs_reply_comment',
-  'xhs_like_comment',
-  'xhs_delete_cookies',
-  // 发布
-  'xhs_publish_video',
-  // 草稿（创建/更新/删除/发布）
-  'xhs_create_draft',
-  'xhs_update_draft',
-  'xhs_delete_draft',
-  'xhs_publish_draft',
-  // 账号配置变更
-  'xhs_add_account',
-  'xhs_submit_verification',
-  'xhs_remove_account',
-  'xhs_set_account_config',
-  'xhs_set_account_prompt',
-  // 下载（本地文件写入 + 外网拉取）
-  'xhs_download_images',
-  'xhs_download_video',
-  // 自动浏览（驱动页面、可能评论）
-  'xhs_explore',
-]);
+export type ToolCapability = 'read' | 'write' | 'control';
+
+export const TOOL_CAPABILITIES: Record<string, ToolCapability> = {
+  // —— 读（无平台副作用）——
+  xhs_check_auth_status: 'read',
+  xhs_get_notifications: 'read',
+  xhs_search: 'read',
+  xhs_get_note: 'read',
+  xhs_user_profile: 'read',
+  xhs_list_feeds: 'read',
+  xhs_get_account_stats: 'read',
+  xhs_get_operation_logs: 'read',
+  xhs_get_my_notes: 'read',
+  xhs_query_my_notes: 'read',
+  xhs_list_accounts: 'read',
+  xhs_get_account_prompt: 'read',
+  xhs_list_drafts: 'read',
+  xhs_get_draft: 'read',
+
+  // —— 控制（本机会话控制，非平台写；只读 token 亦可用）——
+  xhs_stop_explore: 'control',
+
+  // —— 写（平台副作用 / 本地文件写入 / 账号配置变更）——
+  xhs_like_feed: 'write',
+  xhs_favorite_feed: 'write',
+  xhs_post_comment: 'write',
+  xhs_reply_comment: 'write',
+  xhs_like_comment: 'write',
+  xhs_delete_cookies: 'write',
+  xhs_download_images: 'write',
+  xhs_download_video: 'write',
+  xhs_publish_video: 'write',
+  xhs_add_account: 'write',
+  xhs_submit_verification: 'write',
+  xhs_remove_account: 'write',
+  xhs_set_account_config: 'write',
+  xhs_set_account_prompt: 'write',
+  xhs_explore: 'write',
+  xhs_create_draft: 'write',
+  xhs_update_draft: 'write',
+  xhs_delete_draft: 'write',
+  xhs_publish_draft: 'write',
+  // 登录态检查可能在登录成功时创建/更新账号、profile 与 operation log（蓝军 P1）
+  xhs_check_login_session: 'write',
+};
+
+/** 写工具集合（由能力登记表派生，保持与 tools 模块同步）。 */
+export const WRITE_TOOL_NAMES = new Set<string>(
+  Object.entries(TOOL_CAPABILITIES)
+    .filter(([, cap]) => cap === 'write')
+    .map(([name]) => name),
+);
+
+export function isWriteTool(tool: string): boolean {
+  return TOOL_CAPABILITIES[tool] === 'write';
+}
 
 export interface AuthorizationInput {
   /** 请求携带的 bearer token（已剥离 "Bearer " 前缀，可能为空） */
@@ -81,7 +114,8 @@ export function evaluateAuthorization(input: AuthorizationInput): AuthDecision {
     }
   }
 
-  // 2) 只读 scope 分级：持 readonly token（且不同于全量 token）时拒绝任何写工具
+  // 2) 只读 scope 分级：持 readonly token（且不同于全量 token）时，仅允许 read/control 能力工具。
+  //    写工具与“未知/未分类”工具一律 fail-closed（蓝军 P1：避免漏列变更工具被只读 token 直接调用）。
   const readonlyScope = !!(
     bearerTokenReadonly &&
     bearerToken &&
@@ -89,8 +123,16 @@ export function evaluateAuthorization(input: AuthorizationInput): AuthDecision {
     bearerTokenReadonly !== bearerToken
   );
 
-  if (tool && readonlyScope && WRITE_TOOL_NAMES.has(tool)) {
-    return { ok: false, httpStatus: 403, code: -32000, message: `Forbidden: read-only token cannot invoke write tool "${tool}"` };
+  if (readonlyScope) {
+    const cap = tool ? TOOL_CAPABILITIES[tool] : undefined;
+    if (cap === 'write' || cap === undefined) {
+      return {
+        ok: false,
+        httpStatus: 403,
+        code: -32000,
+        message: `Forbidden: read-only token cannot invoke "${tool ?? 'unknown'}"`,
+      };
+    }
   }
 
   // 3) 批量写确认：多账号写（accounts='all' 或数组长度>1）需 X-Xhs-Write-Confirm 头
@@ -107,5 +149,33 @@ export function evaluateAuthorization(input: AuthorizationInput): AuthDecision {
     }
   }
 
+  return { ok: true };
+}
+
+/**
+ * 对一组 JSON-RPC 消息（含 batch 数组）逐条鉴权（蓝军 #10：JSON-RPC batch 绕过只读/批量确认）。
+ * 单条消息与 evaluateAuthorization 同等严格；任一未授权即拒绝整批。
+ * @param messages 单条消息对象数组（调用方负责把 body 归一化为数组）
+ */
+export function authorizeMessages(input: {
+  presentedToken: string;
+  confirmHeader: string;
+  bearerToken: string;
+  bearerTokenReadonly: string;
+  bulkConfirmToken: string;
+  messages: Array<{ method?: string; params?: { name?: string; arguments?: Record<string, any> } }>;
+}): AuthDecision {
+  for (const msg of input.messages) {
+    const decision = evaluateAuthorization({
+      presentedToken: input.presentedToken,
+      tool: msg.method === 'tools/call' ? msg.params?.name : undefined,
+      args: msg.method === 'tools/call' ? msg.params?.arguments : undefined,
+      bearerToken: input.bearerToken,
+      bearerTokenReadonly: input.bearerTokenReadonly,
+      bulkConfirmToken: input.bulkConfirmToken,
+      confirmHeader: input.confirmHeader,
+    });
+    if (!decision.ok) return decision;
+  }
   return { ok: true };
 }

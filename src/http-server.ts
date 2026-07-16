@@ -15,7 +15,7 @@ import { getLoginSessionManager } from './core/login-session.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { config } from './core/config.js';
-import { evaluateAuthorization } from './core/audit.js';
+import { evaluateAuthorization, authorizeMessages } from './core/audit.js';
 import { startLivenessMonitor } from './core/liveness.js';
 
 /**
@@ -34,14 +34,15 @@ function authorizeMcp(c: Context, body: any): Response | null {
   const presented = m ? m[1].trim() : '';
   const confirmHeader = c.req.header('x-xhs-write-confirm') || '';
 
-  const decision = evaluateAuthorization({
+  // 蓝军 #10：body 可能是 batch 数组，逐条鉴权，任一未授权即拒绝整批
+  const messages = Array.isArray(body) ? body : [body];
+  const decision = authorizeMessages({
     presentedToken: presented,
-    tool: body?.method === 'tools/call' ? (body.params?.name as string | undefined) : undefined,
-    args: body?.method === 'tools/call' ? (body.params?.arguments as Record<string, any> | undefined) : undefined,
+    confirmHeader,
     bearerToken,
     bearerTokenReadonly,
     bulkConfirmToken,
-    confirmHeader,
+    messages,
   });
 
   if (!decision.ok) {

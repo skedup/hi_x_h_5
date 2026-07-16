@@ -21,6 +21,7 @@ import { creatorTools, handleCreatorTools } from './tools/creator.js';
 import { notificationTools, handleNotificationTools } from './tools/notification.js';
 import { exploreTools, handleExploreTools } from './tools/explore.js';
 import { recordHumanActivity } from './core/liveness.js';
+import { TOOL_CAPABILITIES } from './core/audit.js';
 
 // 写工具集合（P2-2 读写能力分级）定义于 core/audit.ts，此处再导出以兼容既有引用
 export { WRITE_TOOL_NAMES } from './core/audit.js';
@@ -60,6 +61,15 @@ export function createMcpServer(pool: AccountPool, db: XhsDatabase): Server {
     ...notificationTools,
     ...exploreTools,
   ];
+
+  // 蓝军 P1 #11：所有注册工具必须显式声明能力，缺失（未知/未分类）即启动失败，
+  // 以 fail-closed 兜底，避免新增工具默认被只读 token 直接调用。
+  const unclassified = allTools.filter((t) => !(t.name in TOOL_CAPABILITIES));
+  if (unclassified.length > 0) {
+    throw new Error(
+      `Unclassified tools (missing in core/audit.ts TOOL_CAPABILITIES): ${unclassified.map((t) => t.name).join(', ')}`,
+    );
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
