@@ -56,6 +56,47 @@ export async function rateLimitedSleep(base: number, ratio = 0.4): Promise<void>
 }
 
 /**
+ * 按字素簇（grapheme cluster）裁剪长度，避免 UTF-16 code unit 截断破坏
+ * emoji / 代理对 / 组合字符（第二轮 P1：String.slice 会留下孤立高代理 0xD83D）。
+ * 优先用 Intl.Segmenter(grapheme)；不可用时回退 Array.from（按码点，对代理对仍安全）。
+ */
+export function truncateGrapheme(str: string, max: number): string {
+  if (max <= 0) return '';
+  if (str.length <= max) return str; // 每个字素 ≥1 code unit ⇒ 字素数 ≤ code unit 数
+  const Seg = (Intl as unknown as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
+  if (Seg) {
+    const seg = new Seg('zh', { granularity: 'grapheme' });
+    const out: string[] = [];
+    let count = 0;
+    for (const { segment } of seg.segment(str)) {
+      if (count >= max) break;
+      out.push(segment);
+      count += 1;
+    }
+    return out.join('');
+  }
+  return Array.from(str).slice(0, max).join('');
+}
+
+/**
+ * 判定字段最终值是否与期望一致（发布前阻断残缺/拼接正文，第二轮 P0）。
+ * - input：精确相等。
+ * - contenteditable：归一化（折叠空白、去首尾）后相等，容忍 <br>/格式噪声。
+ * 返回 null 表示一致；返回字符串表示不一致原因（供阻断发布 + 日志）。
+ */
+export function fieldValueMismatch(
+  expected: string,
+  actual: string,
+  isContentEditable: boolean,
+): string | null {
+  if (isContentEditable) {
+    const norm = (s: string) => s.replace(/\s+/g, '').trim();
+    return norm(actual) === norm(expected) ? null : 'contenteditable value mismatch after typing';
+  }
+  return actual === expected ? null : 'input value mismatch after typing';
+}
+
+/**
  * Generate a webId cookie value to bypass slider verification.
  * Format: 32 hex characters (e.g., "1234567890abcdef1234567890abcdef")
  * @returns Random webId string
@@ -83,15 +124,32 @@ export interface TypeLikeHumanOptions {
   pauseMin?: number;
   pauseMax?: number;
   /**
-   * 每输入 reviseEvery 个字符，随机回删 1~reviseMax 个字符并重输，
-   * 制造"删除/修订"信号（蓝军报告 04 A2 DoD）。走可信 Backspace 通道，
-   * 不引入合成事件（否则会重引 isTrusted=false）。0 = 关闭。
+   * 随机回删的最小间距（码点数）。与 reviseGapMax 一起随机化修订发生位置，
+   * 制造"删除/修订"信号且避免固定周期形成机器特征（第二轮 P1）。
+   * 0 或省略 = 关闭修订。
    */
-  reviseEvery?: number;
+  reviseGapMin?: number;
+  /**
+   * 随机回删的最大间距（码点数）。每次修订机会后重新在
+   * [reviseGapMin, reviseGapMax] 间取随机间距，使轨迹非周期。
+   */
+  reviseGapMax?: number;
+  /**
+   * 单次修订回删并重输的码点数（默认 1）。
+   */
   reviseMax?: number;
   /**
-   * 软上限：累计输入耗时超过该值（ms）即停止键入剩余内容。
-   * 防止长文（1000 字≈149s）无限占用账户锁造成队头阻塞。默认 60000。
+   * 每个修订机会触发的概率门控（默认 0.85），进一步打散节奏。
+   */
+  reviseChance?: number;
+  /**
+   * 单次输入允许的最大修订次数（硬上限，防聚类 + 防过长）。
+   * 0 或省略 = 自动上限 min(ceil(码点数 * 0.08), 64)。
+   */
+  maxRevisions?: number;
+  /**
+   * 软上限：累计输入耗时超过该值（ms）即抛 AbortError 中断（不再静默返回成功），
+   * 由上层 finally 释放账户锁并阻断发布。防止长文（1000 字≈149s）无限占用锁。默认 60000。
    */
   maxDurationMs?: number;
   /**
@@ -122,28 +180,42 @@ export async function typeLikeHuman(
   const pauseChance = options?.pauseChance ?? 0.05;
   const pauseMin = options?.pauseMin ?? 350;
   const pauseMax = options?.pauseMax ?? 1300;
-  const reviseEvery = options?.reviseEvery ?? 0;
+  const reviseGapMin = options?.reviseGapMin ?? 0;
+  const reviseGapMax = options?.reviseGapMax ?? 0;
   const reviseMax = options?.reviseMax ?? 1;
+  const reviseChance = options?.reviseChance ?? 0.85;
   const maxDurationMs = options?.maxDurationMs ?? 60000;
   const signal = options?.signal;
 
-  const start = Date.now();
   const chars = Array.from(text); // 按码点切分，正确处理代理对/emoji
+  // 修订硬上限：0/省略 → 自动 min(ceil(码点数*0.08), 64)
+  const maxRevisions =
+    options?.maxRevisions && options.maxRevisions > 0
+      ? options.maxRevisions
+      : Math.min(Math.ceil(chars.length * 0.08), 64);
+
+  const start = Date.now();
   let i = 0;
+  let revisions = 0;
+  // 下一个修订机会发生的位置（随机间距，非固定周期）
+  let nextReviseAt =
+    reviseGapMin > 0
+      ? i + Math.floor(randomBetween(reviseGapMin, reviseGapMax + 1))
+      : Number.MAX_SAFE_INTEGER;
   while (i < chars.length) {
     if (signal?.aborted) {
       throw new DOMException('typeLikeHuman aborted', 'AbortError');
     }
     if (Date.now() - start > maxDurationMs) {
       // 软上限命中：停止键入，剩余内容不输入（避免长文阻塞账户锁）
-      break;
+      throw new DOMException('typeLikeHuman timeout: maxDurationMs exceeded, input incomplete', 'AbortError');
     }
     await page.keyboard.type(chars[i]);
     await sleep(randomBetween(minDelay, maxDelay));
     i += 1;
 
     // 人类修订：回删若干字符后重输，制造删除/修订信号（可信事件，不引入 isTrusted=false）
-    if (reviseEvery > 0 && i % reviseEvery === 0) {
+    if (i >= nextReviseAt && revisions < maxRevisions && Math.random() < reviseChance) {
       const back = Math.min(i, reviseMax);
       const redo = chars.slice(i - back, i);
       for (let k = 0; k < back; k++) {
@@ -154,6 +226,9 @@ export async function typeLikeHuman(
         await page.keyboard.type(ch);
         await sleep(randomBetween(minDelay, maxDelay));
       }
+      revisions += 1;
+      // 重新随机下一次修订间距
+      nextReviseAt = i + Math.floor(randomBetween(reviseGapMin, reviseGapMax + 1));
     }
 
     if (Math.random() < pauseChance) {
