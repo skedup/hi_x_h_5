@@ -144,6 +144,24 @@ describe('C2.2 xsecToken 绑定', () => {
     expect(r.allow).toBe(false);
     expect(r.reason).toBe('xsec_token_bound_to_other_account');
   });
+  it('蓝军 #6 来源绑定：A 提取的 token 被 B 写操作使用时 fail-closed 拦截', async () => {
+    const g = new CooccurrenceGuard(makeCfg({ xsecTokenBinding: { enabled: true, mode: 'block' } }));
+    g.bindXsecSource('tok', A);
+    // A 同源写放行
+    expect((await g.beforeAction({ accountId: A, action: 'comment', xsecToken: 'tok' })).allow).toBe(true);
+    // B 跨账号使用被拦截（而非「谁先写归谁」）
+    const r = await g.beforeAction({ accountId: B, action: 'comment', xsecToken: 'tok' });
+    expect(r.allow).toBe(false);
+    expect(r.reason).toBe('xsec_token_bound_to_other_account');
+  });
+  it('蓝军 #6 首个提取者占用来源，后续提取不抢占', async () => {
+    const g = new CooccurrenceGuard(makeCfg({ xsecTokenBinding: { enabled: true, mode: 'block' } }));
+    g.bindXsecSource('tok', A);
+    g.bindXsecSource('tok', B); // B 抢占无效
+    expect(g.isTripped(B)).toBe(false);
+    expect((await g.beforeAction({ accountId: B, action: 'comment', xsecToken: 'tok' })).allow).toBe(false);
+    expect((await g.beforeAction({ accountId: A, action: 'comment', xsecToken: 'tok' })).allow).toBe(true);
+  });
 });
 
 describe('reset', () => {

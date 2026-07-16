@@ -20,7 +20,6 @@ import { draftTools, handleDraftTools } from './tools/draft.js';
 import { creatorTools, handleCreatorTools } from './tools/creator.js';
 import { notificationTools, handleNotificationTools } from './tools/notification.js';
 import { exploreTools, handleExploreTools } from './tools/explore.js';
-import { recordHumanActivity } from './core/liveness.js';
 import { TOOL_CAPABILITIES } from './core/audit.js';
 
 /** 蓝军 #1：启动期一次性扫描旧账号迁移状态，避免每次建连重复扫描 */
@@ -94,8 +93,9 @@ export function createMcpServer(pool: AccountPool, db: XhsDatabase): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
-      // C3.2：每次工具调用即一次人工确认/值守活动，重置无人确认计时
-      recordHumanActivity();
+      // 蓝军 #7：普通 MCP 工具调用不得刷新「人工在场」确认，避免自动化客户端伪造值守。
+      // 人工确认须由独立、短时、本地交互鉴权的通道刷新（见 core/liveness 的 recordHumanActivity），
+      // 而非任意远程 MCP 调用。空闲超时（idleTimeoutMs）默认关闭，启用后仅由真实本地交互重置。
       const { name, arguments: args } = request.params;
 
       // Route to appropriate handler

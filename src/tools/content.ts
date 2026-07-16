@@ -10,6 +10,7 @@ import type { XhsSearchFilters } from '../xhs/types.js';
 import { AccountPool } from '../core/account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { executeWithMultipleAccounts, MultiAccountParams } from '../core/multi-account.js';
+import { getCooccurrenceGuard } from '../core/antidetect.js';
 import { understandNoteImages } from '../core/gemini.js';
 import { config } from '../core/config.js';
 
@@ -249,6 +250,12 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         };
       }
 
+      // 蓝军 #6：xsecToken 提取即登记来源账号，后续写操作须同源（fail-closed）
+      {
+        const owner = pool.getAccount(params.account);
+        if (owner) getCooccurrenceGuard().bindXsecSource(params.xsecToken, owner.id);
+      }
+
       if (!r.result) {
         return {
           content: [
@@ -356,6 +363,12 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
           content: [{ type: 'text', text: `Failed to get user profile: ${r.error}` }],
           isError: true,
         };
+      }
+
+      // 蓝军 #6：xsecToken 提取即登记来源账号，后续写操作须同源（fail-closed）
+      {
+        const owner = pool.getAccount(params.account);
+        if (owner) getCooccurrenceGuard().bindXsecSource(params.xsecToken, owner.id);
       }
 
       if (!r.result) {

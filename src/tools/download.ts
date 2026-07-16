@@ -15,6 +15,7 @@ import { AccountPool } from '../core/account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { getImageDownloadPath, getVideoDownloadPath } from '../core/paths.js';
 import { executeWithMultipleAccounts, MultiAccountParams } from '../core/multi-account.js';
+import { getCooccurrenceGuard } from '../core/antidetect.js';
 
 /**
  * Download tool definitions for MCP.
@@ -216,6 +217,12 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
         };
       }
 
+      // 蓝军 #6：xsecToken 在「提取」即登记来源账号，后续写操作须同源（fail-closed）
+      {
+        const owner = pool.getAccount(params.account);
+        if (owner) getCooccurrenceGuard().bindXsecSource(params.xsecToken, owner.id);
+      }
+
       // 蓝军 #9 冷启动出口保护：指定账号但浏览器 context 仍未初始化时，禁止回退直连（fail-closed）
       if (params.account && !apiRequest) {
         return {
@@ -324,6 +331,12 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
           content: [{ type: 'text', text: `Failed to get note: ${r.error || 'Note not found'}` }],
           isError: true,
         };
+      }
+
+      // 蓝军 #6：xsecToken 在「提取」即登记来源账号，后续写操作须同源（fail-closed）
+      {
+        const owner = pool.getAccount(params.account);
+        if (owner) getCooccurrenceGuard().bindXsecSource(params.xsecToken, owner.id);
       }
 
       // 蓝军 #9 冷启动出口保护：指定账号但浏览器 context 仍未初始化时，禁止回退直连（fail-closed）

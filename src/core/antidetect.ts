@@ -220,6 +220,19 @@ export class CooccurrenceGuard {
   }
 
   /**
+   * C2.2 在 xsecToken「提取」（取笔记详情）时登记其来源账号，
+   * 使「谁取到的 token 归谁」，而非「谁先写归谁」（蓝军 #6）。
+   * 后续写操作的 beforeAction 会校验来源一致性：跨账号使用 fail-closed 拦截。
+   * 首个提取者占用，后续提取同 token 的不同账号不会抢占所有权。
+   */
+  bindXsecSource(xsecToken: string, accountId: string): void {
+    if (!this.cfg.xsecTokenBinding.enabled || !xsecToken) return;
+    if (!this.tokenBindings.has(xsecToken)) {
+      this.tokenBindings.set(xsecToken, accountId);
+    }
+  }
+
+  /**
    * 测试/运维用：重置进程内守卫状态。
    */
   reset(): void {
