@@ -32,6 +32,7 @@ export {
 
 // Import context and services
 import { BrowserContextManager, BrowserClientOptions } from './context.js';
+import { config } from '../../core/config.js';
 import { AuthService } from './services/auth.js';
 import { SearchService } from './services/search.js';
 import { ContentService } from './services/content.js';
@@ -109,9 +110,11 @@ export class BrowserClient {
   }
 
   /**
-   * Initialize browser with optional headless mode
+   * Initialize browser with optional headless mode.
+   * B1（05/02 P1-3）：以 config.browser.headless 为唯一默认源，
+   * 不再硬编码 headless=true，避免绕过用户配置的无头设定。
    */
-  async init(headless = true): Promise<void> {
+  async init(headless = config.browser.headless): Promise<void> {
     return this.ctx.init(headless);
   }
 
@@ -120,6 +123,15 @@ export class BrowserClient {
    */
   async close(): Promise<void> {
     return this.ctx.close();
+  }
+
+  /**
+   * 暴露浏览器上下文的 APIRequestContext（B2 下载出口统一）。
+   * 经由该上下文的请求自动携带账号 Cookie 与代理出口，与页面请求一致。
+   * 未初始化时返回 null（调用方回退到普通 http 下载）。
+   */
+  get request() {
+    return this.ctx.request;
   }
 
   /**

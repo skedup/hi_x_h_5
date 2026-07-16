@@ -5,6 +5,7 @@
  */
 
 import { chromium, Browser, BrowserContext, Page } from 'patchright';
+import type { APIRequestContext } from 'patchright';
 import { LoginUserInfo, FullUserProfile } from '../types.js';
 import { createLogger } from '../../core/logger.js';
 import { config, paths } from '../../core/config.js';
@@ -28,7 +29,9 @@ export async function launchProfileContext(
     headless,
     channel: 'chrome',
     args: BROWSER_ARGS,
-    viewport: { width: 1920, height: 1080 },
+    // B1（05 R3）：headful 时 viewport 置 null，消除 screen==viewport 的组合异常指纹；
+    // headless（自动化测试）保留固定 viewport。
+    viewport: headless ? { width: 1920, height: 1080 } : null,
     ...(proxy ? { proxy: { server: proxy } } : {}),
   });
   const browser = context.browser();
@@ -75,6 +78,15 @@ export class BrowserContextManager {
 
   constructor(options: BrowserClientOptions = {}) {
     this.options = options;
+  }
+
+  /**
+   * 浏览器上下文的 APIRequestContext（B2 下载出口统一）。
+   * 经由它的请求继承上下文的 Cookie 与代理出口，与页面请求 egress 一致。
+   * 未初始化时返回 null。
+   */
+  get request(): APIRequestContext | null {
+    return this.context?.request ?? null;
   }
 
   /**

@@ -196,4 +196,12 @@ export class XhsClient {
   async close() {
     await this.browserClient.close();
   }
+
+  /**
+   * 暴露浏览器上下文的 APIRequestContext（B2 下载出口统一）。
+   * 未初始化或不可用时返回 null。
+   */
+  get request() {
+    return this.browserClient.request;
+  }
 }

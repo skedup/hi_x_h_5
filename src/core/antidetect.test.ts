@@ -39,6 +39,10 @@ function makeCfg(overrides: any = {}) {
       idleTimeoutMs: 0,
       ...(overrides.liveness || {}),
     },
+    headlessWriteGate: {
+      enabled: true,
+      ...(overrides.headlessWriteGate || {}),
+    },
   };
 }
 

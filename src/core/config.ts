@@ -185,6 +185,11 @@ export const config = {
        */
       idleTimeoutMs: parseInteger(process.env.XHS_MCP_AD_LIVENESS_IDLE, 0),
     },
+    /** B1 headless 门禁（05/02）：写操作拒绝 headless，强制 headful 以保留设备在场语义 */
+    headlessWriteGate: {
+      /** 总开关；开启后 config.browser.headless=true 时所有写操作被拒绝（默认开） */
+      enabled: parseBoolean(process.env.XHS_MCP_AD_HEADLESS_WRITE_GATE, true),
+    },
   },
 
   /**

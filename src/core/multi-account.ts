@@ -12,6 +12,7 @@ import { createLogger } from './logger.js';
 import { sleep } from '../xhs/utils/index.js';
 import { getCooccurrenceGuard } from './antidetect.js';
 import { isWriteAllowed } from './liveness.js';
+import { config } from './config.js';
 
 const log = createLogger('multi-account');
 
@@ -103,6 +104,17 @@ export async function executeWithAccount<T>(
       success: false,
       skipped: true,
       error: `liveness_paused:${live.reason ?? 'unknown'}`,
+      durationMs: 0,
+    };
+  }
+
+  // B1 headless 门禁：写操作拒绝 headless（强制 headful 以保留设备在场语义）
+  if (config.antiDetect.headlessWriteGate.enabled && config.browser.headless) {
+    return {
+      account: account?.name ?? accountIdOrName,
+      success: false,
+      skipped: true,
+      error: 'headless_write_blocked',
       durationMs: 0,
     };
   }

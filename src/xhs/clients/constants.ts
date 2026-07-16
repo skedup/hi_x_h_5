@@ -15,7 +15,9 @@ export const BROWSER_ARGS = [
   // 注：已移除 --disable-background-timer-throttling / --disable-backgrounding-occluded-windows
   // / --disable-renderer-backgrounding（C3.2 / 07 门禁 #2）。写操作不应依赖后台节流禁用
   // 来维持无人值守运行；息屏自保由 core/liveness.ts 的显示器 asleep 门禁处理。
-  '--disable-notifications', // 禁用通知弹窗
+  // 注：已移除 --disable-notifications（B1 / 05 §7.4）——该参数使 Notification 变为
+  // undefined，制造可观测异常；平台/页面依赖 Notification 时反而暴露自动化。
+  // （如确需静音通知，应在页面层用权限策略而非该启动参数。）
   '--disable-features=ExternalProtocolDialog', // 禁用"访问其他应用"对话框
   '--disable-session-crashed-bubble', // 禁用"意外关闭"恢复提示
   '--hide-crash-restore-bubble', // 隐藏崩溃恢复气泡

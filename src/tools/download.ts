@@ -10,6 +10,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import https from 'https';
 import http from 'http';
+import type { APIRequestContext } from 'patchright';
 import { AccountPool } from '../core/account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { getImageDownloadPath, getVideoDownloadPath } from '../core/paths.js';
@@ -66,16 +67,45 @@ export const downloadTools: Tool[] = [
 ];
 
 /**
- * Download a file from a URL to a local path.
- * Follows redirects and handles both HTTP and HTTPS.
+ * B2（04 §6）下载出口统一：账号相关下载复用同一浏览器会话的 APIRequestContext，
+ * 自动携带该账号的 Cookie 与代理出口，并补齐 Referer/Sec-Fetch 头，使下载请求与
+ * 页面请求在 egress IP / Cookie / 会话头上一致，消除 Node fetch 直连的无头特征。
+ *
+ * 提供了 apiRequest 时走它；否则回退到普通 http/https 直连（保留无账号会话时的原行为）。
  *
  * @param url - Source URL
  * @param destPath - Destination file path
+ * @param apiRequest - 账号浏览器上下文的 APIRequestContext（可能为 null）
+ * @param headers - 额外请求头（覆盖默认 Sec-Fetch 等）
  * @returns Object containing file size
  */
-async function downloadFile(url: string, destPath: string): Promise<{ size: number }> {
+async function downloadFile(
+  url: string,
+  destPath: string,
+  apiRequest?: APIRequestContext | null,
+  headers: Record<string, string> = {},
+): Promise<{ size: number }> {
   await fs.ensureDir(path.dirname(destPath));
 
+  if (apiRequest) {
+    const resp = await apiRequest.get(url, {
+      headers: {
+        Referer: 'https://www.xiaohongshu.com/',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Mode': 'no-cors',
+        'Sec-Fetch-Dest': 'image',
+        ...headers,
+      },
+    });
+    if (!resp.ok()) {
+      throw new Error(`HTTP ${resp.status()}`);
+    }
+    const buf = Buffer.from(await resp.body());
+    await fs.writeFile(destPath, buf);
+    return { size: buf.length };
+  }
+
+  // 回退：无账号会话时走普通 http/https（保留原行为，含重定向跟随）
   return new Promise((resolve, reject) => {
     const protocol = url.startsWith('https') ? https : http;
 
@@ -145,10 +175,12 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
         })
         .parse(args);
 
+      let apiRequest: APIRequestContext | null = null;
       const multiParams: MultiAccountParams = { account: params.account };
 
       // First get the note details
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'get_note_for_download', async (ctx) => {
+        apiRequest = ctx.client.request;
         return await ctx.client.getNote(params.noteId, params.xsecToken);
       });
 
@@ -184,7 +216,7 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
         const destPath = path.join(downloadDir, filename);
 
         try {
-          const result = await downloadFile(img.url, destPath);
+          const result = await downloadFile(img.url, destPath, apiRequest);
 
           // Record in database
           db.downloads.record({
@@ -239,10 +271,12 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
         })
         .parse(args);
 
+      let apiRequest: APIRequestContext | null = null;
       const multiParams: MultiAccountParams = { account: params.account };
 
       // Get the note details
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'get_note_for_download', async (ctx) => {
+        apiRequest = ctx.client.request;
         return await ctx.client.getNote(params.noteId, params.xsecToken);
       });
 
@@ -270,7 +304,7 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
       const destPath = path.join(downloadDir, filename);
 
       try {
-        const result = await downloadFile(note.video.url, destPath);
+        const result = await downloadFile(note.video.url, destPath, apiRequest);
 
         // Record in database
         db.downloads.record({
