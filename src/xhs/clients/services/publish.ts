@@ -6,10 +6,15 @@
 
 import { Locator, Page } from 'patchright';
 import { PublishContentParams, PublishVideoParams, PublishResult } from '../../types.js';
-import { sleep, resolveImagePaths, isHttpUrl, typeLikeHuman, jitteredSleep } from '../../utils/index.js';
+import { sleep, resolveImagePaths, isHttpUrl, typeLikeHuman, jitteredSleep, type TypeLikeHumanOptions } from '../../utils/index.js';
 import { config } from '../../../core/config.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS, PUBLISH_SELECTORS, URLS } from '../constants.js';
+
+/** 平台标题长度上限（小红书标题 ≤ 20 字） */
+const PUBLISH_TITLE_MAX = 20;
+/** 平台正文长度上限（小红书正文 ≤ 1000 字） */
+const PUBLISH_CONTENT_MAX = 1000;
 
 /**
  * Publish service - handles content publishing
@@ -137,29 +142,52 @@ export class PublishService {
       await this.waitForUploadComplete(page, validPaths.length);
       await jitteredSleep(2000);
 
-      // Fill title
+      // Fill title（恢复"替换"语义 + 长度上限 + 软上限防锁阻塞）
       log.debug('Filling title...');
-      const titleInput = await page.$(PUBLISH_SELECTORS.titleInput);
-      if (titleInput) {
-        await titleInput.click();
-        await typeLikeHuman(page, params.title);
-        log.info('Title set', { title: params.title });
+      const title = (params.title ?? '').slice(0, PUBLISH_TITLE_MAX);
+      if (title.length < (params.title ?? '').length) {
+        log.warn('Title truncated to platform limit', { limit: PUBLISH_TITLE_MAX });
+      }
+      const titleInput = page.locator(PUBLISH_SELECTORS.titleInput).first();
+      if ((await titleInput.count()) > 0) {
+        await this.fillFieldLikeHuman(
+          page,
+          titleInput,
+          title,
+          { reviseEvery: 4, reviseMax: 1, maxDurationMs: 20000 },
+          false,
+        );
+        log.info('Title set', { title });
       } else {
         log.warn('Title input not found');
       }
 
-      // Fill content
+      // Fill content（恢复"替换"语义 + 长度上限 + 软上限防锁阻塞）
       log.debug('Filling content...');
-      const contentEditor = await page.$(PUBLISH_SELECTORS.contentEditor);
-      if (contentEditor) {
-        await contentEditor.click();
-        await typeLikeHuman(page, params.content);
+      const content = (params.content ?? '').slice(0, PUBLISH_CONTENT_MAX);
+      if (content.length < (params.content ?? '').length) {
+        log.warn('Content truncated to platform limit', { limit: PUBLISH_CONTENT_MAX });
+      }
+      const contentEditor = page.locator(PUBLISH_SELECTORS.contentEditor).first();
+      if ((await contentEditor.count()) > 0) {
+        await this.fillFieldLikeHuman(
+          page,
+          contentEditor,
+          content,
+          { reviseEvery: 6, reviseMax: 1, maxDurationMs: 60000 },
+          true,
+        );
         log.info('Content set');
       } else {
-        const contentTextbox = await page.$(PUBLISH_SELECTORS.contentTextbox);
-        if (contentTextbox) {
-          await contentTextbox.click();
-          await typeLikeHuman(page, params.content);
+        const contentTextbox = page.locator(PUBLISH_SELECTORS.contentTextbox).first();
+        if ((await contentTextbox.count()) > 0) {
+          await this.fillFieldLikeHuman(
+            page,
+            contentTextbox,
+            content,
+            { reviseEvery: 6, reviseMax: 1, maxDurationMs: 60000 },
+            true,
+          );
           log.info('Content set (via textbox)');
         } else {
           log.warn('Content editor not found');
@@ -226,6 +254,55 @@ export class PublishService {
         await page.close();
         log.debug('Browser page closed');
       }
+    }
+  }
+
+  /**
+   * 拟人化填入字段，并恢复"替换"语义（修复 P1：标题/正文从替换退化为追加）。
+   * - 输入前全选清空，避免把内容追加到残留/草稿文本之后；
+   * - 输入后校验最终值，不匹配仅告警不阻断（contenteditable 取值含格式噪声）。
+   *
+   * @param locator 目标字段（input 或 contenteditable）
+   * @param text 要键入的内容（调用方需已做长度裁剪）
+   * @param options typeLikeHuman 选项（reviseEvery / maxDurationMs / signal）
+   * @param isContentEditable 是否 contenteditable（影响取值与断言方式）
+   */
+  private async fillFieldLikeHuman(
+    page: Page,
+    locator: Locator,
+    text: string,
+    options: TypeLikeHumanOptions,
+    isContentEditable: boolean,
+  ): Promise<void> {
+    await locator.click();
+    // 恢复"替换"语义：全选并删除已有内容
+    await page.keyboard.press('Control+A');
+    await sleep(30);
+    await page.keyboard.press('Backspace');
+    await sleep(30);
+
+    // 断言已清空；未清空则兜底再清一次（contenteditable 场景更稳）
+    const before = isContentEditable
+      ? ((await locator.textContent().catch(() => '')) ?? '')
+      : (await locator.inputValue().catch(() => ''));
+    if (before.trim().length > 0) {
+      await locator.click({ clickCount: 3 }).catch(() => {});
+      await page.keyboard.press('Control+A');
+      await page.keyboard.press('Backspace');
+      await sleep(30);
+    }
+
+    await typeLikeHuman(page, text, options);
+
+    // 输入后校验最终值
+    const after = isContentEditable
+      ? ((await locator.textContent().catch(() => text)) ?? text)
+      : (await locator.inputValue().catch(() => text));
+    if (after !== text) {
+      log.warn('field value mismatch after typing (possible residual/IME artifact)', {
+        expectedLen: text.length,
+        actualLen: after.length,
+      });
     }
   }
 
@@ -438,18 +515,30 @@ export class PublishService {
         }
       }
 
-      // 填写标题
-      const titleInput = await page.$(PUBLISH_SELECTORS.titleInput);
-      if (titleInput) {
-        await titleInput.click();
-        await typeLikeHuman(page, params.title);
+      // 填写标题（恢复"替换"语义 + 长度上限）
+      const title = (params.title ?? '').slice(0, PUBLISH_TITLE_MAX);
+      const titleInput = page.locator(PUBLISH_SELECTORS.titleInput).first();
+      if ((await titleInput.count()) > 0) {
+        await this.fillFieldLikeHuman(
+          page,
+          titleInput,
+          title,
+          { reviseEvery: 4, reviseMax: 1, maxDurationMs: 20000 },
+          false,
+        );
       }
 
-      // 填写内容
-      const contentEditor = await page.$(PUBLISH_SELECTORS.contentEditor);
-      if (contentEditor) {
-        await contentEditor.click();
-        await typeLikeHuman(page, params.content);
+      // 填写内容（恢复"替换"语义 + 长度上限）
+      const content = (params.content ?? '').slice(0, PUBLISH_CONTENT_MAX);
+      const contentEditor = page.locator(PUBLISH_SELECTORS.contentEditor).first();
+      if ((await contentEditor.count()) > 0) {
+        await this.fillFieldLikeHuman(
+          page,
+          contentEditor,
+          content,
+          { reviseEvery: 6, reviseMax: 1, maxDurationMs: 60000 },
+          true,
+        );
       }
 
       await jitteredSleep(1000);

@@ -28,6 +28,11 @@ export function sleep(ms: number): Promise<void> {
  * 对长等待（>=2000ms，多为页面加载/上传/发布成功等待）自动收紧抖动系数，
  * 防止被抖得过短导致功能失败（视频上传、发布轮询等）。
  *
+ * 注意：本函数做**对称**抖动（±ratio），只用于非限流类的节奏等待
+ * （页面就绪、轮询间隔等）。承担限流的 REQUEST_INTERVAL 必须用
+ * `rateLimitedSleep`，禁止用本函数，否则最早请求会比配置值提前，
+ * 违反 A4 DoD 的"安全下限"。
+ *
  * @param base - 基准毫秒数
  * @param ratio - 抖动幅度（默认 0.4，即 ±40%）；长等待自动限到 0.2
  */
@@ -35,6 +40,19 @@ export async function jitteredSleep(base: number, ratio = 0.4): Promise<void> {
   const r = base >= 2000 ? Math.min(ratio, 0.2) : ratio;
   const factor = 1 + (Math.random() * 2 - 1) * r;
   await sleep(Math.max(1, Math.round(base * factor)));
+}
+
+/**
+ * 限流专用等待：仅**正向**抖动，结果永远 >= 配置下限 base。
+ * 用于承担限流职责的 REQUEST_INTERVAL——最早一次请求也绝不比配置值提前，
+ * 保证限流安全（蓝军报告 / A4 DoD "变量区间 + 安全下限"）。
+ * 一旦提前触发请求，限流就失效，故此处刻意不做对称抖动。
+ *
+ * @param base - 基准毫秒数（安全下限，请求至少等待这么久）
+ * @param ratio - 正向抖动幅度（默认 0.4，即 [base, base*1.4]）
+ */
+export async function rateLimitedSleep(base: number, ratio = 0.4): Promise<void> {
+  await sleep(Math.round(base * (1 + Math.random() * ratio)));
 }
 
 /**
@@ -56,29 +74,88 @@ function randomBetween(min: number, max: number): number {
 }
 
 /**
- * 拟人化逐字输入：每个字符之间加入可变延迟与偶发长停顿，
- * 消除无 delay keyboard.type 的亚毫秒输入突发（蓝军报告 04 §3.2/§3.3）。
- * 仍走真实键盘通道（isTrusted=true 的可信事件），仅把节奏拟人化。
+ * 拟人化逐字输入的可选参数。
+ */
+export interface TypeLikeHumanOptions {
+  minDelay?: number;
+  maxDelay?: number;
+  pauseChance?: number;
+  pauseMin?: number;
+  pauseMax?: number;
+  /**
+   * 每输入 reviseEvery 个字符，随机回删 1~reviseMax 个字符并重输，
+   * 制造"删除/修订"信号（蓝军报告 04 A2 DoD）。走可信 Backspace 通道，
+   * 不引入合成事件（否则会重引 isTrusted=false）。0 = 关闭。
+   */
+  reviseEvery?: number;
+  reviseMax?: number;
+  /**
+   * 软上限：累计输入耗时超过该值（ms）即停止键入剩余内容。
+   * 防止长文（1000 字≈149s）无限占用账户锁造成队头阻塞。默认 60000。
+   */
+  maxDurationMs?: number;
+  /**
+   * 取消信号：aborted 时立即中断并抛出 AbortError。
+   * 调用方须在 finally 中释放页面操作与账户锁。
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * 拟人化逐字输入（A2）：
+ * - 每个字符之间加入可变延迟与偶发长停顿，消除无 delay keyboard.type 的
+ *   亚毫秒输入突发（蓝军报告 04 §3.2/§3.3），单字符间隔 CV > 0。
+ * - 按码点切分（Array.from），正确处理代理对/emoji。
+ * - 偶发"删除/修订"：回删若干字符后重输（可信 Backspace），满足 A2 DoD
+ *   的"存在删除/修订"；中文路径无 composition 事件属平台已知限制，经可信
+ *   通道无法模拟 IME composition，故 DoD 收缩为可测量的"删除/修订 + 间隔方差"。
+ * - 支持取消（AbortSignal）与软上限（maxDurationMs），避免长文阻塞账户锁。
+ * 全程走真实键盘通道（isTrusted=true 的可信事件），仅把节奏拟人化。
  */
 export async function typeLikeHuman(
   page: Page,
   text: string,
-  options?: {
-    minDelay?: number;
-    maxDelay?: number;
-    pauseChance?: number;
-    pauseMin?: number;
-    pauseMax?: number;
-  },
+  options?: TypeLikeHumanOptions,
 ): Promise<void> {
   const minDelay = options?.minDelay ?? 45;
   const maxDelay = options?.maxDelay ?? 170;
   const pauseChance = options?.pauseChance ?? 0.05;
   const pauseMin = options?.pauseMin ?? 350;
   const pauseMax = options?.pauseMax ?? 1300;
-  for (const ch of text) {
-    await page.keyboard.type(ch);
+  const reviseEvery = options?.reviseEvery ?? 0;
+  const reviseMax = options?.reviseMax ?? 1;
+  const maxDurationMs = options?.maxDurationMs ?? 60000;
+  const signal = options?.signal;
+
+  const start = Date.now();
+  const chars = Array.from(text); // 按码点切分，正确处理代理对/emoji
+  let i = 0;
+  while (i < chars.length) {
+    if (signal?.aborted) {
+      throw new DOMException('typeLikeHuman aborted', 'AbortError');
+    }
+    if (Date.now() - start > maxDurationMs) {
+      // 软上限命中：停止键入，剩余内容不输入（避免长文阻塞账户锁）
+      break;
+    }
+    await page.keyboard.type(chars[i]);
     await sleep(randomBetween(minDelay, maxDelay));
+    i += 1;
+
+    // 人类修订：回删若干字符后重输，制造删除/修订信号（可信事件，不引入 isTrusted=false）
+    if (reviseEvery > 0 && i % reviseEvery === 0) {
+      const back = Math.min(i, reviseMax);
+      const redo = chars.slice(i - back, i);
+      for (let k = 0; k < back; k++) {
+        await page.keyboard.press('Backspace');
+        await sleep(randomBetween(Math.max(10, minDelay / 2), maxDelay / 2));
+      }
+      for (const ch of redo) {
+        await page.keyboard.type(ch);
+        await sleep(randomBetween(minDelay, maxDelay));
+      }
+    }
+
     if (Math.random() < pauseChance) {
       await sleep(randomBetween(pauseMin, pauseMax));
     }

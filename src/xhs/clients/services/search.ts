@@ -6,7 +6,7 @@
 
 import { Page } from 'patchright';
 import { XhsSearchItem, XhsSearchFilters } from '../../types.js';
-import { sleep, humanScroll, jitteredSleep } from '../../utils/index.js';
+import { sleep, humanScroll, jitteredSleep, rateLimitedSleep } from '../../utils/index.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS, SEARCH_DEFAULTS, SCROLL_CONFIG, DELAYS, REQUEST_INTERVAL, SEARCH_FILTER_MAP } from '../constants.js';
 
@@ -58,12 +58,12 @@ export class SearchService {
         timeout: TIMEOUTS.PAGE_LOAD,
       });
 
-      await jitteredSleep(REQUEST_INTERVAL);
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
       // 应用搜索过滤器
       if (filters) {
         await this.applySearchFilters(page, filters);
-        await jitteredSleep(REQUEST_INTERVAL);
+        await rateLimitedSleep(REQUEST_INTERVAL);
       }
 
       // 用于去重的 Map（id -> item）

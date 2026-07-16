@@ -5,7 +5,7 @@
  */
 
 import { XhsNote, XhsSearchItem, XhsUserInfo } from '../../types.js';
-import { sleep, navigateWithRetry, jitteredSleep } from '../../utils/index.js';
+import { sleep, navigateWithRetry, jitteredSleep, rateLimitedSleep } from '../../utils/index.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS, REQUEST_INTERVAL } from '../constants.js';
 
@@ -46,7 +46,7 @@ export class ContentService {
         timeout: TIMEOUTS.PAGE_LOAD,
       });
 
-      await jitteredSleep(REQUEST_INTERVAL);
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
       // 获取笔记详情和评论（参照 xiaohongshu-mcp）
       const result = await page.evaluate(
@@ -166,7 +166,7 @@ export class ContentService {
         timeout: TIMEOUTS.PAGE_LOAD,
       });
 
-      await jitteredSleep(REQUEST_INTERVAL);
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
       // 直接在浏览器中提取需要的数据，避免循环引用
       const result = await page.evaluate(
@@ -255,7 +255,7 @@ export class ContentService {
         timeout: TIMEOUTS.PAGE_LOAD,
       });
 
-      await jitteredSleep(REQUEST_INTERVAL);
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
       const result = await page.evaluate(
         () => {

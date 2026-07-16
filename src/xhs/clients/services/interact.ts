@@ -5,7 +5,7 @@
  */
 
 import { InteractionResult, CommentResult } from '../../types.js';
-import { sleep, navigateWithRetry, typeLikeHuman, jitteredSleep } from '../../utils/index.js';
+import { sleep, navigateWithRetry, typeLikeHuman, jitteredSleep, rateLimitedSleep } from '../../utils/index.js';
 import { BrowserContextManager } from '../context.js';
 import { REQUEST_INTERVAL, INTERACTION_SELECTORS, COMMENT_SELECTORS } from '../constants.js';
 import { createLogger } from '../../../core/logger.js';
@@ -46,7 +46,7 @@ export class InteractService {
           error: accessError,
         };
       }
-      await jitteredSleep(REQUEST_INTERVAL);
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
       // 获取当前点赞状态
       const isLiked = await page.evaluate(
@@ -127,7 +127,7 @@ export class InteractService {
           error: accessError,
         };
       }
-      await jitteredSleep(REQUEST_INTERVAL);
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
       // 获取当前收藏状态
       const isCollected = await page.evaluate(
@@ -202,7 +202,7 @@ export class InteractService {
       if (accessError) {
         return { success: false, error: accessError };
       }
-      await jitteredSleep(REQUEST_INTERVAL);
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
       // 点击评论输入框触发器
       const inputTrigger = await page.$(COMMENT_SELECTORS.commentInputTrigger);

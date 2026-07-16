@@ -24,6 +24,7 @@
     "start:bun:http": "bun dist/index.js --http",
     "test:search": "bun scripts/test-xhs.ts search",
     "test:note": "bun scripts/test-xhs.ts note",
+    "regression:a2": "bun scripts/regression-a2.ts",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
