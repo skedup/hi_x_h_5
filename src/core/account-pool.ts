@@ -203,6 +203,9 @@ export class AccountPool {
             finalizeLoginProfile(opts.sessionId, finalProfileId);
           }
 
+          // 蓝军 #1：重登录成功即恢复为 active（无论此前是否 migration_required）
+          this.db.accounts.updateConfig(existingAccount.id, { status: 'active' });
+
           // 更新 session state
           this.db.accounts.updateState(existingAccount.id, state);
           if (proxy !== undefined) {
@@ -311,7 +314,7 @@ export class AccountPool {
    */
   async updateAccountConfig(
     accountIdOrName: string,
-    updates: { name?: string; proxy?: string; status?: 'active' | 'suspended' | 'banned' },
+    updates: { name?: string; proxy?: string; status?: 'active' | 'suspended' | 'banned' | 'migration_required' },
   ): Promise<boolean> {
     const account = this.resolveAccount(accountIdOrName);
 

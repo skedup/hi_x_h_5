@@ -96,6 +96,18 @@ export async function executeWithAccount<T>(
     };
   }
 
+  // 蓝军 #1：非 active 账号（如 migration_required / suspended / banned）拒绝平台操作；
+  // 恢复路径 xhs_add_account 不经此汇聚点，不受影响。
+  if (account.status !== 'active') {
+    return {
+      account: account.name,
+      success: false,
+      skipped: true,
+      error: `account_inactive:${account.status ?? 'unknown'}`,
+      durationMs: 0,
+    };
+  }
+
   // C3.2 息屏/无人值守自保：写操作需设备在场，否则停写（仅 shadow/停止）
   const live = isWriteAllowed();
   if (!live.allowed) {

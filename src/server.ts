@@ -23,6 +23,9 @@ import { exploreTools, handleExploreTools } from './tools/explore.js';
 import { recordHumanActivity } from './core/liveness.js';
 import { TOOL_CAPABILITIES } from './core/audit.js';
 
+/** 蓝军 #1：启动期一次性扫描旧账号迁移状态，避免每次建连重复扫描 */
+let migrationScanned = false;
+
 // 写工具集合（P2-2 读写能力分级）定义于 core/audit.ts，此处再导出以兼容既有引用
 export { WRITE_TOOL_NAMES } from './core/audit.js';
 
@@ -69,6 +72,18 @@ export function createMcpServer(pool: AccountPool, db: XhsDatabase): Server {
     throw new Error(
       `Unclassified tools (missing in core/audit.ts TOOL_CAPABILITIES): ${unclassified.map((t) => t.name).join(', ')}`,
     );
+  }
+
+  // 蓝军 #1：升级后尚无独立 profile 的旧账号强制进入 migration_required，拒绝平台操作
+  if (!migrationScanned) {
+    migrationScanned = true;
+    try {
+      const n = db.accounts.legacyProfilesRequireMigration();
+      if (n > 0)
+        console.warn(`[migration] ${n} 个旧账号缺少独立 profile，已置 migration_required，需人工重登录绑定`);
+    } catch (e) {
+      console.error('[migration] scan failed', e);
+    }
   }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {

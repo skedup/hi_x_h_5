@@ -21,8 +21,8 @@ export interface Account {
   profileId?: string;
   /** Playwright storage state (cookies, localStorage) */
   state?: any;
-  /** Account status: active, suspended, or banned */
-  status: 'active' | 'suspended' | 'banned';
+  /** Account status: active, suspended, banned, or migration_required (legacy account awaiting isolated profile binding) */
+  status: 'active' | 'suspended' | 'banned' | 'migration_required';
   /** Timestamp of last successful login */
   lastLoginAt?: Date;
   /** Timestamp of last activity */
@@ -103,6 +103,17 @@ export class AccountRepository {
   }
 
   /**
+   * 蓝军 #1：升级后尚无独立 profile 的旧账号（profile_id IS NULL 且仍 active）强制进入
+   * migration_required，拒绝平台操作，直到人工重登录绑定独立 profile。返回受影响行数。
+   */
+  legacyProfilesRequireMigration(): number {
+    const stmt = this.db.prepare(
+      "UPDATE accounts SET status = 'migration_required', updated_at = ? WHERE profile_id IS NULL AND status = 'active'",
+    );
+    return stmt.run(new Date().toISOString()).changes;
+  }
+
+  /**
    * Get all accounts
    */
   findAll(): Account[] {
@@ -146,7 +157,7 @@ export class AccountRepository {
    */
   updateConfig(
     id: string,
-    updates: { name?: string; proxy?: string; status?: 'active' | 'suspended' | 'banned' },
+    updates: { name?: string; proxy?: string; status?: 'active' | 'suspended' | 'banned' | 'migration_required' },
   ): void {
     const now = new Date().toISOString();
     const sets: string[] = ['updated_at = ?'];

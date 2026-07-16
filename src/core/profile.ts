@@ -32,7 +32,12 @@ export function finalizeLoginProfile(sessionId: string, profileId: string): void
   const from = getLoginProfileDir(sessionId);
   const to = paths.getBrowserProfileDir(profileId);
   if (!existsSync(from)) return;
-  if (existsSync(to)) return; // 理论上 profileId 唯一，目标不应存在
+  if (existsSync(to)) {
+    // 蓝军 #2：目标 profile 已存在时，先归档旧目录再做原子转正，
+    // 使本次重登录得到的 Cookie/storageState 实际生效，且临时目录不再残留。
+    const archived = `${to}.archived-${Date.now()}`;
+    renameSync(to, archived);
+  }
   renameSync(from, to);
 }
 
