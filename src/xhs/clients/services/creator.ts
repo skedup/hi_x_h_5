@@ -6,7 +6,7 @@
 
 import { Page, Response } from 'patchright';
 import { PublishedNote } from '../../../tools/creator.js';
-import { sleep } from '../../utils/index.js';
+import { sleep, jitteredSleep } from '../../utils/index.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS } from '../constants.js';
 
@@ -112,7 +112,7 @@ export class CreatorService {
 
       // 等待页面加载
       await page.waitForLoadState('networkidle').catch(() => {});
-      await sleep(2000);
+      await jitteredSleep(2000);
 
       // 等待首次 API 响应
       await this.waitForApiResponse(page, timeout);
@@ -128,7 +128,7 @@ export class CreatorService {
         responsePromises.length = 0;
 
         // 短暂等待新请求
-        await sleep(500);
+        await jitteredSleep(500);
 
         // 检查是否超时
         if (Date.now() - startTime >= timeout) {

@@ -23,6 +23,21 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * 带抖动的等待，打破固定时钟尖峰（蓝军报告 03 §P1-1/§P1-4）。
+ * 仍走真实 setTimeout，仅把间隔随机化，避免平台建立时钟指纹。
+ * 对长等待（>=2000ms，多为页面加载/上传/发布成功等待）自动收紧抖动系数，
+ * 防止被抖得过短导致功能失败（视频上传、发布轮询等）。
+ *
+ * @param base - 基准毫秒数
+ * @param ratio - 抖动幅度（默认 0.4，即 ±40%）；长等待自动限到 0.2
+ */
+export async function jitteredSleep(base: number, ratio = 0.4): Promise<void> {
+  const r = base >= 2000 ? Math.min(ratio, 0.2) : ratio;
+  const factor = 1 + (Math.random() * 2 - 1) * r;
+  await sleep(Math.max(1, Math.round(base * factor)));
+}
+
+/**
  * Generate a webId cookie value to bypass slider verification.
  * Format: 32 hex characters (e.g., "1234567890abcdef1234567890abcdef")
  * @returns Random webId string
@@ -38,6 +53,36 @@ export function generateWebId(): string {
  */
 function randomBetween(min: number, max: number): number {
   return min + Math.random() * (max - min);
+}
+
+/**
+ * 拟人化逐字输入：每个字符之间加入可变延迟与偶发长停顿，
+ * 消除无 delay keyboard.type 的亚毫秒输入突发（蓝军报告 04 §3.2/§3.3）。
+ * 仍走真实键盘通道（isTrusted=true 的可信事件），仅把节奏拟人化。
+ */
+export async function typeLikeHuman(
+  page: Page,
+  text: string,
+  options?: {
+    minDelay?: number;
+    maxDelay?: number;
+    pauseChance?: number;
+    pauseMin?: number;
+    pauseMax?: number;
+  },
+): Promise<void> {
+  const minDelay = options?.minDelay ?? 45;
+  const maxDelay = options?.maxDelay ?? 170;
+  const pauseChance = options?.pauseChance ?? 0.05;
+  const pauseMin = options?.pauseMin ?? 350;
+  const pauseMax = options?.pauseMax ?? 1300;
+  for (const ch of text) {
+    await page.keyboard.type(ch);
+    await sleep(randomBetween(minDelay, maxDelay));
+    if (Math.random() < pauseChance) {
+      await sleep(randomBetween(pauseMin, pauseMax));
+    }
+  }
 }
 
 /**

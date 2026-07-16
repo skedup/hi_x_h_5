@@ -5,7 +5,7 @@
  */
 
 import { LoginUserInfo, FullUserProfile } from '../../types.js';
-import { sleep } from '../../utils/index.js';
+import { sleep, jitteredSleep } from '../../utils/index.js';
 import { config } from '../../../core/config.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS, LOGIN_STATUS_SELECTOR, URLS } from '../constants.js';
@@ -50,7 +50,7 @@ export class AuthService {
         waitUntil: 'domcontentloaded',
       });
 
-      await sleep(2000);
+      await jitteredSleep(2000);
 
       // 检查登录状态元素
       const isLoggedIn = await page.$(LOGIN_STATUS_SELECTOR);

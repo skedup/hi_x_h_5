@@ -6,7 +6,7 @@
 
 import { Locator, Page } from 'patchright';
 import { PublishContentParams, PublishVideoParams, PublishResult } from '../../types.js';
-import { sleep, resolveImagePaths, isHttpUrl } from '../../utils/index.js';
+import { sleep, resolveImagePaths, isHttpUrl, typeLikeHuman, jitteredSleep } from '../../utils/index.js';
 import { config } from '../../../core/config.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS, PUBLISH_SELECTORS, URLS } from '../constants.js';
@@ -63,7 +63,7 @@ export class PublishService {
 
       // Wait for page to stabilize (matching Go project: WaitLoad + 2 seconds)
       log.debug('Waiting for page to stabilize...');
-      await sleep(2000);
+      await jitteredSleep(2000);
 
       // 等待网络空闲，超时则继续
       try {
@@ -71,7 +71,7 @@ export class PublishService {
       } catch {
         log.warn('Network idle timeout, continuing...');
       }
-      await sleep(1000);
+      await jitteredSleep(1000);
 
       // 检查是否被重定向到登录页面
       const currentUrl = page.url();
@@ -97,7 +97,7 @@ export class PublishService {
       // Click image upload tab (matching Go project: mustClickPublishTab)
       log.debug('Clicking upload image tab...');
       await this.clickPublishTab(page, '上传图文');
-      await sleep(1000);
+      await jitteredSleep(1000);
 
       // Upload images
       log.debug('Looking for upload input...');
@@ -135,13 +135,14 @@ export class PublishService {
       // Wait for upload complete (matching Go project: waitForUploadComplete)
       log.debug('Waiting for upload complete...');
       await this.waitForUploadComplete(page, validPaths.length);
-      await sleep(2000);
+      await jitteredSleep(2000);
 
       // Fill title
       log.debug('Filling title...');
       const titleInput = await page.$(PUBLISH_SELECTORS.titleInput);
       if (titleInput) {
-        await titleInput.fill(params.title);
+        await titleInput.click();
+        await typeLikeHuman(page, params.title);
         log.info('Title set', { title: params.title });
       } else {
         log.warn('Title input not found');
@@ -152,38 +153,38 @@ export class PublishService {
       const contentEditor = await page.$(PUBLISH_SELECTORS.contentEditor);
       if (contentEditor) {
         await contentEditor.click();
-        await page.keyboard.type(params.content);
+        await typeLikeHuman(page, params.content);
         log.info('Content set');
       } else {
         const contentTextbox = await page.$(PUBLISH_SELECTORS.contentTextbox);
         if (contentTextbox) {
           await contentTextbox.click();
-          await page.keyboard.type(params.content);
+          await typeLikeHuman(page, params.content);
           log.info('Content set (via textbox)');
         } else {
           log.warn('Content editor not found');
         }
       }
 
-      await sleep(1000);
+      await jitteredSleep(1000);
 
       // Add tags
       if (params.tags && params.tags.length > 0) {
         log.debug('Adding tags', { tags: params.tags });
         for (const tag of params.tags) {
-          await page.keyboard.type(`#${tag}`);
-          await sleep(500);
+          await typeLikeHuman(page, `#${tag}`);
+          await jitteredSleep(500);
 
           // Wait for and click tag suggestion
           const suggestion = await page.$(`${PUBLISH_SELECTORS.topicContainer}:has-text("${tag}")`);
           if (suggestion) {
             await suggestion.click();
-            await sleep(300);
+            await jitteredSleep(300);
           } else {
             // Press space to confirm tag
             await page.keyboard.press('Space');
           }
-          await sleep(300);
+          await jitteredSleep(300);
         }
         log.info('Tags added');
       }
@@ -194,7 +195,7 @@ export class PublishService {
         const scheduleRadio = await page.$(PUBLISH_SELECTORS.scheduleRadio);
         if (scheduleRadio) {
           await scheduleRadio.click();
-          await sleep(500);
+          await jitteredSleep(500);
           log.warn('Schedule time selection not fully implemented', { time: params.scheduleTime });
         }
       }
@@ -221,7 +222,7 @@ export class PublishService {
       if (config.browser.keepOpen) {
         log.info('Keep open mode: publish page stays open for operator inspection');
       } else {
-        await sleep(2000);
+        await jitteredSleep(2000);
         await page.close();
         log.debug('Browser page closed');
       }
@@ -297,7 +298,7 @@ export class PublishService {
         log.warn('Publish was rejected by the page');
         return { success: false, error: 'Publish was rejected by the page' };
       }
-      await sleep(500);
+      await jitteredSleep(500);
     }
 
     log.warn('Publish outcome could not be confirmed');
@@ -334,7 +335,7 @@ export class PublishService {
             log.debug('Tab is blocked, trying to remove overlay...');
             // Try to click empty area to dismiss popover
             await page.mouse.click(400, 50);
-            await sleep(200);
+            await jitteredSleep(200);
             continue;
           }
 
@@ -344,7 +345,7 @@ export class PublishService {
         }
       }
 
-      await sleep(200);
+      await jitteredSleep(200);
     }
 
     log.warn('Publish tab not found', { tabName });
@@ -404,13 +405,13 @@ export class PublishService {
       });
 
       await page.waitForLoadState('networkidle').catch(() => {});
-      await sleep(2000);
+      await jitteredSleep(2000);
 
       // 点击"上传视频"标签
       const videoTab = await page.$(PUBLISH_SELECTORS.uploadVideoTab);
       if (videoTab) {
         await videoTab.click();
-        await sleep(1000);
+        await jitteredSleep(1000);
       }
 
       // 上传视频
@@ -426,44 +427,45 @@ export class PublishService {
       await page.waitForSelector('.upload-success, .video-preview, .cover-container', {
         timeout: TIMEOUTS.VIDEO_UPLOAD,
       });
-      await sleep(2000);
+      await jitteredSleep(2000);
 
       // 如果提供了封面图，上传封面
       if (params.coverPath) {
         const coverInput = await page.$('.cover-upload input, [class*="cover"] input[type="file"]');
         if (coverInput) {
           await coverInput.setInputFiles(params.coverPath);
-          await sleep(2000);
+          await jitteredSleep(2000);
         }
       }
 
       // 填写标题
       const titleInput = await page.$(PUBLISH_SELECTORS.titleInput);
       if (titleInput) {
-        await titleInput.fill(params.title);
+        await titleInput.click();
+        await typeLikeHuman(page, params.title);
       }
 
       // 填写内容
       const contentEditor = await page.$(PUBLISH_SELECTORS.contentEditor);
       if (contentEditor) {
         await contentEditor.click();
-        await page.keyboard.type(params.content);
+        await typeLikeHuman(page, params.content);
       }
 
-      await sleep(1000);
+      await jitteredSleep(1000);
 
       // 添加标签
       if (params.tags && params.tags.length > 0) {
         for (const tag of params.tags) {
-          await page.keyboard.type(`#${tag}`);
-          await sleep(500);
+          await typeLikeHuman(page, `#${tag}`);
+          await jitteredSleep(500);
           const suggestion = await page.$(`${PUBLISH_SELECTORS.topicContainer}:has-text("${tag}")`);
           if (suggestion) {
             await suggestion.click();
           } else {
             await page.keyboard.press('Space');
           }
-          await sleep(300);
+          await jitteredSleep(300);
         }
       }
 
@@ -474,7 +476,7 @@ export class PublishService {
       }
 
       await publishBtn.click();
-      await sleep(3000);
+      await jitteredSleep(3000);
 
       return { success: true };
     } catch (error) {
@@ -484,7 +486,7 @@ export class PublishService {
         error: error instanceof Error ? error.message : String(error),
       };
     } finally {
-      await sleep(2000);
+      await jitteredSleep(2000);
       await page.close();
     }
   }

@@ -4,7 +4,7 @@
  */
 
 import { BrowserContextManager } from '../context.js';
-import { sleep } from '../../utils/index.js';
+import { sleep, jitteredSleep } from '../../utils/index.js';
 import { REQUEST_INTERVAL } from '../constants.js';
 
 /**
@@ -165,7 +165,7 @@ export class NotificationService {
         waitUntil: 'domcontentloaded',
       });
       await page.waitForLoadState('networkidle').catch(() => {});
-      await sleep(REQUEST_INTERVAL);
+      await jitteredSleep(REQUEST_INTERVAL);
 
       // 从页面提取 __INITIAL_STATE__.notification
       const notificationData = await page.evaluate(
