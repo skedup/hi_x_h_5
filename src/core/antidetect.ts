@@ -112,12 +112,14 @@ export class CooccurrenceGuard {
   private consecutiveFailures = new Map<string, number>();
   // 去重：已提交（永久占用，成功落库）/ 进行中（临时占用，带 reservationId）/ 所有者
   private dedupCommitted = new Set<string>();
-  private dedupInFlight = new Map<string, string>(); // 去重键 -> reservationId
-  private dedupOwner = new Map<string, string>(); // 去重键 -> 账号 ID
+  private dedupInFlight = new Map<string, Set<string>>(); // 去重键 -> 占用该键的 reservationId 集合（引用计数，R4 同账号并发复用）
+  private dedupOwner = new Map<string, string>(); // 去重键 -> 账号 ID（in-flight 或 committed 均记录）
+  private dedupSucceeded = new Set<string>(); // 去重键 -> 任一并发占用成功（用于最后一次完成时判定提交/回滚）
   // xsecToken 绑定：提取点登记为永久来源（committed）；写路径临时占用带 reservationId
   private tokenCommitted = new Set<string>();
-  private tokenInFlight = new Map<string, string>(); // token -> reservationId
+  private tokenInFlight = new Map<string, Set<string>>(); // token -> reservationId 集合
   private tokenOwner = new Map<string, string>(); // token -> 账号 ID
+  private tokenSucceeded = new Set<string>();
   /** 蓝军 #4：检查/预占的全局 policy 互斥锁 */
   private policyMutex = new AsyncMutex();
 
@@ -167,13 +169,20 @@ export class CooccurrenceGuard {
 
       // C2.4 跨账号去重：相同去重键已被占用（已提交或他人进行中）则拦截
       if (d.enabled && input.dedupKey) {
-        if (this.dedupCommitted.has(input.dedupKey) || this.dedupInFlight.has(input.dedupKey)) {
+        if (this.dedupCommitted.has(input.dedupKey)) {
           const owner = this.dedupOwner.get(input.dedupKey);
           if (owner && owner !== input.accountId) {
             log.warn('跨账号去重拦截', { key: input.dedupKey, owner, accountId: input.accountId });
             return { allow: false, reason: 'cross_account_dedup' };
           }
-          // 同账号进行中（并发复用）放行，待成功提交时落库；其余情况放行预占
+          // 同账号已提交：放行（去重仅跨账号），不预占
+        } else if (this.dedupInFlight.has(input.dedupKey)) {
+          const owner = this.dedupOwner.get(input.dedupKey);
+          if (owner && owner !== input.accountId) {
+            log.warn('跨账号去重拦截', { key: input.dedupKey, owner, accountId: input.accountId });
+            return { allow: false, reason: 'cross_account_dedup' };
+          }
+          // 同账号进行中（并发复用）：加入共享 in-flight 占用集合（引用计数，R4），不单独放行也不同步
         }
       }
 
@@ -202,14 +211,25 @@ export class CooccurrenceGuard {
         this.recordCount(this.daily, input.accountId, q.perAccountDaily, 86_400_000);
         this.lastActionAt.set(input.accountId, Date.now());
       }
-      if (d.enabled && input.dedupKey && !this.dedupCommitted.has(input.dedupKey) && !this.dedupInFlight.has(input.dedupKey)) {
-        this.dedupInFlight.set(input.dedupKey, resvId);
-        this.dedupOwner.set(input.dedupKey, input.accountId);
+      if (d.enabled && input.dedupKey && !this.dedupCommitted.has(input.dedupKey)) {
+        let set = this.dedupInFlight.get(input.dedupKey);
+        if (!set) {
+          set = new Set<string>();
+          this.dedupInFlight.set(input.dedupKey, set);
+          this.dedupOwner.set(input.dedupKey, input.accountId);
+        }
+        // 同账号并发复用：把本次 reservationId 加入共享占用集合（引用计数）
+        set.add(resvId);
         reservedDedup = input.dedupKey;
       }
       if (this.cfg.xsecTokenBinding.enabled && input.xsecToken && !this.tokenOwnerOf(input.xsecToken)) {
-        this.tokenInFlight.set(input.xsecToken, resvId);
-        this.tokenOwner.set(input.xsecToken, input.accountId);
+        let set = this.tokenInFlight.get(input.xsecToken);
+        if (!set) {
+          set = new Set<string>();
+          this.tokenInFlight.set(input.xsecToken, set);
+          this.tokenOwner.set(input.xsecToken, input.accountId);
+        }
+        set.add(resvId);
         reservedToken = input.xsecToken;
       }
 
@@ -224,33 +244,62 @@ export class CooccurrenceGuard {
    * - 返回 trippedNow，便于多账号队列立刻取消剩余账号（蓝军 #5）。
    */
   async afterAction(input: AfterActionInput): Promise<{ trippedNow: boolean }> {
-    // R3-2：按 reservationId 提交/回滚去重与 token 的临时占用。
-    // 成功提交：本次（或并发同账号复用）占用转为永久占用（committed），后续同 key/token 被去重/拦截。
-    // 失败回滚：仅当临时占用仍归属于本次 reservationId 时才删除（compare-and-delete），
-    // 绝不误删他人/已提交占用（避免 A 失败把 A2 的成功提交弄丢）。
+    // R3-4/R4：先统一计算执行结果语义，供提交/预算/熔断共用。
+    // - executionSuccess：操作 Promise 正常返回（input.success）；
+    // - businessFail：平台返回体显式 success:false 即视为业务失败（执行器不抛异常）；
+    // - hardRisk：验证码/needVerify/明确 403/429 —— 立即熔断；
+    // - businessSuccess：执行成功 && 非业务失败 && 非硬风控，才提交去重/token 占用并保留预算。
+    // R4 修正：{success:true, result:{success:false}} 这类软业务失败必须视为「未成功」，
+    // 既不可提交去重占用（否则死占 key），也须回滚预算（否则 B 用同 key 得 cross_account_dedup）。
+    const hardRisk =
+      this.isCaptchaLike(input.error) ||
+      this.isCaptchaLike(JSON.stringify(input.result ?? '')) ||
+      this.isBusinessFailure(input.result);
+    const businessFail =
+      !input.success ||
+      (input.result !== null && typeof input.result === 'object' && (input.result as any).success === false);
+    const businessSuccess = input.success && !businessFail && !hardRisk;
+
+    // R3-2/R4：按 reservationId 提交/回滚去重与 token 的临时占用（引用计数）。
+    // 成功提交：所有并发占用中「任一成功」即转为永久占用（committed）；全部失败才回收占用。
+    // compare-and-delete 仅删除本次 reservationId，绝不误删他人/已提交占用
+    //（修复 R4 P1 1019970087：同账号并发一次成功一次失败时，第二次成功提交不被第一次失败弄丢）。
     if (input.reservation?.id) {
       const id = input.reservation.id;
       if (input.reservation.dedupKey) {
-        if (input.success) {
-          if (this.dedupInFlight.has(input.reservation.dedupKey)) {
+        const set = this.dedupInFlight.get(input.reservation.dedupKey);
+        if (set) {
+          set.delete(id);
+          if (businessSuccess) this.dedupSucceeded.add(input.reservation.dedupKey);
+          if (set.size === 0) {
             this.dedupInFlight.delete(input.reservation.dedupKey);
-            // 保留 dedupOwner：committed 占用仍需保留所有者，供跨账号去重校验（R2-9/R3-2）
-            this.dedupCommitted.add(input.reservation.dedupKey);
+            if (this.dedupSucceeded.has(input.reservation.dedupKey)) {
+              // 任一并发占用成功 → 提交为永久占用，保留 owner 供跨账号去重校验
+              this.dedupCommitted.add(input.reservation.dedupKey);
+              this.dedupSucceeded.delete(input.reservation.dedupKey);
+            } else {
+              // 全部失败 → 回收占用（含 owner）
+              this.dedupOwner.delete(input.reservation.dedupKey);
+              this.dedupSucceeded.delete(input.reservation.dedupKey);
+            }
           }
-        } else if (this.dedupInFlight.get(input.reservation.dedupKey) === id) {
-          this.dedupInFlight.delete(input.reservation.dedupKey);
-          this.dedupOwner.delete(input.reservation.dedupKey);
         }
       }
       if (input.reservation.xsecToken) {
-        if (input.success) {
-          if (this.tokenInFlight.has(input.reservation.xsecToken)) {
+        const set = this.tokenInFlight.get(input.reservation.xsecToken);
+        if (set) {
+          set.delete(id);
+          if (businessSuccess) this.tokenSucceeded.add(input.reservation.xsecToken);
+          if (set.size === 0) {
             this.tokenInFlight.delete(input.reservation.xsecToken);
-            this.tokenCommitted.add(input.reservation.xsecToken);
+            if (this.tokenSucceeded.has(input.reservation.xsecToken)) {
+              this.tokenCommitted.add(input.reservation.xsecToken);
+              this.tokenSucceeded.delete(input.reservation.xsecToken);
+            } else {
+              this.tokenOwner.delete(input.reservation.xsecToken);
+              this.tokenSucceeded.delete(input.reservation.xsecToken);
+            }
           }
-        } else if (this.tokenInFlight.get(input.reservation.xsecToken) === id) {
-          this.tokenInFlight.delete(input.reservation.xsecToken);
-          this.tokenOwner.delete(input.reservation.xsecToken);
         }
       }
     }
@@ -260,24 +309,12 @@ export class CooccurrenceGuard {
     const q = this.cfg.quota;
     if (!q.enabled) return { trippedNow: false };
 
-    // 预算计数回滚（仅执行失败；冷却锚点 lastActionAt 保留，避免立即重试制造尖峰）
-    if (!input.success) {
+    // 预算计数回滚（仅业务未成功；冷却锚点 lastActionAt 保留，避免立即重试制造尖峰）。
+    // R4：软业务失败（success:true, result.success:false）与硬风控同样非 businessSuccess，须回滚预算。
+    if (!businessSuccess) {
       this.decrementCount(this.hourly, input.accountId);
       this.decrementCount(this.daily, input.accountId);
     }
-
-    // R3-4：拆分 executionSuccess / businessSuccess / hardRisk。
-    // - executionSuccess：操作 Promise 正常返回（input.success）；
-    // - businessSuccess：平台返回体显式 success:false 即视为业务失败（执行器不抛异常，故需单独看 result）；
-    // - hardRisk：验证码/needVerify/明确 403/429 —— 立即熔断。
-    // 普通业务失败累计连续阈值并回滚未提交预占（上面已回滚），只有硬风控立即熔断。
-    const hardRisk =
-      this.isCaptchaLike(input.error) ||
-      this.isCaptchaLike(JSON.stringify(input.result ?? '')) ||
-      this.isBusinessFailure(input.result);
-    const businessFail =
-      !input.success ||
-      (input.result !== null && typeof input.result === 'object' && (input.result as any).success === false);
 
     // 进入计数/熔断分支的条件：软业务失败，或硬风控信号（即便 HTTP 成功也需立即熔断——蓝军 #5）。
     // 注意：hardRisk 必须能独立进入本分支，否则 {needVerify:true} 这类 HTTP 成功但业务风控的信号不会熔断。
@@ -294,6 +331,38 @@ export class CooccurrenceGuard {
     }
 
     return { trippedNow: this.tripped.has(input.accountId) };
+  }
+
+  /**
+   * R4（P1 1019834745）：在取得 policy reservation 后、真正 DOM 写前若设备不在场，
+   * 回滚该 reservation 的临时占用（去重/token）而不计入业务失败/熔断。
+   * 与 afterAction 的区别：仅 compare-and-delete 本次 reservationId，不影响连续失败计数与预算。
+   */
+  async cancelReservation(reservation: PolicyReservation | undefined, _accountId: string): Promise<void> {
+    if (!reservation?.id) return;
+    const id = reservation.id;
+    if (reservation.dedupKey) {
+      const set = this.dedupInFlight.get(reservation.dedupKey);
+      if (set) {
+        set.delete(id);
+        if (set.size === 0) {
+          this.dedupInFlight.delete(reservation.dedupKey);
+          if (!this.dedupSucceeded.has(reservation.dedupKey)) this.dedupOwner.delete(reservation.dedupKey);
+          this.dedupSucceeded.delete(reservation.dedupKey);
+        }
+      }
+    }
+    if (reservation.xsecToken) {
+      const set = this.tokenInFlight.get(reservation.xsecToken);
+      if (set) {
+        set.delete(id);
+        if (set.size === 0) {
+          this.tokenInFlight.delete(reservation.xsecToken);
+          if (!this.tokenSucceeded.has(reservation.xsecToken)) this.tokenOwner.delete(reservation.xsecToken);
+          this.tokenSucceeded.delete(reservation.xsecToken);
+        }
+      }
+    }
   }
 
   /** 查询某账号是否已熔断（测试/运维观测） */
@@ -358,9 +427,11 @@ export class CooccurrenceGuard {
     this.dedupCommitted.clear();
     this.dedupInFlight.clear();
     this.dedupOwner.clear();
+    this.dedupSucceeded.clear();
     this.tokenCommitted.clear();
     this.tokenInFlight.clear();
     this.tokenOwner.clear();
+    this.tokenSucceeded.clear();
   }
 
   // ---- 内部 ----

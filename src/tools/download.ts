@@ -210,11 +210,12 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
 
       // 先取笔记详情（触发浏览器 context 初始化），再读取 request（蓝军 #9 冷启动修复）
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'get_note_for_download', async (ctx) => {
-        const note = await ctx.client.getNote(params.noteId, params.xsecToken);
-        apiRequest = ctx.client.request;
-        // R3-5：消费路径只校验既有来源，禁止补写来源（fail-closed）
+        // R4 P1 1019912496：来源校验必须在发请求前完成（fail-closed），
+        // 否则未知/跨账号 token 已随 getNote 发出，校验 throw 无法阻止泄露。
         const chk = getCooccurrenceGuard().checkXsecSource(params.xsecToken, ctx.accountId);
         if (!chk.allow) throw new Error(`xsec token 校验失败（${chk.reason}）：消费路径不得补写来源`);
+        const note = await ctx.client.getNote(params.noteId, params.xsecToken);
+        apiRequest = ctx.client.request;
         return note;
       }, { capability: 'read' });
 
@@ -325,11 +326,12 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
 
       // 先取笔记详情（触发浏览器 context 初始化），再读取 request（蓝军 #9 冷启动修复）
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'get_note_for_download', async (ctx) => {
-        const note = await ctx.client.getNote(params.noteId, params.xsecToken);
-        apiRequest = ctx.client.request;
-        // R3-5：消费路径只校验既有来源，禁止补写来源（fail-closed）
+        // R4 P1 1019912496：来源校验必须在发请求前完成（fail-closed），
+        // 否则未知/跨账号 token 已随 getNote 发出，校验 throw 无法阻止泄露。
         const chk = getCooccurrenceGuard().checkXsecSource(params.xsecToken, ctx.accountId);
         if (!chk.allow) throw new Error(`xsec token 校验失败（${chk.reason}）：消费路径不得补写来源`);
+        const note = await ctx.client.getNote(params.noteId, params.xsecToken);
+        apiRequest = ctx.client.request;
         return note;
       }, { capability: 'read' });
 

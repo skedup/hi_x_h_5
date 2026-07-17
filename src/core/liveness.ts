@@ -192,14 +192,14 @@ export function startLivenessMonitor(): Promise<void> {
 }
 
 /**
- * R3-1：为 stdio 模式（无 HTTP 路由）提供本机人工在场确认通道。
- * 终端前的人工按下 `kill -USR1 <pid>` 即记录一次在场，重置空闲超时——
- * 独立于 MCP 调用，自动化客户端无法伪造。
+ * R4 P2 1019839888：SIGUSR1 是无鉴权的本机信号，任意本地进程均可向该 PID 发送，
+ * 不能构成「人工在场」门禁（无法证明是真实人工操作）。因此 SIGUSR1 不再重置空闲计时，
+ * 仅作开发期提示日志，不得用于绕过 idle 门禁。
+ * 真实在场确认须走 HTTP `/confirm-presence` 的短时、消费后轮换 challenge（见 http-server.ts）。
  */
 export function installPresenceSignal(): void {
   process.on('SIGUSR1', () => {
-    getLiveness().recordActivity();
-    log.info('收到 SIGUSR1 信号，记录一次人工在场（空闲超时重置）');
+    log.info('收到 SIGUSR1 信号（开发期提示；无鉴权，不视为人工在场，不重置空闲计时）');
   });
 }
 

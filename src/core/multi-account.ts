@@ -183,7 +183,7 @@ export async function executeWithAccount<T>(
 
   const startTime = Date.now();
   let release: (() => void) | null = null;
-  let outcome: { success: boolean; error?: string; result?: T } = { success: false };
+  let outcome: { success: boolean; error?: string; result?: T };
 
   try {
     // Acquire lock（R2-4：control 本机控制操作——如停止浏览——不取业务锁，

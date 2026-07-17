@@ -389,27 +389,35 @@ export class ExploreService {
                     if (!resv.allow) {
                       log.warn('explore 内部点赞被共现守卫拦截', { noteId: selectedFeed.id, reason: resv.reason });
                     } else {
-                      // 点赞帖子
-                      const liked = await this.likeInModal(page);
-                      if (liked) {
-                        db.explore.logAction(sessionId, {
-                          noteId: selectedFeed.id,
-                          noteTitle: selectedFeed.noteCard.displayTitle,
-                          action: 'liked',
-                          aiReason: likeTarget.reason,
+                      // R4 P1 1019834745：取得 reservation 后、真正 DOM 写前再次检查设备在场，
+                      // 覆盖 selectLikeTarget（AI 异步）期间息屏的窗口；不在场则回滚 reservation 跳过写。
+                      const canWrite = this.assertCanWrite(abortController);
+                      if (!canWrite.ok) {
+                        await guard.cancelReservation(resv.reservation, accountId);
+                        log.warn('explore 点赞前写门禁未过，回滚 reservation 跳过', { noteId: selectedFeed.id, reason: canWrite.reason });
+                      } else {
+                        // 点赞帖子
+                        const liked = await this.likeInModal(page);
+                        if (liked) {
+                          db.explore.logAction(sessionId, {
+                            noteId: selectedFeed.id,
+                            noteTitle: selectedFeed.noteCard.displayTitle,
+                            action: 'liked',
+                            aiReason: likeTarget.reason,
+                          });
+                          notesLiked++;
+                          db.explore.markNoteExplored(accountId, selectedFeed.id, true);
+                          log.info('Liked note', { noteId: selectedFeed.id, reason: likeTarget.reason });
+                        }
+                        await guard.afterAction({
+                          accountId,
+                          action: 'like',
+                          success: liked,
+                          dedupKey: `explore:like:${selectedFeed.id}`,
+                          xsecToken: selectedFeed.xsecToken,
+                          reservation: resv.reservation,
                         });
-                        notesLiked++;
-                        db.explore.markNoteExplored(accountId, selectedFeed.id, true);
-                        log.info('Liked note', { noteId: selectedFeed.id, reason: likeTarget.reason });
                       }
-                      await guard.afterAction({
-                        accountId,
-                        action: 'like',
-                        success: liked,
-                        dedupKey: `explore:like:${selectedFeed.id}`,
-                        xsecToken: selectedFeed.xsecToken,
-                        reservation: resv.reservation,
-                      });
                     }
                   } else if (likeTarget.target.startsWith('comment:')) {
                     // 点赞评论
@@ -423,27 +431,34 @@ export class ExploreService {
                     if (!resv.allow) {
                       log.warn('explore 内部点赞评论被共现守卫拦截', { noteId: selectedFeed.id, commentId, reason: resv.reason });
                     } else {
-                      const liked = await this.likeCommentInModal(page, commentId);
-                      if (liked) {
-                        db.explore.logAction(sessionId, {
-                          noteId: selectedFeed.id,
-                          noteTitle: selectedFeed.noteCard.displayTitle,
-                          action: 'liked',
-                          content: `评论: ${commentId}`,
-                          aiReason: likeTarget.reason,
+                      // R4 P1 1019834745：写前再次检查设备在场
+                      const canWrite = this.assertCanWrite(abortController);
+                      if (!canWrite.ok) {
+                        await guard.cancelReservation(resv.reservation, accountId);
+                        log.warn('explore 点赞评论前写门禁未过，回滚 reservation 跳过', { noteId: selectedFeed.id, commentId, reason: canWrite.reason });
+                      } else {
+                        const liked = await this.likeCommentInModal(page, commentId);
+                        if (liked) {
+                          db.explore.logAction(sessionId, {
+                            noteId: selectedFeed.id,
+                            noteTitle: selectedFeed.noteCard.displayTitle,
+                            action: 'liked',
+                            content: `评论: ${commentId}`,
+                            aiReason: likeTarget.reason,
+                          });
+                          notesLiked++;
+                          db.explore.markNoteExplored(accountId, selectedFeed.id, true);
+                          log.info('Liked comment', { noteId: selectedFeed.id, commentId, reason: likeTarget.reason });
+                        }
+                        await guard.afterAction({
+                          accountId,
+                          action: 'like_comment',
+                          success: liked,
+                          dedupKey: `explore:like_comment:${selectedFeed.id}:${commentId}`,
+                          xsecToken: selectedFeed.xsecToken,
+                          reservation: resv.reservation,
                         });
-                        notesLiked++;
-                        db.explore.markNoteExplored(accountId, selectedFeed.id, true);
-                        log.info('Liked comment', { noteId: selectedFeed.id, commentId, reason: likeTarget.reason });
                       }
-                      await guard.afterAction({
-                        accountId,
-                        action: 'like_comment',
-                        success: liked,
-                        dedupKey: `explore:like_comment:${selectedFeed.id}:${commentId}`,
-                        xsecToken: selectedFeed.xsecToken,
-                        reservation: resv.reservation,
-                      });
                     }
                   } else {
                     log.debug('AI chose not to like', { reason: likeTarget.reason });
@@ -469,26 +484,33 @@ export class ExploreService {
                   if (!resv.allow) {
                     log.warn('explore 内部评论被共现守卫拦截', { noteId: selectedFeed.id, reason: resv.reason });
                   } else {
-                    const commented = await this.commentInModal(page, commentResult.comment);
-                    if (commented) {
-                      db.explore.logAction(sessionId, {
-                        noteId: selectedFeed.id,
-                        noteTitle: selectedFeed.noteCard.displayTitle,
-                        action: 'commented',
-                        content: commentResult.comment,
+                    // R4 P1 1019834745：写前再次检查设备在场（覆盖 generateComment 异步窗口）
+                    const canWrite = this.assertCanWrite(abortController);
+                    if (!canWrite.ok) {
+                      await guard.cancelReservation(resv.reservation, accountId);
+                      log.warn('explore 评论前写门禁未过，回滚 reservation 跳过', { noteId: selectedFeed.id, reason: canWrite.reason });
+                    } else {
+                      const commented = await this.commentInModal(page, commentResult.comment);
+                      if (commented) {
+                        db.explore.logAction(sessionId, {
+                          noteId: selectedFeed.id,
+                          noteTitle: selectedFeed.noteCard.displayTitle,
+                          action: 'commented',
+                          content: commentResult.comment,
+                        });
+                        notesCommented++;
+                        db.explore.markNoteExplored(accountId, selectedFeed.id, true);
+                        log.info('Commented on note', { noteId: selectedFeed.id, comment: commentResult.comment });
+                      }
+                      await guard.afterAction({
+                        accountId,
+                        action: 'comment',
+                        success: commented,
+                        dedupKey: `explore:comment:${selectedFeed.id}`,
+                        xsecToken: selectedFeed.xsecToken,
+                        reservation: resv.reservation,
                       });
-                      notesCommented++;
-                      db.explore.markNoteExplored(accountId, selectedFeed.id, true);
-                      log.info('Commented on note', { noteId: selectedFeed.id, comment: commentResult.comment });
                     }
-                    await guard.afterAction({
-                      accountId,
-                      action: 'comment',
-                      success: commented,
-                      dedupKey: `explore:comment:${selectedFeed.id}`,
-                      xsecToken: selectedFeed.xsecToken,
-                      reservation: resv.reservation,
-                    });
                   }
                   }
                 }

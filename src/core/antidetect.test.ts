@@ -194,3 +194,39 @@ describe('reset', () => {
     expect((await g.beforeAction({ accountId: B, action: 'like', dedupKey: 'k', xsecToken: 't' })).allow).toBe(true);
   });
 });
+
+describe('R4 软业务失败与并发占用状态机', () => {
+  it('P1 1019897593 软业务失败（success:true, result.success:false）不提交去重且回滚预算', async () => {
+    const g = new CooccurrenceGuard(
+      makeCfg({ quota: { enabled: true, perAccountHourly: 1, perAccountDaily: 99, cooldownMsAfterAction: 0, consecutiveFailuresToTrip: 99, captchaErrorPatterns: [] } }),
+    );
+    const b1 = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'k' });
+    await g.afterAction({ accountId: A, action: 'comment', success: true, result: { success: false }, dedupKey: 'k', reservation: b1.reservation });
+    // 去重未提交：B 可使用同 key（不触发 cross_account_dedup）
+    expect((await g.beforeAction({ accountId: B, action: 'comment', dedupKey: 'k' })).allow).toBe(true);
+    // 预算已回滚：A 仍可在每小时预算内再次动作
+    expect((await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'k2' })).allow).toBe(true);
+  });
+
+  it('P1 1019970087 同账号并发：A2 成功 + A1 失败（乱序）→ key 提交，B 不可复用', async () => {
+    const g = new CooccurrenceGuard(makeCfg());
+    const b1 = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'k' });
+    const b2 = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'k' });
+    // A2 成功（先提交）
+    await g.afterAction({ accountId: A, action: 'comment', success: true, dedupKey: 'k', reservation: b2.reservation });
+    // A1 失败（后完成，乱序）
+    await g.afterAction({ accountId: A, action: 'comment', success: false, dedupKey: 'k', reservation: b1.reservation });
+    // 因 A2 成功，key 已提交，B 不可复用
+    expect((await g.beforeAction({ accountId: B, action: 'comment', dedupKey: 'k' })).allow).toBe(false);
+  });
+
+  it('P1 1019970087 同账号并发：两者均失败 → key 回收，B 可复用', async () => {
+    const g = new CooccurrenceGuard(makeCfg());
+    const b1 = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'k' });
+    const b2 = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'k' });
+    await g.afterAction({ accountId: A, action: 'comment', success: false, dedupKey: 'k', reservation: b2.reservation });
+    await g.afterAction({ accountId: A, action: 'comment', success: false, dedupKey: 'k', reservation: b1.reservation });
+    // 全部失败 → 占用回收，B 可复用
+    expect((await g.beforeAction({ accountId: B, action: 'comment', dedupKey: 'k' })).allow).toBe(true);
+  });
+});

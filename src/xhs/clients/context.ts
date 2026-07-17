@@ -101,10 +101,16 @@ export class BrowserContextManager {
    * Defaults to config.browser.headless (controlled by XHS_MCP_HEADLESS env)
    */
   async init(headless = config.browser.headless): Promise<void> {
-    // 每账号独立 profile 目录；旧账号（profile_id=null）回退旧全局共享目录以向后兼容
-    const profileDir = this.options.profileId
-      ? paths.getBrowserProfileDir(this.options.profileId)
-      : paths.browserProfile;
+    // 每账号独立 profile 目录（反检测 C1：账号隔离硬不变量）。
+    // R4 P0 1019900603：profileId 为空时拒绝回退共享目录（fail-closed），
+    // 避免升级后旧账号（profile_id=NULL）仍共享同一 browserProfile，造成多账号串号/Cookie/设备盐强关联。
+    // 全新登录由 login-session 使用独立临时目录（getLoginProfileDir），不依赖此共享路径。
+    if (!this.options.profileId) {
+      throw new Error(
+        'isolated profileId required to launch browser context; refusing to fall back to shared profile directory',
+      );
+    }
+    const profileDir = paths.getBrowserProfileDir(this.options.profileId);
     const session = await launchProfileContext(profileDir, headless, this.options.proxy);
     this.browser = session.browser;
     this.context = session.context;

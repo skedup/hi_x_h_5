@@ -71,6 +71,11 @@ export const config = {
      * 携带该值，否则 403。未配置则不强求确认（向后兼容）。
      */
     bulkConfirmToken: process.env.XHS_MCP_BULK_CONFIRM || '',
+    /**
+     * 人工在场确认 challenge 时效（毫秒）。短时有效、消费后轮换（R4 P2 1019839888），
+     * 避免长生命周期复用 token 被当成「自动化无法伪造」的强门禁。默认 120000（2 分钟）。
+     */
+    presenceChallengeTtlMs: parseInteger(process.env.XHS_MCP_PRESENCE_TTL, 120000),
   },
 
   /**

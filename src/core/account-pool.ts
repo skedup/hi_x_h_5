@@ -7,7 +7,7 @@
 import { XhsClient } from '../xhs/index.js';
 import { XhsDatabase, Account, getDatabase } from '../db/index.js';
 import { AccountLock, getAccountLock } from './account-lock.js';
-import { finalizeLoginProfile, removeProfileDir } from './profile.js';
+import { finalizeLoginProfile, removeProfileDir, generateProfileId } from './profile.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('account-pool');
@@ -155,7 +155,9 @@ export class AccountPool {
       const client = new XhsClient({
         accountId: account.id,
         proxy: proxy || account.proxy,
-        profileId: account.profileId,
+        // R4 P0：profileId 缺失时分配临时隔离目录，避免 context.ts fail-closed 抛错；
+        // 真正转正由 createAccountAfterLogin 的 finalizeLoginProfile 完成。
+        profileId: account.profileId || generateProfileId(),
         onStateChange: async (state) => {
           this.db.accounts.updateState(account.id, state);
         },
@@ -167,8 +169,10 @@ export class AccountPool {
 
     // For new login, don't create account yet - just return a temporary client
     // The account will be created after successful login using createAccountAfterLogin
+    // R4 P0：使用临时隔离目录（非共享 browserProfile），避免 context.ts fail-closed 抛错
     const tempClient = new XhsClient({
       proxy,
+      profileId: generateProfileId(),
     });
 
     // Return a placeholder account - the real account will be created after login
