@@ -8,6 +8,9 @@ import { XhsClient } from '../xhs/index.js';
 import { XhsDatabase, Account, getDatabase } from '../db/index.js';
 import { AccountLock, getAccountLock } from './account-lock.js';
 import { finalizeLoginProfile, removeProfileDir } from './profile.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('account-pool');
 
 /**
  * XhsClient 实例池，用于多账户管理
@@ -60,6 +63,13 @@ export class AccountPool {
     const account = this.resolveAccount(accountIdOrName);
 
     if (!account) {
+      return null;
+    }
+
+    // R3-7：profileId 作为独立硬不变量——缺少独立 profile 的账号一律 fail-closed，
+    // 拒绝回退旧共享 profile 目录破坏账号隔离（即便其 status 被误置为 active）。
+    if (!account.profileId) {
+      log.warn('拒绝为缺少独立 profileId 的账号创建浏览器客户端（隔离硬不变量）', { account: account.name });
       return null;
     }
 
@@ -319,6 +329,13 @@ export class AccountPool {
     const account = this.resolveAccount(accountIdOrName);
 
     if (!account) {
+      return false;
+    }
+
+    // R3-7：profileId 硬不变量——空 profile 的账号不得置为 active（fail-closed），
+    // 否则会被 getClient 回退共享 profile 破坏隔离。返回 false 由调用方报错。
+    if (updates.status === 'active' && !account.profileId) {
+      log.warn('拒绝将缺少 profileId 的账号设为 active（隔离硬不变量）', { account: account.name });
       return false;
     }
 

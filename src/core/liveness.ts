@@ -48,21 +48,30 @@ class LivenessMonitor {
     this.lastActivityMs = Date.now();
   }
 
-  /** 懒启动轮询（仅 darwin + 已启用 + 间隔>0） */
-  ensureStarted(): void {
+  /** 懒启动轮询（仅 darwin + 已启用） */
+  async ensureStarted(): Promise<void> {
     if (this.started) return;
     this.started = true;
     const { enabled, pollIntervalMs } = config.antiDetect.liveness;
-    if (!enabled || pollIntervalMs <= 0 || process.platform !== 'darwin') {
+    if (!enabled || process.platform !== 'darwin') {
       if (process.platform !== 'darwin') {
         log.debug('非 darwin 平台，跳过显示器 asleep 轮询（恒放行）');
       }
       return;
     }
-    this.timer = setInterval(() => void this.pollDisplayState(), pollIntervalMs);
-    // 不阻止进程退出
-    if (typeof this.timer.unref === 'function') this.timer.unref();
-    log.info('息屏自保轮询已启动', { pollIntervalMs });
+    // R3-6：启动即采样一次真实显示器状态，避免首轮默认 displayAsleep=false 误放行已息屏的设备
+    await this.pollDisplayState();
+    if (pollIntervalMs > 0) {
+      this.timer = setInterval(() => void this.pollDisplayState(), pollIntervalMs);
+      // 不阻止进程退出
+      if (typeof this.timer.unref === 'function') this.timer.unref();
+      log.info('息屏自保轮询已启动', { pollIntervalMs });
+    }
+  }
+
+  /** R3-6：确保已完成首次真实采样（供 explore 启动 / 服务启动 await，避免默认 awake 误放行） */
+  async awaitFirstSample(): Promise<void> {
+    await this.ensureStarted();
   }
 
   stop(): void {
@@ -178,8 +187,20 @@ export function isWriteAllowed(): LivenessState {
   return getLiveness().isWriteAllowed();
 }
 
-export function startLivenessMonitor(): void {
-  getLiveness().ensureStarted();
+export function startLivenessMonitor(): Promise<void> {
+  return getLiveness().ensureStarted();
+}
+
+/**
+ * R3-1：为 stdio 模式（无 HTTP 路由）提供本机人工在场确认通道。
+ * 终端前的人工按下 `kill -USR1 <pid>` 即记录一次在场，重置空闲超时——
+ * 独立于 MCP 调用，自动化客户端无法伪造。
+ */
+export function installPresenceSignal(): void {
+  process.on('SIGUSR1', () => {
+    getLiveness().recordActivity();
+    log.info('收到 SIGUSR1 信号，记录一次人工在场（空闲超时重置）');
+  });
 }
 
 export function stopLivenessMonitor(): void {

@@ -672,7 +672,7 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
           account: z.string(),
           name: z.string().min(1).max(64).optional(),
           proxy: z.string().optional(),
-          status: z.enum(['active', 'suspended', 'banned']).optional(),
+          status: z.enum(['active', 'suspended', 'banned', 'migration_required']).optional(),
         })
         .parse(args);
 
@@ -689,7 +689,25 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
         };
       }
 
-      const updates: { name?: string; proxy?: string; status?: 'active' | 'suspended' | 'banned' } = {};
+      // R3-7：profileId 硬不变量——空 profile 的账号不得置为 active（fail-closed）。
+      // 恢复路径是 xhs_add_account 重登录绑定独立 profile，而非直接改 status。
+      if (params.status === 'active' && !account.profileId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `拒绝将缺少独立 profile 的账号 "${account.name}" 设为 active（隔离硬不变量）。请先 xhs_add_account 重登录绑定独立 profile。`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const updates: {
+        name?: string;
+        proxy?: string;
+        status?: 'active' | 'suspended' | 'banned' | 'migration_required';
+      } = {};
       if (params.name !== undefined) {
         updates.name = params.name;
       }

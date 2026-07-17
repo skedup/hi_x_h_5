@@ -164,29 +164,21 @@ export class XhsDatabase {
    * SQLite 不支持 IF NOT EXISTS，所以需要捕获 "duplicate column name" 错误。
    */
   private migrateAccounts(): void {
-    // R2-7：旧库 accounts 表的 CHECK 约束可能不含 'migration_required'，
-    // 导致 legacyProfilesRequireMigration 的 UPDATE 触发 CHECK 失败被吞、旧账号仍 active（fail-open）。
-    // 先重建表应用新 CHECK，再迁移 profile_id 列。
-    this.rebuildAccountsForMigration();
-
-    const migrations = [
-      'ALTER TABLE accounts ADD COLUMN profile_id TEXT',
-    ];
-
-    for (const sql of migrations) {
-      try {
-        this.db.exec(sql);
-      } catch (e: any) {
-        if (!e.message?.includes('duplicate column name')) {
-          throw e;
-        }
-      }
+    // R3-8：先确保 profile_id 列存在（从 master 升级的旧表尚无该列），
+    // 否则下面的重建 SELECT profile_id 会报 "no such column: profile_id"。
+    // 对已含该列的表是 no-op（duplicate column name 安全忽略）。
+    try {
+      this.db.exec('ALTER TABLE accounts ADD COLUMN profile_id TEXT');
+    } catch (e: any) {
+      if (!e.message?.includes('duplicate column name')) throw e;
     }
+    // R3-8：再重建应用新 CHECK（仅当缺 migration_required 时）。事务保证原子，不留 accounts_new 半成品。
+    this.rebuildAccountsForMigration();
   }
 
   /**
-   * R2-7：若 accounts 表 CHECK 约束不含 'migration_required'（升级前的旧库），
-   * 在事务内重建该表以应用新约束（已含则跳过）。重建仅复制既有列，不丢数据。
+   * R2-7 / R3-8：若 accounts 表 CHECK 约束不含 'migration_required'（升级前的旧库），
+   * 用事务重建该表以应用新约束（已含则跳过）。重建仅复制既有列，不丢数据。
    */
   private rebuildAccountsForMigration(): void {
     const row = this.db
@@ -194,26 +186,29 @@ export class XhsDatabase {
       .get() as { sql?: string } | undefined;
     if (!row?.sql || row.sql.includes('migration_required')) return;
 
-    this.db.exec(`
-      PRAGMA foreign_keys=OFF;
-      CREATE TABLE accounts_new (
-        id TEXT PRIMARY KEY,
-        name TEXT UNIQUE NOT NULL,
-        proxy TEXT,
-        profile_id TEXT,
-        state JSON,
-        status TEXT DEFAULT 'active' CHECK(status IN ('active','suspended','banned','migration_required')),
-        last_login_at DATETIME,
-        last_active_at DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-      INSERT INTO accounts_new (id, name, proxy, profile_id, state, status, last_login_at, last_active_at, created_at, updated_at)
-        SELECT id, name, proxy, profile_id, state, status, last_login_at, last_active_at, created_at, updated_at FROM accounts;
-      DROP TABLE accounts;
-      ALTER TABLE accounts_new RENAME TO accounts;
-      PRAGMA foreign_keys=ON;
-    `);
+    // 用 better-sqlite3 事务包裹，任一语句失败整体回滚，避免残留 accounts_new 半成品状态。
+    // 本库未定义外键引用 accounts，无需切换 foreign_keys。
+    const tx = this.db.transaction(() => {
+      this.db.exec(`
+        CREATE TABLE accounts_new (
+          id TEXT PRIMARY KEY,
+          name TEXT UNIQUE NOT NULL,
+          proxy TEXT,
+          profile_id TEXT,
+          state JSON,
+          status TEXT DEFAULT 'active' CHECK(status IN ('active','suspended','banned','migration_required')),
+          last_login_at DATETIME,
+          last_active_at DATETIME,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO accounts_new (id, name, proxy, profile_id, state, status, last_login_at, last_active_at, created_at, updated_at)
+          SELECT id, name, proxy, profile_id, state, status, last_login_at, last_active_at, created_at, updated_at FROM accounts;
+        DROP TABLE accounts;
+        ALTER TABLE accounts_new RENAME TO accounts;
+      `);
+    });
+    tx();
   }
 
   /**

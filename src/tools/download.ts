@@ -212,8 +212,9 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'get_note_for_download', async (ctx) => {
         const note = await ctx.client.getNote(params.noteId, params.xsecToken);
         apiRequest = ctx.client.request;
-        // 蓝军 #6 / R2-1：提取即登记来源账号，用实际执行提取的 ctx.accountId（fail-closed）
-        getCooccurrenceGuard().bindXsecSource(params.xsecToken, ctx.accountId);
+        // R3-5：消费路径只校验既有来源，禁止补写来源（fail-closed）
+        const chk = getCooccurrenceGuard().checkXsecSource(params.xsecToken, ctx.accountId);
+        if (!chk.allow) throw new Error(`xsec token 校验失败（${chk.reason}）：消费路径不得补写来源`);
         return note;
       }, { capability: 'read' });
 
@@ -326,8 +327,9 @@ export async function handleDownloadTools(name: string, args: any, pool: Account
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'get_note_for_download', async (ctx) => {
         const note = await ctx.client.getNote(params.noteId, params.xsecToken);
         apiRequest = ctx.client.request;
-        // 蓝军 #6 / R2-1：提取即登记来源账号，用实际执行提取的 ctx.accountId（fail-closed）
-        getCooccurrenceGuard().bindXsecSource(params.xsecToken, ctx.accountId);
+        // R3-5：消费路径只校验既有来源，禁止补写来源（fail-closed）
+        const chk = getCooccurrenceGuard().checkXsecSource(params.xsecToken, ctx.accountId);
+        if (!chk.allow) throw new Error(`xsec token 校验失败（${chk.reason}）：消费路径不得补写来源`);
         return note;
       }, { capability: 'read' });
 

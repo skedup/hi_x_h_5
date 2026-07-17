@@ -7,6 +7,7 @@
 
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { randomBytes } from 'node:crypto';
 import { serve } from '@hono/node-server';
 import { createMcpServer } from './server.js';
 import { initDatabase } from './db/index.js';
@@ -16,7 +17,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { config } from './core/config.js';
 import { evaluateAuthorization, authorizeMessages } from './core/audit.js';
-import { startLivenessMonitor, recordHumanActivity } from './core/liveness.js';
+import { startLivenessMonitor, recordHumanActivity, installPresenceSignal } from './core/liveness.js';
 
 /**
  * C3.3（P2-2）本地 HTTP MCP 鉴权与读写能力分级。
@@ -52,6 +53,25 @@ function authorizeMcp(c: Context, body: any): Response | null {
 }
 
 /**
+ * R3-1：人工在场确认 token。一次性随机生成，仅打印在本机终端（stderr），
+ * 自动化 MCP 客户端读不到，故无法伪造「人工确认」。供 stdio（SIGUSR1）与 HTTP（/confirm-presence）共用。
+ */
+let _presenceSecret: string | null = null;
+function getPresenceSecret(): string {
+  if (!_presenceSecret) {
+    _presenceSecret = randomBytes(16).toString('hex');
+    console.error(`[presence] 人工在场确认 token（仅本机终端可见，勿外泄）: ${_presenceSecret}`);
+  }
+  return _presenceSecret;
+}
+
+/** R3-1：校验提供的人工在场 token 是否正确（供测试与路由共用） */
+export function verifyPresenceToken(provided: string | undefined): boolean {
+  const secret = _presenceSecret ?? getPresenceSecret();
+  return !!provided && provided === secret;
+}
+
+/**
  * Start the HTTP transport server for the MCP protocol.
  * Uses Hono as the HTTP framework and Node.js as the runtime.
  *
@@ -63,7 +83,11 @@ export async function startHttpServer(port: number = config.server.port) {
   const pool = getAccountPool(db);
 
   // C3.2 启动息屏自保轮询（darwin + 已启用时生效；非 darwin/未启用为 no-op）
-  startLivenessMonitor();
+  await startLivenessMonitor();
+  // R3-1：stdio 模式下无 HTTP 路由，故安装 SIGUSR1 信号作为本机人工在场确认通道
+  installPresenceSignal();
+  // 打印人工在场确认 token（仅本机终端可见，自动化客户端无法读取）
+  getPresenceSecret();
 
   /**
    * Create a new MCP server and transport for each request.
@@ -235,11 +259,17 @@ export async function startHttpServer(port: number = config.server.port) {
     return c.json({ status: 'ok', server: 'xhs-mcp', version: '2.0.0' });
   });
 
-  // R2-11：独立、短时、本机「人工在场」确认通道。仅本机（服务绑定 127.0.0.1）可调，
-  // 用于重置无人值守计时（idleTimeoutMs）。任何远程 MCP 调用都不会刷新在场状态
-  // （见 server.ts 蓝军 #7），这是人工确认的唯一可信入口，避免空闲超时后写操作被永久锁死。
-  // 用法（本机）：curl -X POST http://127.0.0.1:<port>/confirm-presence
+  // R3-1：独立、本机「人工在场」确认通道。需携带本机终端打印的一次性 presence token，
+  // 任意本地进程/自动化客户端读不到该 token，故无法伪造「人工确认」。
+  // 用法（本机）：curl -X POST "http://127.0.0.1:<port>/confirm-presence?token=<secret>"
+  //   或 Header：Authorization: Bearer <secret>
   app.post('/confirm-presence', (c) => {
+    const url = new URL(c.req.url, `http://127.0.0.1:${config.server.port}`);
+    const provided =
+      c.req.header('authorization')?.replace(/^Bearer\s+/i, '') || url.searchParams.get('token') || undefined;
+    if (!verifyPresenceToken(provided)) {
+      return c.json({ ok: false, error: 'forbidden: invalid or missing presence token' }, 401);
+    }
     recordHumanActivity();
     return c.json({ ok: true, message: 'presence confirmed' });
   });

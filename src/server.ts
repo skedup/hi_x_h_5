@@ -73,15 +73,17 @@ export function createMcpServer(pool: AccountPool, db: XhsDatabase): Server {
     );
   }
 
-  // 蓝军 #1：升级后尚无独立 profile 的旧账号强制进入 migration_required，拒绝平台操作
+  // 蓝军 #1 / R3-8：升级后尚无独立 profile 的旧账号强制进入 migration_required，拒绝平台操作。
+  // 仅成功后置 scanned；若失败则启动失败（fail-closed），避免旧账号以 active 静默触网。
   if (!migrationScanned) {
-    migrationScanned = true;
     try {
       const n = db.accounts.legacyProfilesRequireMigration();
       if (n > 0)
         console.warn(`[migration] ${n} 个旧账号缺少独立 profile，已置 migration_required，需人工重登录绑定`);
+      migrationScanned = true;
     } catch (e) {
-      console.error('[migration] scan failed', e);
+      console.error('[migration] scan failed（启动失败，避免旧账号以 active 静默触网）', e);
+      throw e;
     }
   }
 

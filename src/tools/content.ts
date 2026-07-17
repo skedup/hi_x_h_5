@@ -242,10 +242,13 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         multiParams,
         'get_note',
         async (ctx) => {
-          const note = await ctx.client.getNote(params.noteId, params.xsecToken);
-          // 蓝军 #6 / R2-1：提取即登记来源账号，用实际执行提取的 ctx.accountId（fail-closed）
-          getCooccurrenceGuard().bindXsecSource(params.xsecToken, ctx.accountId);
-          return note;
+          // R3-5：消费路径只校验既有来源，禁止补写来源（fail-closed）。
+          // 跨账号复用 / 未知来源在 block 模式下拒绝；warn 模式放行但记录。
+          const chk = getCooccurrenceGuard().checkXsecSource(params.xsecToken, ctx.accountId);
+          if (!chk.allow) {
+            throw new Error(`xsec token 校验失败（${chk.reason}）：消费路径不得补写来源`);
+          }
+          return await ctx.client.getNote(params.noteId, params.xsecToken);
         },
         { logParams: { noteId: params.noteId }, capability: 'read' },
       );
@@ -356,10 +359,14 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         multiParams,
         'user_profile',
         async (ctx) => {
-          const prof = await ctx.client.getUserProfile(params.userId, params.xsecToken);
-          // 蓝军 #6 / R2-1：提取即登记来源账号（xsecToken 可选时用实际提取账号）
-          if (params.xsecToken) getCooccurrenceGuard().bindXsecSource(params.xsecToken, ctx.accountId);
-          return prof;
+          // R3-5：消费路径只校验既有来源（xsecToken 可选；提供时才校验），禁止补写来源
+          if (params.xsecToken) {
+            const chk = getCooccurrenceGuard().checkXsecSource(params.xsecToken, ctx.accountId);
+            if (!chk.allow) {
+              throw new Error(`xsec token 校验失败（${chk.reason}）：消费路径不得补写来源`);
+            }
+          }
+          return await ctx.client.getUserProfile(params.userId, params.xsecToken);
         },
         { logParams: { userId: params.userId }, capability: 'read' },
       );
