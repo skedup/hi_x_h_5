@@ -207,6 +207,7 @@ If only one account exists and no `account` parameter is specified, it will be u
 | `GEMINI_IMAGE_GENERATE_MODEL` | `gemini-3-pro-image` | Image generation model |
 | `XHS_MCP_DATA_DIR` | `~/.xhs-mcp` | Data storage directory |
 | `XHS_MCP_HEADLESS` | `true` | Use headless browser |
+| `XHS_MCP_LEGACY_PROFILE_ACCOUNT_ID` | - | Explicit owner account ID required for first adoption of a legacy `browser-profile` |
 | `XHS_MCP_KEEP_OPEN` | `false` | Keep browser open after operation |
 | `XHS_MCP_REQUEST_INTERVAL` | `2000` | Request interval (ms) |
 
@@ -229,12 +230,14 @@ All data is stored in `~/.xhs-mcp/`:
     └── videos/{noteId}/ # Downloaded videos
 ```
 
-When upgrading a legacy deployment, an existing `browser-profile/` is adopted automatically only when
-the database contains exactly one `active` account (or one left as `migration_required` by an earlier upgrade)
-and the directory contains persistent state with mode `0700`. The directory is moved
+When upgrading a legacy deployment, first set the sole legacy account's stable ID in
+`XHS_MCP_LEGACY_PROFILE_ACCOUNT_ID`. If that account is `active` (or was left as `migration_required` by an
+earlier upgrade) and the legacy directory contains persistent state with mode `0700`, the directory is moved
 atomically under a random UUID and the legacy path remains as a compatibility symlink, so rolling back to the
-old code still uses the same login state. A legacy multi-account database is never guessed: affected accounts
-enter `migration_required` and must be rebound through the login flow.
+old code still uses the same login state. The migration marker binds the account ID, so crash recovery no longer
+depends on retaining the environment variable. Missing or mismatched confirmation for a non-empty legacy profile
+blocks startup without changing account status. Legacy multi-account databases are never guessed; affected accounts
+must be rebound through the login flow. Obtain the stable account ID from `xhs_list_accounts` before upgrading.
 
 ---
 

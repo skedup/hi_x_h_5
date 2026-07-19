@@ -100,6 +100,11 @@ export const config = {
   browser: {
     /** 是否使用无头模式 (XHS_MCP_HEADLESS)，默认 false */
     headless: parseBoolean(process.env.XHS_MCP_HEADLESS, false),
+    /**
+     * 首次接管旧 browser-profile 时由运维显式确认的账号 ID。
+     * 未配置时绝不根据“当前只有一个账号”猜测历史共享 profile 的归属。
+     */
+    legacyProfileAccountId: process.env.XHS_MCP_LEGACY_PROFILE_ACCOUNT_ID?.trim() || '',
     /** 请求间隔（毫秒）(XHS_MCP_REQUEST_INTERVAL)，用于速率限制 */
     requestInterval: parseInteger(process.env.XHS_MCP_REQUEST_INTERVAL, 2000),
     /** 操作完成后是否保持浏览器打开 (XHS_MCP_KEEP_OPEN)，默认 false */

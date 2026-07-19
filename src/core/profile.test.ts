@@ -9,17 +9,21 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import {
   adoptSingleLegacyProfile,
   generateProfileId,
   getLoginProfileDir,
   finalizeLoginProfile,
+  removeAccountProfile,
 } from './profile.js';
 import { paths } from './config.js';
 
@@ -88,16 +92,34 @@ function legacyFixture(base: string, status: 'active' | 'migration_required' = '
   const store = {
     findAll: () => [account],
     findById: (id: string) => (id === account.id ? account : null),
-    setProfileId: (id: string, profileId: string) => {
-      if (id !== account.id || account.profileId) return false;
+    adoptLegacyProfile: (id: string, profileId: string) => {
+      if (
+        id !== account.id ||
+        (account.profileId !== undefined && account.profileId !== profileId) ||
+        (account.status !== 'active' && account.status !== 'migration_required')
+      )
+        return false;
       account.profileId = profileId;
+      account.status = 'active';
       return true;
-    },
-    updateConfig: (id: string, updates: { status?: typeof account.status }) => {
-      if (id === account.id && updates.status) account.status = updates.status;
     },
   };
   return { account, legacyProfile, marker, getProfileDir, store };
+}
+
+function adoptionOptions(fixture: ReturnType<typeof legacyFixture>, confirmOwner = true) {
+  return {
+    ...(confirmOwner ? { expectedAccountId: fixture.account.id } : {}),
+    paths: {
+      legacyProfile: fixture.legacyProfile,
+      adoptionMarker: fixture.marker,
+      getProfileDir: fixture.getProfileDir,
+    },
+  };
+}
+
+function writeAdoptionMarker(fixture: ReturnType<typeof legacyFixture>, accountId: string, profileId: string) {
+  writeFileSync(fixture.marker, `${JSON.stringify({ version: 1, accountId, profileId })}\n`, { mode: 0o600 });
 }
 
 describe('单账号旧 profile 兼容迁移', () => {
@@ -105,11 +127,7 @@ describe('单账号旧 profile 兼容迁移', () => {
     const base = mkdtempSync(join(tmpdir(), 'xhs-legacy-adopt-'));
     const fixture = legacyFixture(base);
     try {
-      const result = adoptSingleLegacyProfile(fixture.store, {
-        legacyProfile: fixture.legacyProfile,
-        adoptionMarker: fixture.marker,
-        getProfileDir: fixture.getProfileDir,
-      });
+      const result = adoptSingleLegacyProfile(fixture.store, adoptionOptions(fixture));
 
       expect(result.adopted).toBe(true);
       expect(result.profileId).toBe(fixture.account.profileId);
@@ -131,13 +149,7 @@ describe('单账号旧 profile 兼容迁移', () => {
     const second = { id: 'second', status: 'active' as const, profileId: undefined };
     const store = { ...fixture.store, findAll: () => [fixture.account, second] };
     try {
-      expect(
-        adoptSingleLegacyProfile(store, {
-          legacyProfile: fixture.legacyProfile,
-          adoptionMarker: fixture.marker,
-          getProfileDir: fixture.getProfileDir,
-        }),
-      ).toEqual({ adopted: false });
+      expect(adoptSingleLegacyProfile(store, adoptionOptions(fixture))).toEqual({ adopted: false });
       expect(fixture.account.profileId).toBeUndefined();
       expect(lstatSync(fixture.legacyProfile).isDirectory()).toBe(true);
     } finally {
@@ -150,16 +162,130 @@ describe('单账号旧 profile 兼容迁移', () => {
     const fixture = legacyFixture(base);
     rmSync(join(fixture.legacyProfile, 'cookie-marker'));
     try {
-      expect(
-        adoptSingleLegacyProfile(fixture.store, {
-          legacyProfile: fixture.legacyProfile,
-          adoptionMarker: fixture.marker,
-          getProfileDir: fixture.getProfileDir,
-        }),
-      ).toEqual({ adopted: false });
+      expect(adoptSingleLegacyProfile(fixture.store, adoptionOptions(fixture))).toEqual({ adopted: false });
       expect(fixture.account.profileId).toBeUndefined();
       expect(existsSync(fixture.marker)).toBe(false);
       expect(lstatSync(fixture.legacyProfile).isDirectory()).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('没有显式账号归属确认时拒绝接管，即使当前仅剩一个 migration_required 账号', () => {
+    const base = mkdtempSync(join(tmpdir(), 'xhs-legacy-owner-required-'));
+    const fixture = legacyFixture(base, 'migration_required');
+    try {
+      expect(() => adoptSingleLegacyProfile(fixture.store, adoptionOptions(fixture, false))).toThrow(
+        'legacy profile owner confirmation is required',
+      );
+      expect(fixture.account.profileId).toBeUndefined();
+      expect(existsSync(fixture.marker)).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('marker 绑定原账号，唯一账号被替换后拒绝把旧 Cookie 绑定给新账号', () => {
+    const base = mkdtempSync(join(tmpdir(), 'xhs-legacy-owner-changed-'));
+    const fixture = legacyFixture(base);
+    const profileId = generateProfileId();
+    writeAdoptionMarker(fixture, fixture.account.id, profileId);
+    fixture.account.id = 'replacement-account';
+    try {
+      expect(() => adoptSingleLegacyProfile(fixture.store, adoptionOptions(fixture, false))).toThrow(
+        'legacy profile adoption marker belongs to another account',
+      );
+      expect(fixture.account.profileId).toBeUndefined();
+      expect(existsSync(fixture.marker)).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('迁移完成且 marker 已消费后忽略遗留的 owner 环境配置', () => {
+    const base = mkdtempSync(join(tmpdir(), 'xhs-legacy-stale-owner-env-'));
+    const fixture = legacyFixture(base);
+    fixture.account.profileId = generateProfileId();
+    try {
+      expect(
+        adoptSingleLegacyProfile(fixture.store, {
+          ...adoptionOptions(fixture, false),
+          expectedAccountId: 'removed-legacy-account',
+        }),
+      ).toEqual({ adopted: false });
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('rename 后崩溃且 db.init 重建空旧目录时，删除空目录并恢复兼容链接', () => {
+    const base = mkdtempSync(join(tmpdir(), 'xhs-legacy-restart-layout-'));
+    const fixture = legacyFixture(base, 'migration_required');
+    const profileId = generateProfileId();
+    const isolated = fixture.getProfileDir(profileId);
+    writeAdoptionMarker(fixture, fixture.account.id, profileId);
+    mkdirSync(dirname(isolated), { recursive: true, mode: 0o700 });
+    chmodSync(dirname(isolated), 0o700);
+    renameSync(fixture.legacyProfile, isolated);
+    // 模拟下一进程先执行 ensureDirectories()。
+    mkdirSync(fixture.legacyProfile, { mode: 0o700 });
+    try {
+      const recovered = adoptSingleLegacyProfile(fixture.store, adoptionOptions(fixture, false));
+      expect(recovered).toEqual({ adopted: true, profileId });
+      expect(lstatSync(fixture.legacyProfile).isSymbolicLink()).toBe(true);
+      expect(existsSync(join(fixture.legacyProfile, 'cookie-marker'))).toBe(true);
+      expect(existsSync(fixture.marker)).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('已绑定账号的兼容链接目标丢失时保持 migration_required 和 marker', () => {
+    const base = mkdtempSync(join(tmpdir(), 'xhs-legacy-dangling-'));
+    const fixture = legacyFixture(base, 'migration_required');
+    const profileId = generateProfileId();
+    const isolated = fixture.getProfileDir(profileId);
+    fixture.account.profileId = profileId;
+    writeAdoptionMarker(fixture, fixture.account.id, profileId);
+    rmSync(fixture.legacyProfile, { recursive: true });
+    symlinkSync(relative(dirname(fixture.legacyProfile), isolated), fixture.legacyProfile, 'dir');
+    try {
+      expect(() => adoptSingleLegacyProfile(fixture.store, adoptionOptions(fixture, false))).toThrow();
+      expect(fixture.account.status).toBe('migration_required');
+      expect(existsSync(fixture.marker)).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('数据库绑定后账号消失时不删除 marker，也不报告迁移成功', () => {
+    const base = mkdtempSync(join(tmpdir(), 'xhs-legacy-account-deleted-'));
+    const fixture = legacyFixture(base);
+    const store = {
+      ...fixture.store,
+      adoptLegacyProfile: () => true,
+      findById: () => null,
+    };
+    try {
+      expect(() => adoptSingleLegacyProfile(store, adoptionOptions(fixture))).toThrow(
+        'legacy browser profile could not be bound to account',
+      );
+      expect(existsSync(fixture.marker)).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('账号删除赢得竞态时清理属于该账号的在途 marker 和旧 profile', () => {
+    const base = mkdtempSync(join(tmpdir(), 'xhs-legacy-delete-pending-'));
+    const fixture = legacyFixture(base);
+    const profileId = generateProfileId();
+    writeAdoptionMarker(fixture, fixture.account.id, profileId);
+    try {
+      removeAccountProfile(fixture.account.id, undefined, adoptionOptions(fixture, false).paths);
+      expect(existsSync(fixture.marker)).toBe(false);
+      expect(existsSync(fixture.legacyProfile)).toBe(false);
+      expect(readdirSync(base).some((name) => name.startsWith('browser-profile.removed-'))).toBe(true);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
@@ -172,14 +298,10 @@ describe('单账号旧 profile 兼容迁移', () => {
     const store = { ...fixture.store, findAll: () => [fixture.account, second] };
     const profileId = generateProfileId();
     try {
-      writeFileSync(fixture.marker, `${JSON.stringify({ profileId })}\n`, { mode: 0o600 });
-      expect(() =>
-        adoptSingleLegacyProfile(store, {
-          legacyProfile: fixture.legacyProfile,
-          adoptionMarker: fixture.marker,
-          getProfileDir: fixture.getProfileDir,
-        }),
-      ).toThrow('legacy profile adoption marker requires exactly one account');
+      writeAdoptionMarker(fixture, fixture.account.id, profileId);
+      expect(() => adoptSingleLegacyProfile(store, adoptionOptions(fixture, false))).toThrow(
+        'legacy profile adoption marker requires exactly one account',
+      );
       expect(existsSync(fixture.marker)).toBe(true);
       expect(fixture.account.profileId).toBeUndefined();
     } finally {
@@ -193,25 +315,27 @@ describe('单账号旧 profile 兼容迁移', () => {
     let failOnce = true;
     const store = {
       ...fixture.store,
-      setProfileId: (id: string, profileId: string) => {
+      adoptLegacyProfile: (id: string, profileId: string) => {
         if (failOnce) {
           failOnce = false;
           throw new Error('simulated database interruption');
         }
-        return fixture.store.setProfileId(id, profileId);
+        return fixture.store.adoptLegacyProfile(id, profileId);
       },
     };
-    const pathConfig = {
-      legacyProfile: fixture.legacyProfile,
-      adoptionMarker: fixture.marker,
-      getProfileDir: fixture.getProfileDir,
-    };
+    const firstAttempt = adoptionOptions(fixture);
+    const recovery = adoptionOptions(fixture, false);
     try {
-      expect(() => adoptSingleLegacyProfile(store, pathConfig)).toThrow('simulated database interruption');
+      expect(() => adoptSingleLegacyProfile(store, firstAttempt)).toThrow('simulated database interruption');
       expect(lstatSync(fixture.legacyProfile).isSymbolicLink()).toBe(true);
       const entriesBefore = readdirSync(join(base, 'browser-profiles'));
+      expect(JSON.parse(readFileSync(fixture.marker, 'utf8'))).toMatchObject({
+        version: 1,
+        accountId: fixture.account.id,
+        profileId: entriesBefore[0],
+      });
 
-      const recovered = adoptSingleLegacyProfile(store, pathConfig);
+      const recovered = adoptSingleLegacyProfile(store, recovery);
       expect(recovered.adopted).toBe(true);
       expect(fixture.account.status).toBe('active');
       expect(readdirSync(join(base, 'browser-profiles'))).toEqual(entriesBefore);

@@ -8,6 +8,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -56,7 +57,7 @@ test('重建 accounts CHECK 约束时保留外键子表数据', async () => {
     `);
     legacy.close();
 
-    const [{ XhsDatabase }, { adoptSingleLegacyProfile }] = await Promise.all([
+    const [{ XhsDatabase }, { adoptSingleLegacyProfile, generateProfileId }] = await Promise.all([
       import('../dist/db/index.js'),
       import('../dist/core/profile.js'),
     ]);
@@ -73,6 +74,19 @@ test('重建 accounts CHECK 约束时保留外键子表数据', async () => {
     mkdirSync(legacyProfile, { recursive: true, mode: 0o700 });
     chmodSync(legacyProfile, 0o700);
     writeFileSync(join(legacyProfile, 'cookie-marker'), 'preserved');
+    const profileId = generateProfileId();
+    const profileRoot = join(dir, 'browser-profiles');
+    const isolatedProfile = join(profileRoot, profileId);
+    mkdirSync(profileRoot, { recursive: true, mode: 0o700 });
+    chmodSync(profileRoot, 0o700);
+    writeFileSync(
+      join(dir, 'browser-profile.adoption.json'),
+      `${JSON.stringify({ version: 1, accountId: 'a1', profileId })}\n`,
+      { mode: 0o600 },
+    );
+    renameSync(legacyProfile, isolatedProfile);
+    // 模拟 rename 后、symlink 前退出；下一次 db.init/ensureDirectories 已补出空旧目录。
+    mkdirSync(legacyProfile, { mode: 0o700 });
     const adoption = adoptSingleLegacyProfile(db.accounts);
     const migratedAccount = db.accounts.findById('a1');
 
@@ -81,7 +95,11 @@ test('重建 accounts CHECK 约束时保留外键子表数据', async () => {
     assert.equal(migratedAccount?.profileId, adoption.profileId);
     assert.equal(lstatSync(legacyProfile).isSymbolicLink(), true);
     assert.equal(existsSync(join(legacyProfile, 'cookie-marker')), true);
-    assert.equal(existsSync(join(dir, 'browser-profiles', adoption.profileId, 'cookie-marker')), true);
+    assert.equal(existsSync(join(isolatedProfile, 'cookie-marker')), true);
+
+    const removed = db.accounts.deleteWithProfileId('a1');
+    assert.deepEqual(removed, { deleted: true, profileId });
+    assert.equal(db.accounts.findById('a1'), null);
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

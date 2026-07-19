@@ -104,6 +104,47 @@ export class AccountRepository {
   }
 
   /**
+   * 原子接管唯一旧账号的 profile，并恢复 active。
+   * IMMEDIATE 事务使账号数量、账号 ID、状态和 profile_id 校验与写入不可被其他进程插入/删除打断。
+   */
+  adoptLegacyProfile(id: string, profileId: string): boolean {
+    const adopt = this.db.transaction(() => {
+      const rows = this.db
+        .prepare('SELECT id, profile_id, status FROM accounts')
+        .all() as Array<{ id: string; profile_id: string | null; status: Account['status'] }>;
+      if (rows.length !== 1) return false;
+      const account = rows[0];
+      if (account.id !== id) return false;
+      if (account.status !== 'active' && account.status !== 'migration_required') return false;
+      if (account.profile_id !== null && account.profile_id !== profileId) return false;
+
+      this.db
+        .prepare("UPDATE accounts SET profile_id = ?, status = 'active', updated_at = ? WHERE id = ?")
+        .run(profileId, new Date().toISOString(), id);
+      return true;
+    });
+    return adopt.immediate();
+  }
+
+  /**
+   * 原子删除账号并返回删除瞬间绑定的 profile_id，避免异步关闭客户端期间发生迁移而遗漏清理。
+   */
+  deleteWithProfileId(id: string): { deleted: boolean; profileId?: string } {
+    const remove = this.db.transaction(() => {
+      const row = this.db.prepare('SELECT profile_id FROM accounts WHERE id = ?').get(id) as
+        | { profile_id: string | null }
+        | undefined;
+      if (!row) return { deleted: false };
+      const result = this.db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+      return {
+        deleted: result.changes === 1,
+        ...(row.profile_id ? { profileId: row.profile_id } : {}),
+      };
+    });
+    return remove.immediate();
+  }
+
+  /**
    * 蓝军 #1：升级后尚无独立 profile 的旧账号（profile_id IS NULL 且仍 active）强制进入
    * migration_required，拒绝平台操作，直到人工重登录绑定独立 profile。返回受影响行数。
    */

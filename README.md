@@ -207,6 +207,7 @@ xhs_publish_content({ title: "...", content: "...", images: [...], accounts: "al
 | `GEMINI_IMAGE_GENERATE_MODEL` | `gemini-3-pro-image` | 图片生成模型 |
 | `XHS_MCP_DATA_DIR` | `~/.xhs-mcp` | 数据存储目录 |
 | `XHS_MCP_HEADLESS` | `true` | 是否使用无头浏览器 |
+| `XHS_MCP_LEGACY_PROFILE_ACCOUNT_ID` | - | 首次接管旧 `browser-profile` 时显式确认其所属账号 ID |
 | `XHS_MCP_KEEP_OPEN` | `false` | 操作完成后保持浏览器打开 |
 | `XHS_MCP_REQUEST_INTERVAL` | `2000` | 请求间隔（毫秒） |
 
@@ -229,11 +230,13 @@ xhs_publish_content({ title: "...", content: "...", images: [...], accounts: "al
     └── videos/{noteId}/ # 下载的视频
 ```
 
-从旧版单账号部署升级时，如果数据库中恰好只有一个 `active`（或此前升级留下的 `migration_required`）
-账号，且旧 `browser-profile/` 包含持久化状态、权限为 `0700`，
+从旧版单账号部署升级时，需要先将唯一旧账号的稳定 ID 配置为
+`XHS_MCP_LEGACY_PROFILE_ACCOUNT_ID`。如果该账号为 `active`（或此前升级留下的 `migration_required`），
+且旧 `browser-profile/` 包含持久化状态、权限为 `0700`，
 服务会将它原子迁移到随机 UUID 对应的独立目录，并在旧路径保留符号链接，保证部署失败回滚到旧代码后
-仍能使用同一登录态。多账号旧库不会猜测共享 profile 的归属，相关账号会进入 `migration_required`，
-需要通过登录流程重新绑定独立 profile。
+仍能使用同一登录态。迁移 marker 会绑定账号 ID，异常重启不需要继续保留该环境变量。非空旧 profile
+未显式确认归属或账号 ID 不匹配时，服务会拒绝启动且不修改账号状态；多账号旧库则不会猜测归属，
+相关账号需要通过登录流程重新绑定独立 profile。账号 ID 可在升级前通过 `xhs_list_accounts` 获取。
 
 ---
 
