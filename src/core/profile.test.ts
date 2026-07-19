@@ -16,7 +16,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join, dirname, relative } from 'node:path';
 import {
   adoptSingleLegacyProfile,
@@ -85,6 +85,7 @@ function legacyFixture(base: string, status: 'active' | 'migration_required' = '
   } = { id: 'legacy-account', status };
   const legacyProfile = join(base, 'browser-profile');
   const marker = join(base, 'browser-profile.adoption.json');
+  const migrationLock = join(base, 'browser-profile.migration.lock');
   const getProfileDir = (profileId: string) => join(base, 'browser-profiles', profileId);
   mkdirSync(legacyProfile, { recursive: true, mode: 0o700 });
   chmodSync(legacyProfile, 0o700);
@@ -104,7 +105,7 @@ function legacyFixture(base: string, status: 'active' | 'migration_required' = '
       return true;
     },
   };
-  return { account, legacyProfile, marker, getProfileDir, store };
+  return { account, legacyProfile, marker, migrationLock, getProfileDir, store };
 }
 
 function adoptionOptions(fixture: ReturnType<typeof legacyFixture>, confirmOwner = true) {
@@ -113,6 +114,7 @@ function adoptionOptions(fixture: ReturnType<typeof legacyFixture>, confirmOwner
     paths: {
       legacyProfile: fixture.legacyProfile,
       adoptionMarker: fixture.marker,
+      migrationLock: fixture.migrationLock,
       getProfileDir: fixture.getProfileDir,
     },
   };
@@ -180,6 +182,51 @@ describe('单账号旧 profile 兼容迁移', () => {
       );
       expect(fixture.account.profileId).toBeUndefined();
       expect(existsSync(fixture.marker)).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('仅在显式确认唯一账号归属后原子升级旧版 marker 并完成迁移', () => {
+    const base = mkdtempSync(join(tmpdir(), 'xhs-legacy-v0-marker-'));
+    const fixture = legacyFixture(base, 'migration_required');
+    const profileId = generateProfileId();
+    writeFileSync(fixture.marker, `${JSON.stringify({ profileId })}\n`, { mode: 0o600 });
+    try {
+      expect(() => adoptSingleLegacyProfile(fixture.store, adoptionOptions(fixture, false))).toThrow(
+        'legacy profile owner confirmation is required to upgrade the old adoption marker',
+      );
+      expect(JSON.parse(readFileSync(fixture.marker, 'utf8'))).toEqual({ profileId });
+
+      expect(adoptSingleLegacyProfile(fixture.store, adoptionOptions(fixture))).toEqual({ adopted: true, profileId });
+      expect(fixture.account).toMatchObject({ status: 'active', profileId });
+      expect(lstatSync(fixture.legacyProfile).isSymbolicLink()).toBe(true);
+      expect(existsSync(join(fixture.getProfileDir(profileId), 'cookie-marker'))).toBe(true);
+      expect(existsSync(fixture.marker)).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('自动回收同主机已退出进程遗留的迁移锁', () => {
+    const base = mkdtempSync(join(tmpdir(), 'xhs-legacy-stale-lock-'));
+    const fixture = legacyFixture(base);
+    mkdirSync(fixture.migrationLock, { mode: 0o700 });
+    chmodSync(fixture.migrationLock, 0o700);
+    writeFileSync(
+      join(fixture.migrationLock, 'owner.json'),
+      `${JSON.stringify({
+        version: 1,
+        token: generateProfileId(),
+        pid: 2_147_483_647,
+        hostname: hostname(),
+        createdAt: Date.now(),
+      })}\n`,
+      { mode: 0o600 },
+    );
+    try {
+      expect(adoptSingleLegacyProfile(fixture.store, adoptionOptions(fixture))).toMatchObject({ adopted: true });
+      expect(existsSync(fixture.migrationLock)).toBe(false);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }

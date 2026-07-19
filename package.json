@@ -24,7 +24,7 @@
     "start:bun:http": "bun dist/index.js --http",
     "test:search": "bun scripts/test-xhs.ts search",
     "test:note": "bun scripts/test-xhs.ts note",
-    "test:migration": "npm run build && node --test scripts/db-migration-regression.mjs",
+    "test:migration": "npm run build && node --test scripts/db-migration-regression.mjs scripts/profile-migration-concurrency-regression.mjs",
     "regression:a2": "bun scripts/regression-a2.ts",
     "test": "bun test",
     "docs:dev": "vitepress dev docs",

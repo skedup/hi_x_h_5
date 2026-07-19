@@ -18,12 +18,14 @@ import {
   readdirSync,
   readlinkSync,
   renameSync,
+  rmSync,
   rmdirSync,
   symlinkSync,
   unlinkSync,
   writeSync,
 } from 'node:fs';
-import { basename, dirname, relative, resolve } from 'node:path';
+import { hostname } from 'node:os';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { paths } from './config.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -43,6 +45,7 @@ export interface LegacyProfileAccountStore {
 interface LegacyProfilePaths {
   legacyProfile: string;
   adoptionMarker: string;
+  migrationLock: string;
   getProfileDir(profileId: string): string;
 }
 
@@ -50,6 +53,21 @@ interface LegacyProfileMarker {
   version: 1;
   accountId: string;
   profileId: string;
+}
+
+interface LegacyProfileMarkerV0 {
+  version: 0;
+  profileId: string;
+}
+
+type LegacyProfileMarkerFile = LegacyProfileMarker | LegacyProfileMarkerV0;
+
+interface ProfileMigrationLockOwner {
+  version: 1;
+  token: string;
+  pid: number;
+  hostname: string;
+  createdAt: number;
 }
 
 export interface LegacyProfileAdoptionOptions {
@@ -60,8 +78,15 @@ export interface LegacyProfileAdoptionOptions {
 const defaultLegacyPaths: LegacyProfilePaths = {
   legacyProfile: paths.browserProfile,
   adoptionMarker: `${paths.browserProfile}.adoption.json`,
+  migrationLock: `${paths.browserProfile}.migration.lock`,
   getProfileDir: (profileId) => paths.getBrowserProfileDir(profileId),
 };
+
+const LOCK_WAIT_TIMEOUT_MS = 30_000;
+const LOCK_OWNER_WRITE_GRACE_MS = 1_000;
+const REMOTE_LOCK_STALE_MS = 5 * 60_000;
+const LOCK_POLL_MS = 25;
+const sleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 /**
  * 生成不可变 profile_id（内部随机 UUID）。
@@ -83,20 +108,38 @@ function fsyncDirectory(dir: string): void {
   }
 }
 
-function readMarker(marker: string): LegacyProfileMarker | undefined {
+function readMarker(marker: string): LegacyProfileMarkerFile | undefined {
   if (!pathEntryExists(marker)) return undefined;
   const stats = lstatSync(marker);
   if (!stats.isFile() || (stats.mode & 0o777) !== 0o600 || stats.size > 4096) {
     throw new Error('legacy profile adoption marker is invalid');
   }
-  let parsed: Partial<LegacyProfileMarker>;
+  let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(readFileSync(marker, 'utf8')) as Partial<LegacyProfileMarker>;
+    const value = JSON.parse(readFileSync(marker, 'utf8')) as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('marker must be an object');
+    }
+    parsed = value as Record<string, unknown>;
   } catch {
     throw new Error('legacy profile adoption marker is invalid');
   }
+
+  const keys = Object.keys(parsed).sort();
+  if (
+    keys.length === 1 &&
+    keys[0] === 'profileId' &&
+    typeof parsed.profileId === 'string' &&
+    UUID_PATTERN.test(parsed.profileId)
+  ) {
+    return { version: 0, profileId: parsed.profileId };
+  }
   if (
     parsed.version !== 1 ||
+    keys.length !== 3 ||
+    keys[0] !== 'accountId' ||
+    keys[1] !== 'profileId' ||
+    keys[2] !== 'version' ||
     typeof parsed.accountId !== 'string' ||
     parsed.accountId.length === 0 ||
     parsed.accountId.length > 256 ||
@@ -105,7 +148,7 @@ function readMarker(marker: string): LegacyProfileMarker | undefined {
   ) {
     throw new Error('legacy profile adoption marker is invalid');
   }
-  return parsed as LegacyProfileMarker;
+  return parsed as unknown as LegacyProfileMarker;
 }
 
 function writeFully(fd: number, value: string): void {
@@ -116,6 +159,151 @@ function writeFully(fd: number, value: string): void {
     if (written === 0) throw new Error('legacy profile adoption marker write made no progress');
     offset += written;
   }
+}
+
+function readLockOwner(lockDir: string): ProfileMigrationLockOwner | undefined {
+  try {
+    const ownerPath = join(lockDir, 'owner.json');
+    const stats = lstatSync(ownerPath);
+    if (!stats.isFile() || (stats.mode & 0o777) !== 0o600 || stats.size > 4096) return undefined;
+    const parsed = JSON.parse(readFileSync(ownerPath, 'utf8')) as Partial<ProfileMigrationLockOwner>;
+    if (
+      parsed.version !== 1 ||
+      typeof parsed.token !== 'string' ||
+      !UUID_PATTERN.test(parsed.token) ||
+      !Number.isSafeInteger(parsed.pid) ||
+      (parsed.pid ?? 0) <= 0 ||
+      typeof parsed.hostname !== 'string' ||
+      parsed.hostname.length === 0 ||
+      typeof parsed.createdAt !== 'number' ||
+      !Number.isFinite(parsed.createdAt)
+    )
+      return undefined;
+    return parsed as ProfileMigrationLockOwner;
+  } catch {
+    return undefined;
+  }
+}
+
+function isLocalProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !isErrno(error, 'ESRCH');
+  }
+}
+
+function reapStaleMigrationLock(lockDir: string): boolean {
+  let lockAgeMs: number;
+  try {
+    lockAgeMs = Date.now() - lstatSync(lockDir).mtimeMs;
+  } catch (error) {
+    if (isErrno(error, 'ENOENT')) return true;
+    throw error;
+  }
+
+  const owner = readLockOwner(lockDir);
+  const stale = owner
+    ? owner.hostname === hostname()
+      ? !isLocalProcessAlive(owner.pid)
+      : lockAgeMs >= REMOTE_LOCK_STALE_MS
+    : lockAgeMs >= LOCK_OWNER_WRITE_GRACE_MS;
+  if (!stale) return false;
+
+  const quarantine = `${lockDir}.stale-${randomUUID()}`;
+  try {
+    renameSync(lockDir, quarantine);
+    fsyncDirectory(dirname(lockDir));
+  } catch (error) {
+    if (isErrno(error, 'ENOENT')) return true;
+    throw error;
+  }
+  rmSync(quarantine, { recursive: true, force: true });
+  fsyncDirectory(dirname(lockDir));
+  return true;
+}
+
+function acquireProfileMigrationLock(lockDir: string): ProfileMigrationLockOwner {
+  const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
+  while (true) {
+    const owner: ProfileMigrationLockOwner = {
+      version: 1,
+      token: randomUUID(),
+      pid: process.pid,
+      hostname: hostname(),
+      createdAt: Date.now(),
+    };
+    try {
+      mkdirSync(lockDir, { mode: 0o700 });
+      chmodSync(lockDir, 0o700);
+      const ownerPath = join(lockDir, 'owner.json');
+      const fd = openSync(ownerPath, 'wx', 0o600);
+      try {
+        writeFully(fd, `${JSON.stringify(owner)}\n`);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      fsyncDirectory(lockDir);
+      fsyncDirectory(dirname(lockDir));
+      return owner;
+    } catch (error) {
+      if (!isErrno(error, 'EEXIST')) {
+        try {
+          rmSync(lockDir, { recursive: true, force: true });
+          fsyncDirectory(dirname(lockDir));
+        } catch {
+          // 原始建锁错误优先；残留的空锁目录会由下一次启动按 grace 规则回收。
+        }
+        throw error;
+      }
+    }
+
+    if (reapStaleMigrationLock(lockDir)) continue;
+    if (Date.now() >= deadline) throw new Error('legacy profile migration lock is busy');
+    Atomics.wait(sleepBuffer, 0, 0, LOCK_POLL_MS);
+  }
+}
+
+function releaseProfileMigrationLock(lockDir: string, expected: ProfileMigrationLockOwner): void {
+  const current = readLockOwner(lockDir);
+  if (!current || current.token !== expected.token) {
+    throw new Error('legacy profile migration lock ownership was lost');
+  }
+  const released = `${lockDir}.released-${expected.token}`;
+  renameSync(lockDir, released);
+  fsyncDirectory(dirname(lockDir));
+  rmSync(released, { recursive: true, force: true });
+  fsyncDirectory(dirname(lockDir));
+}
+
+function withProfileMigrationLock<T>(pathConfig: LegacyProfilePaths, action: () => T): T {
+  const owner = acquireProfileMigrationLock(pathConfig.migrationLock);
+  let result!: T;
+  let actionFailed = false;
+  let actionFailure: unknown;
+  try {
+    result = action();
+  } catch (error) {
+    actionFailed = true;
+    actionFailure = error;
+  }
+
+  let releaseFailed = false;
+  let releaseFailure: unknown;
+  try {
+    releaseProfileMigrationLock(pathConfig.migrationLock, owner);
+  } catch (error) {
+    releaseFailed = true;
+    releaseFailure = error;
+  }
+  if (actionFailed && releaseFailed) {
+    throw new AggregateError([actionFailure, releaseFailure], 'legacy profile migration and lock release failed');
+  }
+  if (actionFailed) throw actionFailure;
+  if (releaseFailed) throw releaseFailure;
+  return result;
 }
 
 /**
@@ -143,9 +331,13 @@ function createMarker(markerPath: string, candidate: LegacyProfileMarker): Legac
       publishFailure = error;
     } else {
       try {
-        published = readMarker(markerPath);
-        if (!published) {
+        const existing = readMarker(markerPath);
+        if (!existing) {
           publishFailure = new Error('legacy profile adoption marker disappeared', { cause: error });
+        } else if (existing.version !== 1) {
+          publishFailure = new Error('legacy profile adoption marker must be upgraded before publication');
+        } else {
+          published = existing;
         }
       } catch (readError) {
         publishFailure = readError;
@@ -166,6 +358,35 @@ function createMarker(markerPath: string, candidate: LegacyProfileMarker): Legac
     throw new Error('legacy profile adoption marker was not published');
   }
   return published;
+}
+
+/** 将旧版仅含 profileId 的 marker 原子升级为带账号归属的 v1。 */
+function replaceMarker(markerPath: string, marker: LegacyProfileMarker): void {
+  const temp = `${markerPath}.tmp-${process.pid}-${randomUUID()}`;
+  const fd = openSync(temp, 'wx', 0o600);
+  try {
+    writeFully(fd, `${JSON.stringify(marker)}\n`);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+
+  try {
+    renameSync(temp, markerPath);
+    fsyncDirectory(dirname(markerPath));
+  } catch (error) {
+    try {
+      unlinkSync(temp);
+      fsyncDirectory(dirname(markerPath));
+    } catch (cleanupError) {
+      if (!isErrno(cleanupError, 'ENOENT')) {
+        throw new AggregateError([error, cleanupError], 'legacy profile adoption marker upgrade failed', {
+          cause: cleanupError,
+        });
+      }
+    }
+    throw error;
+  }
 }
 
 function removeMarker(marker: string): void {
@@ -269,14 +490,15 @@ function ensureAdoptedProfileLayout(pathConfig: LegacyProfilePaths, profileId: s
  * 该未绑定的 active/migration_required 账号，才把旧 browser-profile 原子移动到 UUID 目录。
  * 旧路径保留相对符号链接，使部署失败回滚到旧代码后仍能打开同一 profile。
  *
- * marker + 符号链接共同覆盖进程在文件移动与数据库绑定之间退出的恢复路径；重试会复用
- * 同一个 profileId，不复制 Cookie，也不会生成第二份可并发使用的 Chrome profile。
+ * marker + 符号链接共同覆盖进程在文件移动与数据库绑定之间退出的恢复路径；跨进程锁还覆盖
+ * marker、文件布局、数据库绑定及账号删除的完整临界区。重试会复用同一个 profileId，
+ * 不复制 Cookie，也不会生成第二份可并发使用的 Chrome profile。
  */
-export function adoptSingleLegacyProfile(
+function adoptSingleLegacyProfileLocked(
   accounts: LegacyProfileAccountStore,
-  options: LegacyProfileAdoptionOptions = {},
+  options: LegacyProfileAdoptionOptions,
+  pathConfig: LegacyProfilePaths,
 ): { adopted: boolean; profileId?: string } {
-  const pathConfig = options.paths ?? defaultLegacyPaths;
   let marker = readMarker(pathConfig.adoptionMarker);
   const all = accounts.findAll();
   if (all.length !== 1) {
@@ -285,6 +507,17 @@ export function adoptSingleLegacyProfile(
     return { adopted: false };
   }
   const account = all[0];
+
+  if (marker?.version === 0) {
+    if (!options.expectedAccountId) {
+      throw new Error('legacy profile owner confirmation is required to upgrade the old adoption marker');
+    }
+    if (options.expectedAccountId !== account.id) {
+      throw new Error('legacy profile owner confirmation does not match the only account');
+    }
+    marker = { version: 1, accountId: account.id, profileId: marker.profileId };
+    replaceMarker(pathConfig.adoptionMarker, marker);
+  }
 
   if (marker && marker.accountId !== account.id) {
     throw new Error('legacy profile adoption marker belongs to another account');
@@ -354,6 +587,14 @@ export function adoptSingleLegacyProfile(
   return { adopted: true, profileId: marker.profileId };
 }
 
+export function adoptSingleLegacyProfile(
+  accounts: LegacyProfileAccountStore,
+  options: LegacyProfileAdoptionOptions = {},
+): { adopted: boolean; profileId?: string } {
+  const pathConfig = options.paths ?? defaultLegacyPaths;
+  return withProfileMigrationLock(pathConfig, () => adoptSingleLegacyProfileLocked(accounts, options, pathConfig));
+}
+
 /**
  * 登录会话的专属临时 profile 目录。
  * 每个登录会话使用独立目录，避免多账号并行登录共享同一 profile 的冲突。
@@ -404,14 +645,44 @@ export function removeProfileDir(profileId: string | undefined): void {
 /**
  * 删除账号时同时消费属于它的在途旧 profile 迁移，避免账号已删除后遗留 marker 阻断后续启动。
  */
-export function removeAccountProfile(
+function removeAccountProfileLocked(
   accountId: string,
   profileId: string | undefined,
-  pathConfig: LegacyProfilePaths = defaultLegacyPaths,
+  pathConfig: LegacyProfilePaths,
+  legacyOwnerConfirmed = false,
 ): void {
   const markerPath = pathConfig.adoptionMarker;
   const marker = readMarker(markerPath);
-  if (!marker || marker.accountId !== accountId) {
+  if (!marker) {
+    removeProfileDirAt(profileId, pathConfig);
+    if (
+      !profileId &&
+      legacyOwnerConfirmed &&
+      pathEntryExists(pathConfig.legacyProfile) &&
+      !lstatSync(pathConfig.legacyProfile).isSymbolicLink()
+    ) {
+      validatePrivateProfile(pathConfig.legacyProfile);
+      renameSync(pathConfig.legacyProfile, `${pathConfig.legacyProfile}.removed-${Date.now()}`);
+      fsyncDirectory(dirname(pathConfig.legacyProfile));
+    }
+    return;
+  }
+  if (marker.version === 0) {
+    removeProfileDirAt(profileId, pathConfig);
+    if (!legacyOwnerConfirmed) return;
+    if (profileId && profileId !== marker.profileId) {
+      throw new Error('legacy profile adoption marker conflicts with deleted account');
+    }
+    removeProfileDirAt(marker.profileId, pathConfig);
+    if (pathEntryExists(pathConfig.legacyProfile) && !lstatSync(pathConfig.legacyProfile).isSymbolicLink()) {
+      validatePrivateProfile(pathConfig.legacyProfile);
+      renameSync(pathConfig.legacyProfile, `${pathConfig.legacyProfile}.removed-${Date.now()}`);
+      fsyncDirectory(dirname(pathConfig.legacyProfile));
+    }
+    removeMarker(markerPath);
+    return;
+  }
+  if (marker.accountId !== accountId) {
     removeProfileDirAt(profileId, pathConfig);
     return;
   }
@@ -426,4 +697,29 @@ export function removeAccountProfile(
     fsyncDirectory(dirname(pathConfig.legacyProfile));
   }
   removeMarker(markerPath);
+}
+
+export function removeAccountProfile(
+  accountId: string,
+  profileId: string | undefined,
+  pathConfig: LegacyProfilePaths = defaultLegacyPaths,
+): void {
+  withProfileMigrationLock(pathConfig, () => removeAccountProfileLocked(accountId, profileId, pathConfig));
+}
+
+/**
+ * 删除账号的数据库事务与 profile/marker 清理共用迁移锁，避免另一个进程在两者之间启动接管。
+ */
+export function deleteAccountWithProfileLock(
+  accountId: string,
+  deleteAccount: () => { deleted: boolean; profileId?: string },
+  expectedLegacyAccountId?: string,
+  pathConfig: LegacyProfilePaths = defaultLegacyPaths,
+): boolean {
+  return withProfileMigrationLock(pathConfig, () => {
+    const removed = deleteAccount();
+    if (!removed.deleted) return false;
+    removeAccountProfileLocked(accountId, removed.profileId, pathConfig, expectedLegacyAccountId === accountId);
+    return true;
+  });
 }
