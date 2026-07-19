@@ -93,13 +93,14 @@ export class AccountRepository {
 
   /**
    * 为尚无 profile_id 的旧账号首次分配（不可变：仅当当前为 NULL 时写入）。
+   * 返回 true 表示本次成功绑定，false 表示账号不存在或已经绑定。
    */
-  setProfileId(id: string, profileId: string): void {
+  setProfileId(id: string, profileId: string): boolean {
     const now = new Date().toISOString();
     const stmt = this.db.prepare(
       'UPDATE accounts SET profile_id = ?, updated_at = ? WHERE id = ? AND profile_id IS NULL',
     );
-    stmt.run(profileId, now, id);
+    return stmt.run(profileId, now, id).changes === 1;
   }
 
   /**

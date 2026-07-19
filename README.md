@@ -219,12 +219,21 @@ xhs_publish_content({ title: "...", content: "...", images: [...], accounts: "al
 ```
 ~/.xhs-mcp/
 ├── data.db              # SQLite 数据库（账号、会话、日志）
+├── browser-profiles/    # 每账号独立的持久化 Chrome profile
+│   └── {profileId}/
+├── browser-profile      # 旧单账号升级后的回滚兼容链接（仅迁移场景存在）
 ├── logs/
 │   └── xhs-mcp.log      # 应用日志
 └── downloads/
     ├── images/{noteId}/ # 下载的图片
     └── videos/{noteId}/ # 下载的视频
 ```
+
+从旧版单账号部署升级时，如果数据库中恰好只有一个 `active`（或此前升级留下的 `migration_required`）
+账号，且旧 `browser-profile/` 包含持久化状态、权限为 `0700`，
+服务会将它原子迁移到随机 UUID 对应的独立目录，并在旧路径保留符号链接，保证部署失败回滚到旧代码后
+仍能使用同一登录态。多账号旧库不会猜测共享 profile 的归属，相关账号会进入 `migration_required`，
+需要通过登录流程重新绑定独立 profile。
 
 ---
 

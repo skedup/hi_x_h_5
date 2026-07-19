@@ -219,12 +219,22 @@ All data is stored in `~/.xhs-mcp/`:
 ```
 ~/.xhs-mcp/
 ├── data.db              # SQLite database (accounts, sessions, logs)
+├── browser-profiles/    # Per-account persistent Chrome profiles
+│   └── {profileId}/
+├── browser-profile      # Rollback-compatible link created for a legacy single-account migration
 ├── logs/
 │   └── xhs-mcp.log      # Application log
 └── downloads/
     ├── images/{noteId}/ # Downloaded images
     └── videos/{noteId}/ # Downloaded videos
 ```
+
+When upgrading a legacy deployment, an existing `browser-profile/` is adopted automatically only when
+the database contains exactly one `active` account (or one left as `migration_required` by an earlier upgrade)
+and the directory contains persistent state with mode `0700`. The directory is moved
+atomically under a random UUID and the legacy path remains as a compatibility symlink, so rolling back to the
+old code still uses the same login state. A legacy multi-account database is never guessed: affected accounts
+enter `migration_required` and must be rebound through the login flow.
 
 ---
 

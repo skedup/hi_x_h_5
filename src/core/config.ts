@@ -253,7 +253,7 @@ export const paths = {
   get database() {
     return path.join(config.data.dir, 'data.db');
   },
-  /** 持久化 Chrome profile（旧版单一共享目录；保留用于向后兼容 profile_id=null 的账号） */
+  /** 旧版单一 Chrome profile；唯一旧账号迁移后保留为指向独立目录的回滚兼容链接 */
   get browserProfile() {
     return path.join(config.data.dir, 'browser-profile');
   },

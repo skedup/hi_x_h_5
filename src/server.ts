@@ -21,6 +21,7 @@ import { creatorTools, handleCreatorTools } from './tools/creator.js';
 import { notificationTools, handleNotificationTools } from './tools/notification.js';
 import { exploreTools, handleExploreTools } from './tools/explore.js';
 import { TOOL_CAPABILITIES } from './core/audit.js';
+import { adoptSingleLegacyProfile } from './core/profile.js';
 
 /** 蓝军 #1：启动期一次性扫描旧账号迁移状态，避免每次建连重复扫描 */
 let migrationScanned = false;
@@ -77,6 +78,10 @@ export function createMcpServer(pool: AccountPool, db: XhsDatabase): Server {
   // 仅成功后置 scanned；若失败则启动失败（fail-closed），避免旧账号以 active 静默触网。
   if (!migrationScanned) {
     try {
+      // Kindred 等历史单账号部署可无损接管唯一旧 profile，并保留旧路径兼容链接供代码回滚。
+      // 多账号或目录归属不明确时保持未绑定，继续走 migration_required + 人工重登录。
+      const adoption = adoptSingleLegacyProfile(db.accounts);
+      if (adoption.adopted) console.warn('[migration] 唯一旧账号 profile 已迁移到独立目录');
       const n = db.accounts.legacyProfilesRequireMigration();
       if (n > 0)
         console.warn(`[migration] ${n} 个旧账号缺少独立 profile，已置 migration_required，需人工重登录绑定`);
