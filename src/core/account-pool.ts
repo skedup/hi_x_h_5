@@ -7,7 +7,8 @@
 import { XhsClient } from '../xhs/index.js';
 import { XhsDatabase, Account, getDatabase } from '../db/index.js';
 import { AccountLock, getAccountLock } from './account-lock.js';
-import { finalizeLoginProfile, removeProfileDir, generateProfileId } from './profile.js';
+import { deleteAccountWithProfileLock, finalizeLoginProfile, generateProfileId } from './profile.js';
+import { config } from './config.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('account-pool');
@@ -302,11 +303,13 @@ export class AccountPool {
       this.clients.delete(account.id);
     }
 
-    // 清理该账号的独立 profile 目录（隔离数据不残留）
-    removeProfileDir(account.profileId);
-
-    // Delete from database
-    return this.db.accounts.delete(account.id);
+    // 删除事务与 profile/marker 清理均在跨进程迁移锁内：迁移先完成时能拿到新 profile；
+    // 删除先完成时，后续迁移会在锁内重新读取账号集合并停止接管。
+    return deleteAccountWithProfileLock(
+      account.id,
+      () => this.db.accounts.deleteWithProfileId(account.id),
+      config.browser.legacyProfileAccountId || undefined,
+    );
   }
 
   /**

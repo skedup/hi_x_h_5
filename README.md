@@ -207,6 +207,7 @@ xhs_publish_content({ title: "...", content: "...", images: [...], accounts: "al
 | `GEMINI_IMAGE_GENERATE_MODEL` | `gemini-3-pro-image` | 图片生成模型 |
 | `XHS_MCP_DATA_DIR` | `~/.xhs-mcp` | 数据存储目录 |
 | `XHS_MCP_HEADLESS` | `true` | 是否使用无头浏览器 |
+| `XHS_MCP_LEGACY_PROFILE_ACCOUNT_ID` | - | 首次接管旧 `browser-profile` 时显式确认其所属账号 ID |
 | `XHS_MCP_KEEP_OPEN` | `false` | 操作完成后保持浏览器打开 |
 | `XHS_MCP_REQUEST_INTERVAL` | `2000` | 请求间隔（毫秒） |
 
@@ -219,12 +220,25 @@ xhs_publish_content({ title: "...", content: "...", images: [...], accounts: "al
 ```
 ~/.xhs-mcp/
 ├── data.db              # SQLite 数据库（账号、会话、日志）
+├── browser-profiles/    # 每账号独立的持久化 Chrome profile
+│   └── {profileId}/
+├── browser-profile      # 旧单账号升级后的回滚兼容链接（仅迁移场景存在）
 ├── logs/
 │   └── xhs-mcp.log      # 应用日志
 └── downloads/
     ├── images/{noteId}/ # 下载的图片
     └── videos/{noteId}/ # 下载的视频
 ```
+
+从旧版单账号部署升级时，需要先将唯一旧账号的稳定 ID 配置为
+`XHS_MCP_LEGACY_PROFILE_ACCOUNT_ID`。如果该账号为 `active`（或此前升级留下的 `migration_required`），
+且旧 `browser-profile/` 包含持久化状态、权限为 `0700`，
+服务会将它原子迁移到随机 UUID 对应的独立目录，并在旧路径保留符号链接，保证部署失败回滚到旧代码后
+仍能使用同一登录态。迁移与账号删除会通过同一把可崩溃恢复的跨进程锁串行化，避免并发启动产生
+重复 profile 或遗留 marker；旧版仅含 `profileId` 的 marker 也只会在再次显式确认账号归属后升级。
+新版 marker 会绑定账号 ID，异常重启不需要继续保留该环境变量。非空旧 profile
+未显式确认归属或账号 ID 不匹配时，服务会拒绝启动且不修改账号状态；多账号旧库则不会猜测归属，
+相关账号需要通过登录流程重新绑定独立 profile。账号 ID 可在升级前通过 `xhs_list_accounts` 获取。
 
 ---
 
