@@ -222,15 +222,20 @@ export class CooccurrenceGuard {
         set.add(resvId);
         reservedDedup = input.dedupKey;
       }
-      if (this.cfg.xsecTokenBinding.enabled && input.xsecToken && !this.tokenOwnerOf(input.xsecToken)) {
-        let set = this.tokenInFlight.get(input.xsecToken);
-        if (!set) {
-          set = new Set<string>();
-          this.tokenInFlight.set(input.xsecToken, set);
-          this.tokenOwner.set(input.xsecToken, input.accountId);
+      if (this.cfg.xsecTokenBinding.enabled && input.xsecToken && !this.tokenCommitted.has(input.xsecToken)) {
+        const owner = this.tokenOwnerOf(input.xsecToken);
+        // 未绑定 token 由本账号首次占用；同账号并发复用加入同一 reservation 集合。
+        // warn 模式下跨账号只放行业务，不加入原 owner 的集合，避免篡改来源归属。
+        if (!owner || owner === input.accountId) {
+          let set = this.tokenInFlight.get(input.xsecToken);
+          if (!set) {
+            set = new Set<string>();
+            this.tokenInFlight.set(input.xsecToken, set);
+            this.tokenOwner.set(input.xsecToken, input.accountId);
+          }
+          set.add(resvId);
+          reservedToken = input.xsecToken;
         }
-        set.add(resvId);
-        reservedToken = input.xsecToken;
       }
 
       return { allow: true, reservation: { dedupKey: reservedDedup, xsecToken: reservedToken, id: resvId } };
@@ -267,40 +272,10 @@ export class CooccurrenceGuard {
     if (input.reservation?.id) {
       const id = input.reservation.id;
       if (input.reservation.dedupKey) {
-        const set = this.dedupInFlight.get(input.reservation.dedupKey);
-        if (set) {
-          set.delete(id);
-          if (businessSuccess) this.dedupSucceeded.add(input.reservation.dedupKey);
-          if (set.size === 0) {
-            this.dedupInFlight.delete(input.reservation.dedupKey);
-            if (this.dedupSucceeded.has(input.reservation.dedupKey)) {
-              // 任一并发占用成功 → 提交为永久占用，保留 owner 供跨账号去重校验
-              this.dedupCommitted.add(input.reservation.dedupKey);
-              this.dedupSucceeded.delete(input.reservation.dedupKey);
-            } else {
-              // 全部失败 → 回收占用（含 owner）
-              this.dedupOwner.delete(input.reservation.dedupKey);
-              this.dedupSucceeded.delete(input.reservation.dedupKey);
-            }
-          }
-        }
+        this.settleDedupReservation(input.reservation.dedupKey, id, businessSuccess);
       }
       if (input.reservation.xsecToken) {
-        const set = this.tokenInFlight.get(input.reservation.xsecToken);
-        if (set) {
-          set.delete(id);
-          if (businessSuccess) this.tokenSucceeded.add(input.reservation.xsecToken);
-          if (set.size === 0) {
-            this.tokenInFlight.delete(input.reservation.xsecToken);
-            if (this.tokenSucceeded.has(input.reservation.xsecToken)) {
-              this.tokenCommitted.add(input.reservation.xsecToken);
-              this.tokenSucceeded.delete(input.reservation.xsecToken);
-            } else {
-              this.tokenOwner.delete(input.reservation.xsecToken);
-              this.tokenSucceeded.delete(input.reservation.xsecToken);
-            }
-          }
-        }
+        this.settleTokenReservation(input.reservation.xsecToken, id, businessSuccess);
       }
     }
 
@@ -336,32 +311,22 @@ export class CooccurrenceGuard {
   /**
    * R4（P1 1019834745）：在取得 policy reservation 后、真正 DOM 写前若设备不在场，
    * 回滚该 reservation 的临时占用（去重/token）而不计入业务失败/熔断。
-   * 与 afterAction 的区别：仅 compare-and-delete 本次 reservationId，不影响连续失败计数与预算。
+   * 与 afterAction 的区别：仅 compare-and-delete 本次 reservationId，不影响连续失败计数；
+   * beforeAction 已预扣的小时/日预算仍须退回，冷却锚点保留。
    */
-  async cancelReservation(reservation: PolicyReservation | undefined, _accountId: string): Promise<void> {
+  async cancelReservation(reservation: PolicyReservation | undefined, accountId: string): Promise<void> {
     if (!reservation?.id) return;
     const id = reservation.id;
     if (reservation.dedupKey) {
-      const set = this.dedupInFlight.get(reservation.dedupKey);
-      if (set) {
-        set.delete(id);
-        if (set.size === 0) {
-          this.dedupInFlight.delete(reservation.dedupKey);
-          if (!this.dedupSucceeded.has(reservation.dedupKey)) this.dedupOwner.delete(reservation.dedupKey);
-          this.dedupSucceeded.delete(reservation.dedupKey);
-        }
-      }
+      this.settleDedupReservation(reservation.dedupKey, id, false);
     }
     if (reservation.xsecToken) {
-      const set = this.tokenInFlight.get(reservation.xsecToken);
-      if (set) {
-        set.delete(id);
-        if (set.size === 0) {
-          this.tokenInFlight.delete(reservation.xsecToken);
-          if (!this.tokenSucceeded.has(reservation.xsecToken)) this.tokenOwner.delete(reservation.xsecToken);
-          this.tokenSucceeded.delete(reservation.xsecToken);
-        }
-      }
+      this.settleTokenReservation(reservation.xsecToken, id, false);
+    }
+
+    if (this.cfg.quota.enabled) {
+      this.decrementCount(this.hourly, accountId);
+      this.decrementCount(this.daily, accountId);
     }
   }
 
@@ -435,6 +400,41 @@ export class CooccurrenceGuard {
   }
 
   // ---- 内部 ----
+
+  /**
+   * 完成一次 dedup reservation。任一并发调用成功时，最后一个引用离开后提交；
+   * 全部失败或取消时才释放 owner。afterAction 与 cancelReservation 共用，避免分支语义漂移。
+   */
+  private settleDedupReservation(key: string, id: string, succeeded: boolean): void {
+    const set = this.dedupInFlight.get(key);
+    if (!set || !set.delete(id)) return;
+    if (succeeded) this.dedupSucceeded.add(key);
+    if (set.size > 0) return;
+
+    this.dedupInFlight.delete(key);
+    if (this.dedupSucceeded.has(key)) {
+      this.dedupCommitted.add(key);
+    } else {
+      this.dedupOwner.delete(key);
+    }
+    this.dedupSucceeded.delete(key);
+  }
+
+  /** xsecToken reservation 的收敛逻辑，与 dedup 保持相同的并发语义。 */
+  private settleTokenReservation(token: string, id: string, succeeded: boolean): void {
+    const set = this.tokenInFlight.get(token);
+    if (!set || !set.delete(id)) return;
+    if (succeeded) this.tokenSucceeded.add(token);
+    if (set.size > 0) return;
+
+    this.tokenInFlight.delete(token);
+    if (this.tokenSucceeded.has(token)) {
+      this.tokenCommitted.add(token);
+    } else {
+      this.tokenOwner.delete(token);
+    }
+    this.tokenSucceeded.delete(token);
+  }
 
   private checkBudget(accountId: string): boolean {
     const now = Date.now();

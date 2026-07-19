@@ -57,7 +57,7 @@ export interface BrowserClientOptions {
   /** Account ID for this client instance */
   accountId?: string;
   /** Immutable internal profile ID for the isolated browser profile dir */
-  profileId?: string;
+  profileId: string;
   /** Playwright storage state (cookies, localStorage) as JSON object */
   state?: any;
   /** Proxy server URL (bound to the profile) */
@@ -76,7 +76,7 @@ export class BrowserContextManager {
   context: BrowserContext | null = null;
   options: BrowserClientOptions;
 
-  constructor(options: BrowserClientOptions = {}) {
+  constructor(options: BrowserClientOptions) {
     this.options = options;
   }
 

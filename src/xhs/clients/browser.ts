@@ -13,7 +13,7 @@
  */
 
 // Re-export types and constants for backwards compatibility
-export { BrowserClientOptions } from './context.js';
+export type { BrowserClientOptions } from './context.js';
 export {
   BROWSER_ARGS,
   TIMEOUTS,
@@ -31,7 +31,8 @@ export {
 } from './constants.js';
 
 // Import context and services
-import { BrowserContextManager, BrowserClientOptions } from './context.js';
+import { BrowserContextManager } from './context.js';
+import type { BrowserClientOptions } from './context.js';
 import { config } from '../../core/config.js';
 import { AuthService } from './services/auth.js';
 import { SearchService } from './services/search.js';
@@ -71,7 +72,7 @@ import {
  *
  * @example
  * ```typescript
- * const client = new BrowserClient({ state: savedState });
+ * const client = new BrowserClient({ profileId: 'my-profile-id', state: savedState });
  * await client.init();
  * const results = await client.search('keyword');
  * await client.close();
@@ -88,7 +89,7 @@ export class BrowserClient {
   private notificationService: NotificationService;
   private exploreService: ExploreService;
 
-  constructor(options: BrowserClientOptions = {}) {
+  constructor(options: BrowserClientOptions) {
     this.ctx = new BrowserContextManager(options);
     this.authService = new AuthService(this.ctx);
     this.searchService = new SearchService(this.ctx);

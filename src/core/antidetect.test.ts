@@ -230,3 +230,59 @@ describe('R4 软业务失败与并发占用状态机', () => {
     expect((await g.beforeAction({ accountId: B, action: 'comment', dedupKey: 'k' })).allow).toBe(true);
   });
 });
+
+describe('R5 token 与取消状态机', () => {
+  it('同账号 token 并发：A2 成功 + A1 失败后仍保留来源绑定', async () => {
+    const g = new CooccurrenceGuard(
+      makeCfg({
+        xsecTokenBinding: { enabled: true, mode: 'block' },
+        quota: { enabled: true, perAccountHourly: 99, perAccountDaily: 99, cooldownMsAfterAction: 0 },
+      }),
+    );
+    const b1 = await g.beforeAction({ accountId: A, action: 'comment', xsecToken: 'tok-r5' });
+    const b2 = await g.beforeAction({ accountId: A, action: 'comment', xsecToken: 'tok-r5' });
+
+    expect(b1.reservation?.xsecToken).toBe('tok-r5');
+    expect(b2.reservation?.xsecToken).toBe('tok-r5');
+    await g.afterAction({ accountId: A, action: 'comment', success: true, reservation: b2.reservation });
+    await g.afterAction({ accountId: A, action: 'comment', success: false, reservation: b1.reservation });
+
+    const other = await g.beforeAction({ accountId: B, action: 'comment', xsecToken: 'tok-r5' });
+    expect(other.allow).toBe(false);
+    expect(other.reason).toBe('xsec_token_bound_to_other_account');
+  });
+
+  it('并发中一次成功、另一次取消时仍提交 dedup key', async () => {
+    const g = new CooccurrenceGuard(
+      makeCfg({ quota: { enabled: true, perAccountHourly: 99, perAccountDaily: 99, cooldownMsAfterAction: 0 } }),
+    );
+    const b1 = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'cancel-after-success' });
+    const b2 = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'cancel-after-success' });
+
+    await g.afterAction({ accountId: A, action: 'comment', success: true, reservation: b2.reservation });
+    await g.cancelReservation(b1.reservation, A);
+
+    const other = await g.beforeAction({ accountId: B, action: 'comment', dedupKey: 'cancel-after-success' });
+    expect(other.allow).toBe(false);
+    expect(other.reason).toBe('cross_account_dedup');
+  });
+
+  it('取消 reservation 后退回预算，但保留冷却语义之外的重试额度', async () => {
+    const g = new CooccurrenceGuard(
+      makeCfg({
+        quota: {
+          enabled: true,
+          perAccountHourly: 1,
+          perAccountDaily: 1,
+          cooldownMsAfterAction: 0,
+          consecutiveFailuresToTrip: 99,
+          captchaErrorPatterns: [],
+        },
+      }),
+    );
+    const before = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'cancel-budget' });
+    await g.cancelReservation(before.reservation, A);
+
+    expect((await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'retry-after-cancel' })).allow).toBe(true);
+  });
+});

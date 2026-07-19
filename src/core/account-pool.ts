@@ -190,9 +190,9 @@ export class AccountPool {
   async createAccountAfterLogin(
     nickname: string,
     state: any,
-    proxy?: string,
-    userId?: string,
-    opts?: { profileId?: string; sessionId?: string },
+    proxy: string | undefined,
+    userId: string | undefined,
+    opts: { profileId: string; sessionId?: string },
   ): Promise<{ account: Account; isExisting: boolean }> {
     // 通过 userId 检测已有账户（重新登录场景）
     if (userId) {
@@ -208,12 +208,12 @@ export class AccountPool {
           }
 
           // 确定最终 profileId：保留原 profile_id；旧账号首次重登录则分配候选值（不可变）
-          const finalProfileId = existingAccount.profileId ?? opts?.profileId;
+          const finalProfileId = existingAccount.profileId ?? opts.profileId;
           if (!existingAccount.profileId && finalProfileId) {
             this.db.accounts.setProfileId(existingAccount.id, finalProfileId);
           }
           // 转正登录会话的临时目录为该账号正式 profile 目录
-          if (opts?.sessionId && finalProfileId) {
+          if (opts.sessionId) {
             finalizeLoginProfile(opts.sessionId, finalProfileId);
           }
 
@@ -251,11 +251,11 @@ export class AccountPool {
       accountName = `${nickname}_${Date.now()}`;
     }
 
-    const finalProfileId = opts?.profileId;
+    const finalProfileId = opts.profileId;
     const account = this.db.accounts.create(accountName, proxy, finalProfileId);
     this.db.accounts.updateState(account.id, state);
     // 转正登录会话的临时目录为该账号正式 profile 目录
-    if (opts?.sessionId && finalProfileId) {
+    if (opts.sessionId) {
       finalizeLoginProfile(opts.sessionId, finalProfileId);
     }
 

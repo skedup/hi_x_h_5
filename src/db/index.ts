@@ -186,29 +186,42 @@ export class XhsDatabase {
       .get() as { sql?: string } | undefined;
     if (!row?.sql || row.sql.includes('migration_required')) return;
 
-    // 用 better-sqlite3 事务包裹，任一语句失败整体回滚，避免残留 accounts_new 半成品状态。
-    // 本库未定义外键引用 accounts，无需切换 foreign_keys。
-    const tx = this.db.transaction(() => {
-      this.db.exec(`
-        CREATE TABLE accounts_new (
-          id TEXT PRIMARY KEY,
-          name TEXT UNIQUE NOT NULL,
-          proxy TEXT,
-          profile_id TEXT,
-          state JSON,
-          status TEXT DEFAULT 'active' CHECK(status IN ('active','suspended','banned','migration_required')),
-          last_login_at DATETIME,
-          last_active_at DATETIME,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        INSERT INTO accounts_new (id, name, proxy, profile_id, state, status, last_login_at, last_active_at, created_at, updated_at)
-          SELECT id, name, proxy, profile_id, state, status, last_login_at, last_active_at, created_at, updated_at FROM accounts;
-        DROP TABLE accounts;
-        ALTER TABLE accounts_new RENAME TO accounts;
-      `);
-    });
-    tx();
+    // accounts 被多个子表以 ON DELETE CASCADE 引用。foreign_keys=ON 时 DROP TABLE 会先执行
+    // 隐式 DELETE，导致 profile/操作日志等子记录被级联清空。SQLite 不允许在事务内切换
+    // foreign_keys，因此必须先关闭，再在事务中重建，最后恢复并执行完整性检查。
+    const foreignKeysEnabled = Number(this.db.pragma('foreign_keys', { simple: true })) === 1;
+    if (foreignKeysEnabled) this.db.pragma('foreign_keys = OFF');
+
+    try {
+      const tx = this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE accounts_new (
+            id TEXT PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            proxy TEXT,
+            profile_id TEXT,
+            state JSON,
+            status TEXT DEFAULT 'active' CHECK(status IN ('active','suspended','banned','migration_required')),
+            last_login_at DATETIME,
+            last_active_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          INSERT INTO accounts_new (id, name, proxy, profile_id, state, status, last_login_at, last_active_at, created_at, updated_at)
+            SELECT id, name, proxy, profile_id, state, status, last_login_at, last_active_at, created_at, updated_at FROM accounts;
+          DROP TABLE accounts;
+          ALTER TABLE accounts_new RENAME TO accounts;
+        `);
+
+        const violations = this.db.pragma('foreign_key_check') as unknown[];
+        if (violations.length > 0) {
+          throw new Error(`accounts migration foreign key check failed: ${JSON.stringify(violations)}`);
+        }
+      });
+      tx();
+    } finally {
+      if (foreignKeysEnabled) this.db.pragma('foreign_keys = ON');
+    }
   }
 
   /**

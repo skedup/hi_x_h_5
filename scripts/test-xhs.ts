@@ -1,7 +1,8 @@
 import { XhsClient } from '../src/xhs/index.js';
 
 async function main() {
-  const client = new XhsClient();
+  // CLI 调试使用独立、固定的 profile，保留登录态且不与账号池中的 profile 混用。
+  const client = new XhsClient({ profileId: '_standalone_cli' });
   const args = process.argv.slice(2);
   const command = args[0];
 

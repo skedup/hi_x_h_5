@@ -82,7 +82,9 @@ function getPresenceChallenge(): PresenceChallenge {
 
 /** 校验提供的人工在场 token：失败或过期即拒绝；成功则轮换（旧 token 作废）。供测试与路由共用。 */
 export function verifyPresenceToken(provided: string | undefined): boolean {
-  const ch = _presence ?? getPresenceChallenge();
+  // 每次都经过 getPresenceChallenge；已有 challenge 自然过期时会生成并打印新值，
+  // 避免 _presence 非空但已过期后永久 401，必须重启服务才能恢复。
+  const ch = getPresenceChallenge();
   if (!provided || provided !== ch.secret) return false;
   if (ch.expiresAt <= Date.now()) return false;
   // 消费后轮换，旧 token 立即失效
