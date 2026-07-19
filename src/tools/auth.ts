@@ -94,7 +94,7 @@ export async function handleAuthTools(name: string, args: any, pool: AccountPool
 
       const result = await executeWithAccount(pool, db, resolved.account, 'check_login', async (ctx) => {
         return await ctx.client.checkLoginStatus();
-      });
+      }, { capability: 'read' });
 
       if (!result.success) {
         return {

@@ -10,6 +10,7 @@ import { AccountPool } from '../core/account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { executeWithMultipleAccounts, MultiAccountParams } from '../core/multi-account.js';
 import { graphemeLength, computeTypingPlan } from '../xhs/utils/index.js';
+import { sha256OfFiles, sha256OfText } from '../core/antidetect.js';
 
 /**
  * Publishing tool definitions for MCP.
@@ -131,6 +132,8 @@ export async function handlePublishTools(name: string, args: any, pool: AccountP
         {
           logParams: { title: params.title, videoPath: params.videoPath },
           sequential: true,
+          // C2.4 跨账号相同媒体（视频+封面）+ 正文硬拦截
+          dedupKey: `publish_video:${sha256OfFiles([params.videoPath, ...(params.coverPath ? [params.coverPath] : [])])}:${sha256OfText(params.content ?? '')}`,
           // 账户锁等待随正文输入预算缩放，避免长文占用锁超时（第三轮 P1）
           lockTimeout:
             computeTypingPlan(params.content ?? '', {

@@ -7,6 +7,10 @@
 import { XhsClient } from '../xhs/index.js';
 import { XhsDatabase, Account, getDatabase } from '../db/index.js';
 import { AccountLock, getAccountLock } from './account-lock.js';
+import { finalizeLoginProfile, removeProfileDir, generateProfileId } from './profile.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('account-pool');
 
 /**
  * XhsClient 实例池，用于多账户管理
@@ -62,6 +66,13 @@ export class AccountPool {
       return null;
     }
 
+    // R3-7：profileId 作为独立硬不变量——缺少独立 profile 的账号一律 fail-closed，
+    // 拒绝回退旧共享 profile 目录破坏账号隔离（即便其 status 被误置为 active）。
+    if (!account.profileId) {
+      log.warn('拒绝为缺少独立 profileId 的账号创建浏览器客户端（隔离硬不变量）', { account: account.name });
+      return null;
+    }
+
     // Return existing client if available
     if (this.clients.has(account.id)) {
       return this.clients.get(account.id)!;
@@ -71,6 +82,7 @@ export class AccountPool {
     const client = new XhsClient({
       accountId: account.id,
       accountName: account.name,
+      profileId: account.profileId,
       state: account.state,
       proxy: account.proxy,
       onStateChange: async (state) => {
@@ -143,6 +155,9 @@ export class AccountPool {
       const client = new XhsClient({
         accountId: account.id,
         proxy: proxy || account.proxy,
+        // R4 P0：profileId 缺失时分配临时隔离目录，避免 context.ts fail-closed 抛错；
+        // 真正转正由 createAccountAfterLogin 的 finalizeLoginProfile 完成。
+        profileId: account.profileId || generateProfileId(),
         onStateChange: async (state) => {
           this.db.accounts.updateState(account.id, state);
         },
@@ -154,8 +169,10 @@ export class AccountPool {
 
     // For new login, don't create account yet - just return a temporary client
     // The account will be created after successful login using createAccountAfterLogin
+    // R4 P0：使用临时隔离目录（非共享 browserProfile），避免 context.ts fail-closed 抛错
     const tempClient = new XhsClient({
       proxy,
+      profileId: generateProfileId(),
     });
 
     // Return a placeholder account - the real account will be created after login
@@ -173,8 +190,9 @@ export class AccountPool {
   async createAccountAfterLogin(
     nickname: string,
     state: any,
-    proxy?: string,
-    userId?: string,
+    proxy: string | undefined,
+    userId: string | undefined,
+    opts: { profileId: string; sessionId?: string },
   ): Promise<{ account: Account; isExisting: boolean }> {
     // 通过 userId 检测已有账户（重新登录场景）
     if (userId) {
@@ -189,6 +207,19 @@ export class AccountPool {
             this.clients.delete(existingAccount.id);
           }
 
+          // 确定最终 profileId：保留原 profile_id；旧账号首次重登录则分配候选值（不可变）
+          const finalProfileId = existingAccount.profileId ?? opts.profileId;
+          if (!existingAccount.profileId && finalProfileId) {
+            this.db.accounts.setProfileId(existingAccount.id, finalProfileId);
+          }
+          // 转正登录会话的临时目录为该账号正式 profile 目录
+          if (opts.sessionId) {
+            finalizeLoginProfile(opts.sessionId, finalProfileId);
+          }
+
+          // 蓝军 #1：重登录成功即恢复为 active（无论此前是否 migration_required）
+          this.db.accounts.updateConfig(existingAccount.id, { status: 'active' });
+
           // 更新 session state
           this.db.accounts.updateState(existingAccount.id, state);
           if (proxy !== undefined) {
@@ -199,6 +230,7 @@ export class AccountPool {
           const client = new XhsClient({
             accountId: existingAccount.id,
             accountName: existingAccount.name,
+            profileId: finalProfileId,
             state,
             proxy: proxy ?? existingAccount.proxy,
             onStateChange: async (newState) => {
@@ -219,12 +251,18 @@ export class AccountPool {
       accountName = `${nickname}_${Date.now()}`;
     }
 
-    const account = this.db.accounts.create(accountName, proxy);
+    const finalProfileId = opts.profileId;
+    const account = this.db.accounts.create(accountName, proxy, finalProfileId);
     this.db.accounts.updateState(account.id, state);
+    // 转正登录会话的临时目录为该账号正式 profile 目录
+    if (opts.sessionId) {
+      finalizeLoginProfile(opts.sessionId, finalProfileId);
+    }
 
     const client = new XhsClient({
       accountId: account.id,
       accountName: account.name,
+      profileId: finalProfileId,
       state,
       proxy: account.proxy,
       onStateChange: async (newState) => {
@@ -264,6 +302,9 @@ export class AccountPool {
       this.clients.delete(account.id);
     }
 
+    // 清理该账号的独立 profile 目录（隔离数据不残留）
+    removeProfileDir(account.profileId);
+
     // Delete from database
     return this.db.accounts.delete(account.id);
   }
@@ -287,11 +328,18 @@ export class AccountPool {
    */
   async updateAccountConfig(
     accountIdOrName: string,
-    updates: { name?: string; proxy?: string; status?: 'active' | 'suspended' | 'banned' },
+    updates: { name?: string; proxy?: string; status?: 'active' | 'suspended' | 'banned' | 'migration_required' },
   ): Promise<boolean> {
     const account = this.resolveAccount(accountIdOrName);
 
     if (!account) {
+      return false;
+    }
+
+    // R3-7：profileId 硬不变量——空 profile 的账号不得置为 active（fail-closed），
+    // 否则会被 getClient 回退共享 profile 破坏隔离。返回 false 由调用方报错。
+    if (updates.status === 'active' && !account.profileId) {
+      log.warn('拒绝将缺少 profileId 的账号设为 active（隔离硬不变量）', { account: account.name });
       return false;
     }
 

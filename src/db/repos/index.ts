@@ -3,16 +3,20 @@
  * @module db/repos
  */
 
-export { AccountRepository, Account } from './accounts.js';
-export { ProfileRepository, AccountProfile } from './profiles.js';
-export { OperationRepository, OperationLog, AccountStats } from './operations.js';
+export { AccountRepository } from './accounts.js';
+export type { Account } from './accounts.js';
+export { ProfileRepository } from './profiles.js';
+export type { AccountProfile } from './profiles.js';
+export { OperationRepository } from './operations.js';
+export type { OperationLog, AccountStats } from './operations.js';
 export { PublishedRepository } from './published.js';
 export { InteractionRepository } from './interactions.js';
 export { DownloadRepository } from './downloads.js';
 export { ConfigRepository } from './config.js';
-export { MyNotesRepository, MyPublishedNote, MyNotesFilter } from './my-notes.js';
-export {
-  ExploreRepository,
+export { MyNotesRepository } from './my-notes.js';
+export type { MyPublishedNote, MyNotesFilter } from './my-notes.js';
+export { ExploreRepository } from './explore.js';
+export type {
   ExploreConfig,
   ExploreLogEntry,
   ExploreSessionStats,

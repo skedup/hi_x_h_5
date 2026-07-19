@@ -5,8 +5,8 @@
  */
 
 import { chromium, Browser, BrowserContext, Page } from 'patchright';
+import type { APIRequestContext } from 'patchright';
 import { LoginUserInfo, FullUserProfile } from '../types.js';
-import { generateWebId } from '../utils/index.js';
 import { createLogger } from '../../core/logger.js';
 import { config, paths } from '../../core/config.js';
 import { BROWSER_ARGS } from './constants.js';
@@ -15,17 +15,23 @@ import { BROWSER_ARGS } from './constants.js';
 export const log = createLogger('browser');
 
 /**
- * Launch the single persistent Chrome profile shared by login and business calls.
+ * Launch a persistent Chrome profile context rooted at the given directory.
+ * 每个账号应使用独立的 profileDir（基于内部随机 profile_id），以隔离
+ * Cookie / localStorage / IndexedDB / ServiceWorker / 设备指纹盐。
+ * @param profileDir 持久化 user-data-dir 路径
  */
 export async function launchProfileContext(
+  profileDir: string,
   headless = config.browser.headless,
   proxy?: string,
 ): Promise<{ browser: Browser; context: BrowserContext }> {
-  const context = await chromium.launchPersistentContext(paths.browserProfile, {
+  const context = await chromium.launchPersistentContext(profileDir, {
     headless,
     channel: 'chrome',
     args: BROWSER_ARGS,
-    viewport: { width: 1920, height: 1080 },
+    // B1（05 R3）：headful 时 viewport 置 null，消除 screen==viewport 的组合异常指纹；
+    // headless（自动化测试）保留固定 viewport。
+    viewport: headless ? { width: 1920, height: 1080 } : null,
     ...(proxy ? { proxy: { server: proxy } } : {}),
   });
   const browser = context.browser();
@@ -35,15 +41,11 @@ export async function launchProfileContext(
   }
 
   const cookies = await context.cookies();
+  // C3.1（02 P0-2）：不再伪造 webId。平台会在正常页面流程中通过响应 Cookie 自然发放；
+  // 客户端随机值缺少服务端发放记录，反而形成强反作弊特征。缺失时保持为空，交由平台
+  // 首访补发——不 fail-closed 阻断（正常导航即补发），仅记录提示供运维观察。
   if (!cookies.some((cookie) => cookie.name === 'webId')) {
-    await context.addCookies([
-      {
-        name: 'webId',
-        value: generateWebId(),
-        domain: '.xiaohongshu.com',
-        path: '/',
-      },
-    ]);
+    log.debug('webId 缺失，将交由平台在正常页面流程中自然发放（不伪造）');
   }
   return { browser, context };
 }
@@ -54,9 +56,11 @@ export async function launchProfileContext(
 export interface BrowserClientOptions {
   /** Account ID for this client instance */
   accountId?: string;
+  /** Immutable internal profile ID for the isolated browser profile dir */
+  profileId: string;
   /** Playwright storage state (cookies, localStorage) as JSON object */
   state?: any;
-  /** Proxy server URL */
+  /** Proxy server URL (bound to the profile) */
   proxy?: string;
   /** Callback to save state when it changes */
   onStateChange?: (state: any) => void | Promise<void>;
@@ -72,8 +76,17 @@ export class BrowserContextManager {
   context: BrowserContext | null = null;
   options: BrowserClientOptions;
 
-  constructor(options: BrowserClientOptions = {}) {
+  constructor(options: BrowserClientOptions) {
     this.options = options;
+  }
+
+  /**
+   * 浏览器上下文的 APIRequestContext（B2 下载出口统一）。
+   * 经由它的请求继承上下文的 Cookie 与代理出口，与页面请求 egress 一致。
+   * 未初始化时返回 null。
+   */
+  get request(): APIRequestContext | null {
+    return this.context?.request ?? null;
   }
 
   /**
@@ -88,7 +101,17 @@ export class BrowserContextManager {
    * Defaults to config.browser.headless (controlled by XHS_MCP_HEADLESS env)
    */
   async init(headless = config.browser.headless): Promise<void> {
-    const session = await launchProfileContext(headless, this.options.proxy);
+    // 每账号独立 profile 目录（反检测 C1：账号隔离硬不变量）。
+    // R4 P0 1019900603：profileId 为空时拒绝回退共享目录（fail-closed），
+    // 避免升级后旧账号（profile_id=NULL）仍共享同一 browserProfile，造成多账号串号/Cookie/设备盐强关联。
+    // 全新登录由 login-session 使用独立临时目录（getLoginProfileDir），不依赖此共享路径。
+    if (!this.options.profileId) {
+      throw new Error(
+        'isolated profileId required to launch browser context; refusing to fall back to shared profile directory',
+      );
+    }
+    const profileDir = paths.getBrowserProfileDir(this.options.profileId);
+    const session = await launchProfileContext(profileDir, headless, this.options.proxy);
     this.browser = session.browser;
     this.context = session.context;
   }

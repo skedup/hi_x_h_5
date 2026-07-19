@@ -5,10 +5,12 @@
  */
 
 import { Browser, BrowserContext, Page } from 'patchright';
+import { existsSync, rmSync } from 'node:fs';
 import { LoginUserInfo, FullUserProfile } from '../xhs/types.js';
 import { sleep } from '../xhs/utils/index.js';
 import { createLogger } from './logger.js';
 import { config } from './config.js';
+import { getLoginProfileDir } from './profile.js';
 import { QR_CODE_SELECTOR, LOGIN_STATUS_SELECTOR, URLS } from '../xhs/clients/constants.js';
 import { launchProfileContext } from '../xhs/clients/context.js';
 
@@ -66,6 +68,18 @@ const VERIFICATION_SELECTORS = {
   /** 重发提示（不存在时可能触发了限额） */
   resendHint: '.resend-box > span.text-default',
 };
+
+/**
+ * 安全删除登录临时 profile 目录（未被 finalizeLoginProfile 转正的残留）。
+ */
+function safeRemoveLoginDir(sessionId: string): void {
+  try {
+    const dir = getLoginProfileDir(sessionId);
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  } catch (e) {
+    log.warn('Failed to remove login profile dir', { sessionId, error: e });
+  }
+}
 
 /**
  * Login session status
@@ -154,7 +168,11 @@ export class LoginSessionManager {
     const id = this.generateSessionId();
     log.info('Creating login session', { id, accountName, hasProxy: !!proxy });
 
-    const { browser, context } = await launchProfileContext(config.browser.headless, proxy);
+    const { browser, context } = await launchProfileContext(
+      getLoginProfileDir(id),
+      config.browser.headless,
+      proxy,
+    );
 
     const page = await context.newPage();
 
@@ -680,6 +698,10 @@ export class LoginSessionManager {
       } catch (e) {
         log.warn('Failed to close browser', { sessionId, error: e });
       }
+      // 成功登录的目录由 finalizeLoginProfile 转正移走；其余残留在此清理
+      if (session.status !== 'success') {
+        safeRemoveLoginDir(sessionId);
+      }
       this.sessions.delete(sessionId);
       log.debug('Session closed', { sessionId });
     }
@@ -696,6 +718,9 @@ export class LoginSessionManager {
       if (age > SESSION_TIMEOUTS.SESSION_MAX) {
         log.info('Cleaning up expired session', { id, age });
         session.browser.close().catch(() => {});
+        if (session.status !== 'success') {
+          safeRemoveLoginDir(id);
+        }
         this.sessions.delete(id);
       }
     }

@@ -11,6 +11,7 @@ import { initDatabase } from './db/index.js';
 import { getAccountPool } from './core/account-pool.js';
 import { startHttpServer } from './http-server.js';
 import { config } from './core/config.js';
+import { startLivenessMonitor, installPresenceSignal } from './core/liveness.js';
 
 /**
  * Parse command line arguments.
@@ -50,6 +51,11 @@ async function runStdioMode() {
 
   const server = createMcpServer(pool, db);
   const transport = new StdioServerTransport();
+
+  // C3.2 启动息屏自保轮询（darwin + 已启用时生效；非 darwin/未启用为 no-op）
+  await startLivenessMonitor();
+  // R3-1：stdio 模式下无 HTTP /confirm-presence 路由，改用 SIGUSR1 信号作为本机人工在场确认通道
+  installPresenceSignal();
 
   await server.connect(transport);
   console.error('Xiaohongshu MCP Server running on stdio');

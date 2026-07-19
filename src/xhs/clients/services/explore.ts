@@ -16,6 +16,8 @@ import {
   NoteBrief,
   AccountInfo,
 } from '../../../core/explore-ai.js';
+import { getCooccurrenceGuard } from '../../../core/antidetect.js';
+import { isWriteAllowed, getLiveness } from '../../../core/liveness.js';
 import { EXPLORE_SELECTORS } from '../constants.js';
 
 /**
@@ -136,6 +138,10 @@ export class ExploreService {
 
     // 账号信息，用于读取 prompt
     const accountInfo: AccountInfo = { id: accountId, name: accountName };
+    // 共现守卫单例（R2-3：内部点赞/评论逐动作经配额/去重/xsec/熔断）
+    const guard = getCooccurrenceGuard();
+    // R3-6：启动前确保已真实采样一次设备在场状态（避免默认 awake 误放行已息屏设备）
+    await getLiveness().awaitFirstSample();
 
     await this.ctx.ensureContext();
     const page = await this.ctx.newPage();
@@ -155,6 +161,12 @@ export class ExploreService {
     // 创建 AbortController 用于中途停止
     const abortController = new AbortController();
     this.abortControllers.set(sessionId, abortController);
+
+    // R2-2：启动即采样设备在场状态；息屏/无人值守则拒绝启动长任务浏览（避免无人值守自停写违例）
+    if (!isWriteAllowed().allowed) {
+      log.warn('设备不在场（息屏/无人值守），拒绝启动浏览会话', { reason: isWriteAllowed().reason });
+      abortController.abort();
+    }
 
     // 统计
     let notesSeen = 0;
@@ -193,6 +205,13 @@ export class ExploreService {
           break;
         }
 
+        // R2-2：长任务运行中持续重检设备在场状态（息屏/无人值守即优雅停止，不再只靠 stop_explore）
+        if (!isWriteAllowed().allowed) {
+          log.warn('设备不在场（息屏/无人值守），停止浏览会话', { reason: isWriteAllowed().reason });
+          abortController.abort();
+          break;
+        }
+
         // === 随机行为模式 ===
         const behaviorRoll = Math.random();
 
@@ -227,7 +246,8 @@ export class ExploreService {
         if (isLongPause) {
           log.debug('Behavior: long pause');
         }
-        await sleep(readingDelay);
+        // R3-6：长等待可被 abort（息屏/stop）中断，尽快终止当前迭代
+        await this.sleepAbortable(readingDelay, abortController.signal);
 
         // 获取当前 feeds，过滤已看过的（用于统计）
         const feeds = await this.getFeeds(page);
@@ -338,13 +358,19 @@ export class ExploreService {
                 if (isDeepRead) {
                   log.debug('Behavior: deep reading');
                 }
-                await sleep(modalReadDelay);
+                // R3-6：长等待可被 abort（息屏/stop）中断，尽快终止当前迭代
+                await this.sleepAbortable(modalReadDelay, abortController.signal);
 
                 // 获取笔记详情（包含评论）
                 const noteDetail = await this.getNoteDetailFromModal(page, selectedFeed.id);
 
                 // 按概率决定是否点赞（使用 AI 选择点赞帖子还是评论）
                 if (Math.random() < likeRate && noteDetail) {
+                  // R3-6：每个写动作前统一检查 abort + 设备在场，不在场则跳过本动作
+                  const canLike = this.assertCanWrite(abortController);
+                  if (!canLike.ok) {
+                    log.warn('explore 点赞前门禁未过，跳过', { noteId: selectedFeed.id, reason: canLike.reason });
+                  } else {
                   const likeTarget = await selectLikeTarget(
                     accountInfo,
                     noteDetail.title,
@@ -353,54 +379,139 @@ export class ExploreService {
                   );
 
                   if (likeTarget.target === 'post') {
-                    // 点赞帖子
-                    const liked = await this.likeInModal(page);
-                    if (liked) {
-                      db.explore.logAction(sessionId, {
-                        noteId: selectedFeed.id,
-                        noteTitle: selectedFeed.noteCard.displayTitle,
-                        action: 'liked',
-                        aiReason: likeTarget.reason,
-                      });
-                      notesLiked++;
-                      db.explore.markNoteExplored(accountId, selectedFeed.id, true);
-                      log.info('Liked note', { noteId: selectedFeed.id, reason: likeTarget.reason });
+                    // R2-3：内部写操作经共现守卫（配额/去重/xsec/熔断），逐动作策略
+                    const resv = await guard.beforeAction({
+                      accountId,
+                      action: 'like',
+                      dedupKey: `explore:like:${selectedFeed.id}`,
+                      xsecToken: selectedFeed.xsecToken,
+                    });
+                    if (!resv.allow) {
+                      log.warn('explore 内部点赞被共现守卫拦截', { noteId: selectedFeed.id, reason: resv.reason });
+                    } else {
+                      // R4 P1 1019834745：取得 reservation 后、真正 DOM 写前再次检查设备在场，
+                      // 覆盖 selectLikeTarget（AI 异步）期间息屏的窗口；不在场则回滚 reservation 跳过写。
+                      const canWrite = this.assertCanWrite(abortController);
+                      if (!canWrite.ok) {
+                        await guard.cancelReservation(resv.reservation, accountId);
+                        log.warn('explore 点赞前写门禁未过，回滚 reservation 跳过', { noteId: selectedFeed.id, reason: canWrite.reason });
+                      } else {
+                        // 点赞帖子
+                        const liked = await this.likeInModal(page);
+                        if (liked) {
+                          db.explore.logAction(sessionId, {
+                            noteId: selectedFeed.id,
+                            noteTitle: selectedFeed.noteCard.displayTitle,
+                            action: 'liked',
+                            aiReason: likeTarget.reason,
+                          });
+                          notesLiked++;
+                          db.explore.markNoteExplored(accountId, selectedFeed.id, true);
+                          log.info('Liked note', { noteId: selectedFeed.id, reason: likeTarget.reason });
+                        }
+                        await guard.afterAction({
+                          accountId,
+                          action: 'like',
+                          success: liked,
+                          dedupKey: `explore:like:${selectedFeed.id}`,
+                          xsecToken: selectedFeed.xsecToken,
+                          reservation: resv.reservation,
+                        });
+                      }
                     }
                   } else if (likeTarget.target.startsWith('comment:')) {
                     // 点赞评论
                     const commentId = likeTarget.target.replace('comment:', '');
-                    const liked = await this.likeCommentInModal(page, commentId);
-                    if (liked) {
-                      db.explore.logAction(sessionId, {
-                        noteId: selectedFeed.id,
-                        noteTitle: selectedFeed.noteCard.displayTitle,
-                        action: 'liked',
-                        content: `评论: ${commentId}`,
-                        aiReason: likeTarget.reason,
-                      });
-                      notesLiked++;
-                      db.explore.markNoteExplored(accountId, selectedFeed.id, true);
-                      log.info('Liked comment', { noteId: selectedFeed.id, commentId, reason: likeTarget.reason });
+                    const resv = await guard.beforeAction({
+                      accountId,
+                      action: 'like_comment',
+                      dedupKey: `explore:like_comment:${selectedFeed.id}:${commentId}`,
+                      xsecToken: selectedFeed.xsecToken,
+                    });
+                    if (!resv.allow) {
+                      log.warn('explore 内部点赞评论被共现守卫拦截', { noteId: selectedFeed.id, commentId, reason: resv.reason });
+                    } else {
+                      // R4 P1 1019834745：写前再次检查设备在场
+                      const canWrite = this.assertCanWrite(abortController);
+                      if (!canWrite.ok) {
+                        await guard.cancelReservation(resv.reservation, accountId);
+                        log.warn('explore 点赞评论前写门禁未过，回滚 reservation 跳过', { noteId: selectedFeed.id, commentId, reason: canWrite.reason });
+                      } else {
+                        const liked = await this.likeCommentInModal(page, commentId);
+                        if (liked) {
+                          db.explore.logAction(sessionId, {
+                            noteId: selectedFeed.id,
+                            noteTitle: selectedFeed.noteCard.displayTitle,
+                            action: 'liked',
+                            content: `评论: ${commentId}`,
+                            aiReason: likeTarget.reason,
+                          });
+                          notesLiked++;
+                          db.explore.markNoteExplored(accountId, selectedFeed.id, true);
+                          log.info('Liked comment', { noteId: selectedFeed.id, commentId, reason: likeTarget.reason });
+                        }
+                        await guard.afterAction({
+                          accountId,
+                          action: 'like_comment',
+                          success: liked,
+                          dedupKey: `explore:like_comment:${selectedFeed.id}:${commentId}`,
+                          xsecToken: selectedFeed.xsecToken,
+                          reservation: resv.reservation,
+                        });
+                      }
                     }
                   } else {
                     log.debug('AI chose not to like', { reason: likeTarget.reason });
+                  }
                   }
                 }
 
                 // 按概率评论
                 if (Math.random() < commentRate && noteDetail) {
+                  // R3-6：每个写动作前统一检查 abort + 设备在场，不在场则跳过本动作
+                  const canComment = this.assertCanWrite(abortController);
+                  if (!canComment.ok) {
+                    log.warn('explore 评论前门禁未过，跳过', { noteId: selectedFeed.id, reason: canComment.reason });
+                  } else {
                   const commentResult = await generateComment(accountInfo, noteDetail.title, noteDetail.desc);
-                  const commented = await this.commentInModal(page, commentResult.comment);
-                  if (commented) {
-                    db.explore.logAction(sessionId, {
-                      noteId: selectedFeed.id,
-                      noteTitle: selectedFeed.noteCard.displayTitle,
-                      action: 'commented',
-                      content: commentResult.comment,
-                    });
-                    notesCommented++;
-                    db.explore.markNoteExplored(accountId, selectedFeed.id, true);
-                    log.info('Commented on note', { noteId: selectedFeed.id, comment: commentResult.comment });
+                  // R2-3：内部写操作经共现守卫（配额/去重/xsec/熔断）
+                  const resv = await guard.beforeAction({
+                    accountId,
+                    action: 'comment',
+                    dedupKey: `explore:comment:${selectedFeed.id}`,
+                    xsecToken: selectedFeed.xsecToken,
+                  });
+                  if (!resv.allow) {
+                    log.warn('explore 内部评论被共现守卫拦截', { noteId: selectedFeed.id, reason: resv.reason });
+                  } else {
+                    // R4 P1 1019834745：写前再次检查设备在场（覆盖 generateComment 异步窗口）
+                    const canWrite = this.assertCanWrite(abortController);
+                    if (!canWrite.ok) {
+                      await guard.cancelReservation(resv.reservation, accountId);
+                      log.warn('explore 评论前写门禁未过，回滚 reservation 跳过', { noteId: selectedFeed.id, reason: canWrite.reason });
+                    } else {
+                      const commented = await this.commentInModal(page, commentResult.comment);
+                      if (commented) {
+                        db.explore.logAction(sessionId, {
+                          noteId: selectedFeed.id,
+                          noteTitle: selectedFeed.noteCard.displayTitle,
+                          action: 'commented',
+                          content: commentResult.comment,
+                        });
+                        notesCommented++;
+                        db.explore.markNoteExplored(accountId, selectedFeed.id, true);
+                        log.info('Commented on note', { noteId: selectedFeed.id, comment: commentResult.comment });
+                      }
+                      await guard.afterAction({
+                        accountId,
+                        action: 'comment',
+                        success: commented,
+                        dedupKey: `explore:comment:${selectedFeed.id}`,
+                        xsecToken: selectedFeed.xsecToken,
+                        reservation: resv.reservation,
+                      });
+                    }
+                  }
                   }
                 }
 
@@ -447,6 +558,40 @@ export class ExploreService {
 
     // 返回会话结果
     return db.explore.getSessionResult(sessionId)!;
+  }
+
+  /**
+   * R3-6：每个写动作前统一检查 abort + 设备在场；不在场则终止该会话并跳过写。
+   */
+  private assertCanWrite(abortController: AbortController): { ok: boolean; reason?: string } {
+    if (abortController.signal.aborted) return { ok: false, reason: 'aborted' };
+    const live = isWriteAllowed();
+    if (!live.allowed) {
+      log.warn('设备不在场（息屏/无人值守），停止浏览会话', { reason: live.reason });
+      abortController.abort();
+      return { ok: false, reason: live.reason };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * R3-6：可中断的 sleep；abort 时立即返回，使息屏/stop 能尽快终止当前迭代中的长等待。
+   */
+  private sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      if (signal.aborted) return resolve();
+      const cleanup = () => signal.removeEventListener('abort', onAbort);
+      const onAbort = () => {
+        clearTimeout(timer);
+        cleanup();
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve();
+      }, ms);
+      signal.addEventListener('abort', onAbort);
+    });
   }
 
   /**

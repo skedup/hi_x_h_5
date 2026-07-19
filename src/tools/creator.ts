@@ -211,7 +211,7 @@ export async function handleCreatorTools(name: string, args: any, pool: AccountP
 
       const result = await executeWithAccount(pool, db, resolved.account, 'get_my_notes', async (ctx) => {
         return await ctx.client.getMyPublishedNotes(params.tab, params.limit, params.timeout);
-      });
+      }, { capability: 'read' });
 
       if (!result.success) {
         return {

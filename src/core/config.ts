@@ -54,6 +54,28 @@ export const config = {
   server: {
     /** HTTP 服务端口 (XHS_MCP_PORT) */
     port: parseInteger(process.env.XHS_MCP_PORT, 18060),
+    /**
+     * 本地 HTTP MCP 鉴权 bearer token（P2-2）。配置后，/mcp 端点要求
+     * `Authorization: Bearer <token>`，缺失/不匹配返回 401。未配置则放行（仅依赖 127.0.0.1 绑定）。
+     */
+    bearerToken: process.env.XHS_MCP_HTTP_BEARER || '',
+    /**
+     * 只读 scope 的 bearer token。配置后，持该 token 的请求仅允许读工具，
+     * 写工具一律 403。用于把"只读观测"与"可写副作用"分成两个本机进程凭证。
+     * 注意：readonly token 必须与 bearerToken 不同；若与 bearerToken 相同则视为全量。
+     */
+    bearerTokenReadonly: process.env.XHS_MCP_HTTP_BEARER_READONLY || '',
+    /**
+     * 批量写操作确认值（P2-2：批量写单独 capability + 人工确认）。配置后，
+     * 多账号写（accounts='all' 或数组长度>1）必须在请求头 `X-Xhs-Write-Confirm`
+     * 携带该值，否则 403。未配置则不强求确认（向后兼容）。
+     */
+    bulkConfirmToken: process.env.XHS_MCP_BULK_CONFIRM || '',
+    /**
+     * 人工在场确认 challenge 时效（毫秒）。短时有效、消费后轮换（R4 P2 1019839888），
+     * 避免长生命周期复用 token 被当成「自动化无法伪造」的强门禁。默认 120000（2 分钟）。
+     */
+    presenceChallengeTtlMs: parseInteger(process.env.XHS_MCP_PRESENCE_TTL, 120000),
   },
 
   /**
@@ -108,6 +130,71 @@ export const config = {
     model: process.env.GEMINI_MODEL || 'gemini-3-flash',
     /** 分析模型 (GEMINI_ANALYSIS_MODEL) - 用于内容分析、布局规划 */
     analysisModel: process.env.GEMINI_ANALYSIS_MODEL || 'gemini-3.1-pro-preview-high',
+  },
+
+  /**
+   * 反检测：多账号共现抑制（波次 C / C2）
+   * 所有子项均可通过环境变量独立关闭，便于单独回滚。
+   */
+  antiDetect: {
+    /** C2.1 改并行→串行 + 账号间随机抖动 */
+    cooccurrence: {
+      /** 总开关：开启后多账号写操作改为串行 + 账号间冷却 */
+      enabled: parseBoolean(process.env.XHS_MCP_AD_COOCCURRENCE, true),
+      /** 是否串行执行（默认 true；false 时退回并行） */
+      sequential: true,
+      /** 账号间随机冷却区间（毫秒），消除同步尖峰（如 30–120s） */
+      interAccountCooldownMs: [30000, 120000] as [number, number],
+    },
+    /** C2.2 xsecToken 绑定：禁止跨账号复用同一 token */
+    xsecTokenBinding: {
+      /** 总开关 */
+      enabled: parseBoolean(process.env.XHS_MCP_AD_XSEC, true),
+      /** block: 跨账号复用直接拦截；warn: 仅告警放行（默认，避免误伤正常多账号） */
+      mode: (process.env.XHS_MCP_AD_XSEC_MODE as 'block' | 'warn') || 'warn',
+    },
+    /** C2.3 中央限额/熔断（按账号预算、冷却、连续失败熔断进入人工） */
+    quota: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_QUOTA, true),
+      /** 每账号每小时动作预算 */
+      perAccountHourly: parseInteger(process.env.XHS_MCP_AD_QUOTA_HOURLY, 60),
+      /** 每账号每日动作预算 */
+      perAccountDaily: parseInteger(process.env.XHS_MCP_AD_QUOTA_DAILY, 300),
+      /** 单账号动作后最小冷却（毫秒），叠加在 REQUEST_INTERVAL 之上 */
+      cooldownMsAfterAction: parseInteger(process.env.XHS_MCP_AD_QUOTA_COOLDOWN, 5000),
+      /** 连续失败达到该次数即熔断进入人工 */
+      consecutiveFailuresToTrip: parseInteger(process.env.XHS_MCP_AD_QUOTA_TRIP, 3),
+      /** 命中即熔断的验证码/风控关键字（大小写不敏感，匹配 error 或 result） */
+      captchaErrorPatterns: (
+        process.env.XHS_MCP_AD_QUOTA_PATTERNS
+          ? process.env.XHS_MCP_AD_QUOTA_PATTERNS.split(',').map((s) => s.trim()).filter(Boolean)
+          : ['验证码', 'captcha', 'verify', '安全验证', '滑块', 'sliding', 'risk', '风控', '429']
+      ) as string[],
+    },
+    /** C2.4 跨账号 content/media 去重（相同评论正文 / 相同媒体硬拦截；同 target 点赞靠串行+冷却缓解时序共现） */
+    dedup: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_DEDUP, true),
+    },
+    /** C3.2 息屏/无人值守自保（07）：写操作需设备在场，显示器 asleep 或长时间无人确认则停写 */
+    liveness: {
+      /** 总开关；关闭时写操作不受设备在场约束（默认开） */
+      enabled: parseBoolean(process.env.XHS_MCP_AD_LIVENESS, true),
+      /**
+       * 显示器 asleep 检测轮询间隔（毫秒）；仅 darwin 生效，非 darwin 恒判为 awake（放行）以防误杀。
+       * 设为 0 可关闭轮询（此时仅靠 idleTimeoutMs 约束）。
+       */
+      pollIntervalMs: parseInteger(process.env.XHS_MCP_AD_LIVENESS_POLL, 15000),
+      /**
+       * 无人确认超时（毫秒）：超过该时长无任何工具调用则认为无人值守，停写。
+       * 设为 0 关闭（仅靠显示器 asleep 信号）。默认 0 以避免误杀离线批处理；运维可按需开启。
+       */
+      idleTimeoutMs: parseInteger(process.env.XHS_MCP_AD_LIVENESS_IDLE, 0),
+    },
+    /** B1 headless 门禁（05/02）：写操作拒绝 headless，强制 headful 以保留设备在场语义 */
+    headlessWriteGate: {
+      /** 总开关；开启后 config.browser.headless=true 时所有写操作被拒绝（默认开） */
+      enabled: parseBoolean(process.env.XHS_MCP_AD_HEADLESS_WRITE_GATE, true),
+    },
   },
 
   /**
@@ -166,9 +253,13 @@ export const paths = {
   get database() {
     return path.join(config.data.dir, 'data.db');
   },
-  /** 持久化 Chrome profile */
+  /** 持久化 Chrome profile（旧版单一共享目录；保留用于向后兼容 profile_id=null 的账号） */
   get browserProfile() {
     return path.join(config.data.dir, 'browser-profile');
+  },
+  /** 每账号独立浏览器 profile 目录（基于内部随机 profile_id，隔离 Cookie/LocalStorage/设备盐） */
+  getBrowserProfileDir(profileId: string) {
+    return path.join(config.data.dir, 'browser-profiles', profileId);
   },
   /** 下载目录 */
   get downloads() {

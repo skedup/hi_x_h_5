@@ -27,6 +27,8 @@ export interface XhsClientOptions {
   accountId?: string;
   /** Account name for this client instance */
   accountName?: string;
+  /** Immutable internal profile ID for the isolated browser profile dir */
+  profileId: string;
   /** Playwright storage state (cookies, localStorage) for session persistence */
   state?: any;
   /** Proxy server URL (e.g., "http://proxy:8080") */
@@ -45,6 +47,7 @@ export interface XhsClientOptions {
  * ```typescript
  * const client = new XhsClient({
  *   accountId: 'my-account',
+ *   profileId: 'my-profile-id',
  *   state: savedState,
  *   onStateChange: (state) => saveState(state),
  * });
@@ -57,10 +60,11 @@ export class XhsClient {
   private browserClient: BrowserClient;
   private options: XhsClientOptions;
 
-  constructor(options: XhsClientOptions = {}) {
+  constructor(options: XhsClientOptions) {
     this.options = options;
     this.browserClient = new BrowserClient({
       accountId: options.accountId,
+      profileId: options.profileId,
       state: options.state,
       proxy: options.proxy,
       onStateChange: options.onStateChange,
@@ -192,5 +196,13 @@ export class XhsClient {
 
   async close() {
     await this.browserClient.close();
+  }
+
+  /**
+   * 暴露浏览器上下文的 APIRequestContext（B2 下载出口统一）。
+   * 未初始化或不可用时返回 null。
+   */
+  get request() {
+    return this.browserClient.request;
   }
 }

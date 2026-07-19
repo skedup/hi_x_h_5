@@ -20,6 +20,13 @@ import { draftTools, handleDraftTools } from './tools/draft.js';
 import { creatorTools, handleCreatorTools } from './tools/creator.js';
 import { notificationTools, handleNotificationTools } from './tools/notification.js';
 import { exploreTools, handleExploreTools } from './tools/explore.js';
+import { TOOL_CAPABILITIES } from './core/audit.js';
+
+/** 蓝军 #1：启动期一次性扫描旧账号迁移状态，避免每次建连重复扫描 */
+let migrationScanned = false;
+
+// 写工具集合（P2-2 读写能力分级）定义于 core/audit.ts，此处再导出以兼容既有引用
+export { WRITE_TOOL_NAMES } from './core/audit.js';
 
 /**
  * Create and configure the MCP server.
@@ -57,6 +64,29 @@ export function createMcpServer(pool: AccountPool, db: XhsDatabase): Server {
     ...exploreTools,
   ];
 
+  // 蓝军 P1 #11：所有注册工具必须显式声明能力，缺失（未知/未分类）即启动失败，
+  // 以 fail-closed 兜底，避免新增工具默认被只读 token 直接调用。
+  const unclassified = allTools.filter((t) => !(t.name in TOOL_CAPABILITIES));
+  if (unclassified.length > 0) {
+    throw new Error(
+      `Unclassified tools (missing in core/audit.ts TOOL_CAPABILITIES): ${unclassified.map((t) => t.name).join(', ')}`,
+    );
+  }
+
+  // 蓝军 #1 / R3-8：升级后尚无独立 profile 的旧账号强制进入 migration_required，拒绝平台操作。
+  // 仅成功后置 scanned；若失败则启动失败（fail-closed），避免旧账号以 active 静默触网。
+  if (!migrationScanned) {
+    try {
+      const n = db.accounts.legacyProfilesRequireMigration();
+      if (n > 0)
+        console.warn(`[migration] ${n} 个旧账号缺少独立 profile，已置 migration_required，需人工重登录绑定`);
+      migrationScanned = true;
+    } catch (e) {
+      console.error('[migration] scan failed（启动失败，避免旧账号以 active 静默触网）', e);
+      throw e;
+    }
+  }
+
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
       tools: allTools,
@@ -65,6 +95,9 @@ export function createMcpServer(pool: AccountPool, db: XhsDatabase): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
+      // 蓝军 #7：普通 MCP 工具调用不得刷新「人工在场」确认，避免自动化客户端伪造值守。
+      // 人工确认须由独立、短时、本地交互鉴权的通道刷新（见 core/liveness 的 recordHumanActivity），
+      // 而非任意远程 MCP 调用。空闲超时（idleTimeoutMs）默认关闭，启用后仅由真实本地交互重置。
       const { name, arguments: args } = request.params;
 
       // Route to appropriate handler

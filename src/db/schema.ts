@@ -14,8 +14,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
   proxy TEXT,
+  profile_id TEXT,
   state JSON,
-  status TEXT DEFAULT 'active' CHECK(status IN ('active', 'suspended', 'banned')),
+  status TEXT DEFAULT 'active' CHECK(status IN ('active', 'suspended', 'banned', 'migration_required')),
   last_login_at DATETIME,
   last_active_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -222,10 +223,12 @@ export interface AccountRow {
   name: string;
   /** Optional proxy server URL */
   proxy: string | null;
+  /** Immutable internal profile ID (random UUID) for the isolated browser profile dir */
+  profile_id: string | null;
   /** Playwright storage state as JSON string */
   state: string | null;
   /** Account status */
-  status: 'active' | 'suspended' | 'banned';
+  status: 'active' | 'suspended' | 'banned' | 'migration_required';
   /** Last successful login timestamp */
   last_login_at: string | null;
   /** Last activity timestamp */

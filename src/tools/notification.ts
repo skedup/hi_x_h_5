@@ -83,7 +83,7 @@ export async function handleNotificationTools(name: string, args: any, pool: Acc
 
       const result = await executeWithAccount(pool, db, resolved.account, 'get_notifications', async (ctx) => {
         return await ctx.client.getNotifications(params.type, params.limit);
-      });
+      }, { capability: 'read' });
 
       if (!result.success) {
         return {

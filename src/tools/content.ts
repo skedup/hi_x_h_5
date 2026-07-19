@@ -10,6 +10,7 @@ import type { XhsSearchFilters } from '../xhs/types.js';
 import { AccountPool } from '../core/account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { executeWithMultipleAccounts, MultiAccountParams } from '../core/multi-account.js';
+import { getCooccurrenceGuard } from '../core/antidetect.js';
 import { understandNoteImages } from '../core/gemini.js';
 import { config } from '../core/config.js';
 
@@ -173,9 +174,14 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         multiParams,
         'search',
         async (ctx) => {
-          return await ctx.client.search(params.keyword, params.count, params.timeout, filters);
+          const items = await ctx.client.search(params.keyword, params.count, params.timeout, filters);
+          // 蓝军 #6 / R2-1：每个提取到的 xsecToken 绑定到实际执行提取的账号（fail-closed）
+          for (const it of items) {
+            getCooccurrenceGuard().bindXsecSource(it.xsecToken, ctx.accountId);
+          }
+          return items;
         },
-        { logParams: { keyword: params.keyword, count: params.count } },
+        { logParams: { keyword: params.keyword, count: params.count }, capability: 'read' },
       );
 
       // For single account, return simple format
@@ -236,9 +242,15 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         multiParams,
         'get_note',
         async (ctx) => {
+          // R3-5：消费路径只校验既有来源，禁止补写来源（fail-closed）。
+          // 跨账号复用 / 未知来源在 block 模式下拒绝；warn 模式放行但记录。
+          const chk = getCooccurrenceGuard().checkXsecSource(params.xsecToken, ctx.accountId);
+          if (!chk.allow) {
+            throw new Error(`xsec token 校验失败（${chk.reason}）：消费路径不得补写来源`);
+          }
           return await ctx.client.getNote(params.noteId, params.xsecToken);
         },
-        { logParams: { noteId: params.noteId } },
+        { logParams: { noteId: params.noteId }, capability: 'read' },
       );
 
       const r = results[0];
@@ -248,6 +260,8 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
           isError: true,
         };
       }
+
+      // 蓝军 #6：xsecToken 来源绑定已在上面的提取回调（ctx.accountId）内完成（fail-closed）
 
       if (!r.result) {
         return {
@@ -345,9 +359,16 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         multiParams,
         'user_profile',
         async (ctx) => {
+          // R3-5：消费路径只校验既有来源（xsecToken 可选；提供时才校验），禁止补写来源
+          if (params.xsecToken) {
+            const chk = getCooccurrenceGuard().checkXsecSource(params.xsecToken, ctx.accountId);
+            if (!chk.allow) {
+              throw new Error(`xsec token 校验失败（${chk.reason}）：消费路径不得补写来源`);
+            }
+          }
           return await ctx.client.getUserProfile(params.userId, params.xsecToken);
         },
-        { logParams: { userId: params.userId } },
+        { logParams: { userId: params.userId }, capability: 'read' },
       );
 
       const r = results[0];
@@ -357,6 +378,8 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
           isError: true,
         };
       }
+
+      // 蓝军 #6：xsecToken 来源绑定已在上面的提取回调（ctx.accountId）内完成（fail-closed）
 
       if (!r.result) {
         return {
@@ -380,8 +403,13 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
       const multiParams: MultiAccountParams = { account: params.account };
 
       const results = await executeWithMultipleAccounts(pool, db, multiParams, 'list_feeds', async (ctx) => {
-        return await ctx.client.listFeeds();
-      });
+        const feeds = await ctx.client.listFeeds();
+        // 蓝军 #6 / R2-1：feed 中每个 xsecToken 绑定到实际提取账号（fail-closed）
+        for (const it of feeds as any[]) {
+          if (it?.xsecToken) getCooccurrenceGuard().bindXsecSource(it.xsecToken, ctx.accountId);
+        }
+        return feeds;
+      }, { capability: 'read' });
 
       const r = results[0];
       if (!r.success) {
