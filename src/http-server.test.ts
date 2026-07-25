@@ -4,7 +4,25 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { config } from './core/config.js';
-import { verifyPresenceToken } from './http-server.js';
+import { SERVICE_API_VERSION } from './service-api.js';
+
+describe('service API handshake', () => {
+  it('使用与 npm patch version 解耦的稳定版本', () => {
+    expect(SERVICE_API_VERSION).toBe('1');
+  });
+});
+
+// 延迟导入避免测试加载时启动 HTTP 依赖。
+const { healthPayload, verifyPresenceToken } = await import('./http-server.js');
+
+it('/health 投影稳定 service_api_version', () => {
+  expect(healthPayload()).toEqual({
+    status: 'ok',
+    server: 'xhs-mcp',
+    version: '2.0.0',
+    service_api_version: '1',
+  });
+});
 
 describe('presence challenge 轮换', () => {
   it('自然过期后生成新 challenge，服务无需重启即可继续确认', async () => {

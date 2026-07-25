@@ -18,6 +18,16 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { config } from './core/config.js';
 import { evaluateAuthorization, authorizeMessages } from './core/audit.js';
 import { startLivenessMonitor, recordHumanActivity, installPresenceSignal } from './core/liveness.js';
+import { SERVICE_API_VERSION } from './service-api.js';
+
+export function healthPayload() {
+  return {
+    status: 'ok',
+    server: 'xhs-mcp',
+    version: '2.0.0',
+    service_api_version: SERVICE_API_VERSION,
+  };
+}
 
 /**
  * C3.3（P2-2）本地 HTTP MCP 鉴权与读写能力分级。
@@ -277,7 +287,7 @@ export async function startHttpServer(port: number = config.server.port) {
 
   // Health check endpoint
   app.get('/health', (c) => {
-    return c.json({ status: 'ok', server: 'xhs-mcp', version: '2.0.0' });
+    return c.json(healthPayload());
   });
 
   // R4 P2 1019839888：独立、本机「人工在场」确认通道。需携带本机终端打印的短时 challenge token

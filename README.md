@@ -18,6 +18,17 @@
 
 ---
 
+## Kindred Portable Capability
+
+仓库内的 [`packages/kindred-capability-xiaohongshu`](./packages/kindred-capability-xiaohongshu/)
+是 `hi_x_h_5` 官方维护的 Kindred 接入包。它通过 loopback Streamable HTTP 调用本服务，
+向 Kindred 暴露经过收敛的十二个工具，而不让模型看到 raw MCP、平台 ID 或
+`xsecToken`。
+
+`GET /health` 返回独立于 npm patch version 的 `service_api_version`。接入包会在首次业务调用前
+校验该版本；缺失或不匹配时直接失败，不调用平台工具。具体配置、Artifact bundle 和安全边界见
+[Portable package 文档](./packages/kindred-capability-xiaohongshu/README.md)。
+
 ## 功能概览
 
 ### 多账号管理
