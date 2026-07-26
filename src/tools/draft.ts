@@ -16,7 +16,6 @@ import { executeWithMultipleAccounts, MultiAccountParams } from '../core/multi-a
 import { sha256OfFiles, sha256OfText } from '../core/antidetect.js';
 import { graphemeLength, computeTypingPlan } from '../xhs/utils/index.js';
 import { createLogger } from '../core/logger.js';
-import { runGraph } from '../core/image-processor/graph/index.js';
 
 const log = createLogger('draft');
 
@@ -280,6 +279,7 @@ export async function handleDraftTools(name: string, args: any, pool: AccountPoo
       log.info('使用 AI 处理截图', { draftId, screenshotCount: params.screenshots.length });
 
       try {
+        const { runGraph } = await import('../core/image-processor/graph/index.js');
         // 调用 image processor 生成配图，直接输出到草稿目录
         const result = await runGraph({
           content: params.content,
