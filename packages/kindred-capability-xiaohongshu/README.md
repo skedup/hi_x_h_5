@@ -30,20 +30,24 @@ capabilities:
     side_effect_activities: [play_xiaohongshu]
     settings:
       mcp_url: http://127.0.0.1:18060
-      timeout: 15
+      timeout: 45
       write_mode: none
 ```
 
 `settings` 严格支持：
 
 - `mcp_url`：必填，只接受 loopback HTTP 服务根地址；
-- `timeout`：可选，默认 15 秒；
+- `timeout`：可选，默认 45 秒；
 - `write_mode`：`none | dry_run | live`，默认 `none`。
 
 namespaced secret：
 
 - `readonly_bearer_token`：优先用于 initialize 和只读工具；
 - `bearer_token`：用于写工具；只配置它时也可承担只读调用。
+
+Node 服务仍沿用既有鉴权语义：服务端的全量 bearer 是鉴权总开关，readonly bearer 只是附加的
+只读凭据。只读部署也应在 Node 端配置全量 bearer，并在接入侧仅持有 readonly bearer；本 package
+不改变服务原有鉴权策略。
 
 package 不枚举其他 capability 的 secret，也不在异常或 ToolResult 中回显 secret。
 
@@ -69,6 +73,9 @@ package 不枚举其他 capability 的 secret，也不在异常或 ToolResult �
 
 `write_mode=none` 时不贡献写 ToolBinding；`dry_run` 会完整校验引用和 Artifact，但不会调用任何上游
 写工具；`live` 才调用 Node 服务。EXT2 只用 fake service 验证 `live`，不执行真实写操作。
+
+package 只阻止同一工具环中的直接重复写；跨工具环继续使用 `hi_x_h_5` 原生 best-effort dedup，
+不新增 package 私有 ledger 或改变 Node 的去重身份。comment/reply 的 Artifact 正文最多 180 字。
 
 模型只看到 `feed_ref`、`user_ref`、`comment_ref`。真实平台 ID 与 `xsecToken` 仅存于
 capability-scoped `TransientStore`，随工具环结束失效；伪造、跨 tick、过期引用和父帖子不匹配
@@ -167,7 +174,7 @@ tools/list 和必要的 list/search/detail；真实写操作必须单独授权�
 - hi_x_h_5 service 基线：`5607e8f89874759cc04efc76e0d6ea820d03df3b`
 - package：`kindred-capability-xiaohongshu==0.1.0`
 - service API：`1`
-- Python package：1085 行非空生产代码
+- Python package：1107 行非空生产代码
 - Node handshake：12 行非空生产改动
 
 本机只读 handshake 使用现有测试账号和持久化 profile，依次验证了 health、initialize、
@@ -181,9 +188,9 @@ tools/list、list、search 和 detail。结果为：
 
 门禁结果：
 
-- Python package：38 passed，strict mypy、ruff、wheel build、clean venv entry point
-  discovery 通过；
-- Node source：89 passed；native migration regression：3 passed；
+- Python package：42 passed，ruff、wheel build、clean venv entry point discovery 通过；strict mypy
+  使用固定 SDK source。SDK wheel 的 `py.typed` 打包缺口由 Kindred 在 EXT3 前修复；
+- Node source：88 passed；native migration regression：3 passed；
 - ESLint 无 error，TypeScript build 通过。
 
 结论：**EXT2 GO**。Portable package 已能独立承担 XHS 工具契约、短期引用、Artifact 消费、

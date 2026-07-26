@@ -30,7 +30,7 @@ class TickRuntime:
     detail_calls: int = 0
     total_calls: int = 0
     interaction_target: str | None = None
-    operations: set[str] = field(default_factory=set)
+    operations: dict[str, bool] = field(default_factory=dict)
 
     def consume_read(self, *, detail: bool) -> None:
         if self.total_calls >= 3 or (detail and self.detail_calls >= 2):

@@ -37,6 +37,7 @@ from .session import (
 
 WriteMode = Literal["none", "dry_run", "live"]
 DEFAULT_DISCOVERY_LIMIT = 5
+MAX_COMMENT_CHARS = 180
 
 READ_TOOLS = (
     "xiaohongshu_list_feeds",
@@ -79,7 +80,7 @@ class Settings:
             or parsed.fragment
         ):
             raise ValueError("xiaohongshu mcp_url must be a loopback HTTP URL")
-        timeout = raw.get("timeout", 15.0)
+        timeout = raw.get("timeout", 45.0)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
             raise ValueError("xiaohongshu timeout must be numeric")
         if not 0 < float(timeout) <= 120:
@@ -317,20 +318,27 @@ def _handle_write(
 ) -> ToolResult:
     runtime = _runtime(context)
     try:
-        operation, invoke = _prepare_write(call, context, runtime, client)
+        operation, invoke = _prepare_write(call, context, runtime, client, mode == "live")
         fingerprint = hashlib.sha256("|".join(operation).encode()).hexdigest()
-        if fingerprint in runtime.operations:
+        previous = runtime.operations.get(fingerprint)
+        if previous is True:
             return ToolResult.ok(
                 call,
-                {"ok": True, "mode": mode, "status": "already_attempted"},
+                {"ok": True, "mode": mode, "status": "already_done", "already_done": True},
             )
-        runtime.operations.add(fingerprint)
+        if previous is False:
+            return _error(call, "UnknownSideEffect", "write outcome is unknown")
         if mode == "dry_run":
             return ToolResult.ok(
                 call,
                 {"ok": True, "mode": mode, "status": "dry_run", "dry_run": True},
             )
-        result = invoke()
+        try:
+            result = invoke()
+        except UnknownSideEffect:
+            runtime.operations[fingerprint] = False
+            raise
+        runtime.operations[fingerprint] = True
         return ToolResult.ok(call, {"ok": True, "mode": mode, **result})
     except InvalidRef as exc:
         return _error(call, "InvalidRef", str(exc))
@@ -351,6 +359,7 @@ def _prepare_write(
     context: InvocationContext,
     runtime: TickRuntime,
     client: McpClient,
+    reserve_interaction: bool,
 ) -> tuple[tuple[str, ...], Callable[[], dict[str, Any]]]:
     if call.name == WRITE_TOOLS[0]:
         _require_keys(call, {"artifact_ref"}, exact=True)
@@ -378,7 +387,7 @@ def _prepare_write(
                 if draft.get("success") is not True or not isinstance(draft_id, str):
                     raise ProviderError("draft creation failed")
                 published = _successful_write(
-                    client.call_tool("xhs_publish_draft", {"draftId": draft_id})
+                    _call_side_effect(client, "xhs_publish_draft", {"draftId": draft_id})
                 )
                 note_id = published.get("noteId")
                 return {
@@ -408,8 +417,11 @@ def _prepare_write(
             require_title=False,
             include_assets=False,
         )
+        if len(bundle.content) > MAX_COMMENT_CHARS:
+            raise InvalidArtifact(f"comment content exceeds {MAX_COMMENT_CHARS} characters")
         target = comment.identifier if comment else feed.identifier
-        runtime.reserve_interaction(target)
+        if reserve_interaction:
+            runtime.reserve_interaction(target)
         upstream = "xhs_reply_comment" if comment else "xhs_post_comment"
 
         def comment_write() -> dict[str, Any]:
@@ -420,7 +432,7 @@ def _prepare_write(
             }
             if comment:
                 args["commentId"] = comment.identifier
-            result = _successful_write(client.call_tool(upstream, args))
+            result = _successful_write(_call_side_effect(client, upstream, args))
             created = result.get("commentId")
             return {
                 "status": "completed",
@@ -446,7 +458,8 @@ def _prepare_write(
         else None
     )
     target = comment.identifier if comment else feed.identifier
-    runtime.reserve_interaction(target)
+    if reserve_interaction:
+        runtime.reserve_interaction(target)
     upstream = {
         WRITE_TOOLS[3]: "xhs_like_feed",
         WRITE_TOOLS[4]: "xhs_favorite_feed",
@@ -457,7 +470,7 @@ def _prepare_write(
         args = {"noteId": feed.identifier, "xsecToken": feed.token}
         if comment:
             args["commentId"] = comment.identifier
-        result = _successful_write(client.call_tool(upstream, args))
+        result = _successful_write(_call_side_effect(client, upstream, args))
         already = result.get("alreadyDone") is True
         return {
             "status": "already_done" if already else "completed",
@@ -487,6 +500,17 @@ def _successful_write(payload: dict[str, Any]) -> dict[str, Any]:
             raise ProviderError("write failed")
         return result
     return payload
+
+
+def _call_side_effect(
+    client: McpClient,
+    tool_name: str,
+    args: Mapping[str, Any],
+) -> dict[str, Any]:
+    try:
+        return client.call_tool(tool_name, args)
+    except ProviderError:
+        raise UnknownSideEffect("write outcome is unknown") from None
 
 
 def _opaque_result(kind: str, value: object) -> str:

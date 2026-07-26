@@ -17,7 +17,7 @@ from kindred_capability_sdk import (
 
 from kindred_capability_xiaohongshu import plugin
 from kindred_capability_xiaohongshu.artifacts import FACT, PROFILE
-from kindred_capability_xiaohongshu.client import UnknownSideEffect
+from kindred_capability_xiaohongshu.client import ProviderError, UnknownSideEffect
 from kindred_capability_xiaohongshu.session import TickRuntime
 
 TOKEN = "synthetic-xsec-token"
@@ -248,6 +248,7 @@ def test_tool_surface_and_write_mode_gate(monkeypatch: pytest.MonkeyPatch) -> No
         assert parameters["additionalProperties"] is False
     none.close and none.close()
     assert client.closed
+    assert plugin.Settings.parse({"mcp_url": "http://127.0.0.1:18060"}).timeout == 45
 
 
 @pytest.mark.parametrize(
@@ -393,6 +394,19 @@ def test_dry_run_validates_artifact_and_never_calls_write(
             args["comment_ref"] = comment_ref
         result = _invoke(bindings[name], args, context)
         assert result.response["dry_run"] is True
+    runtime = TickRuntime()
+    first_ref = runtime.remember_feed("feed-a", TOKEN)
+    second_ref = runtime.remember_feed("feed-b", f"{TOKEN}-b")
+    transient = TransientStore()
+    transient.put("runtime", runtime)
+    context = _context(transient=transient, reader=reader)
+    for feed_ref in (first_ref, second_ref):
+        result = _invoke(
+            bindings[plugin.WRITE_TOOLS[3]],
+            {"feed_ref": feed_ref},
+            context,
+        )
+        assert result.response["dry_run"] is True
     assert client.calls == []
 
 
@@ -480,7 +494,7 @@ def test_write_dedup_budget_raw_args_and_unknown_side_effect(
     assert "secret" not in json.dumps(first.response)
 
     second = _invoke(bindings[plugin.WRITE_TOOLS[3]], {"feed_ref": feed_ref}, context)
-    assert second.response["status"] == "already_attempted"
+    assert second.response["error_type"] == "UnknownSideEffect"
     assert [name for name, _ in client.calls].count("xhs_like_feed") == 1
 
     runtime = context.transient.get("runtime")
@@ -494,3 +508,61 @@ def test_write_dedup_budget_raw_args_and_unknown_side_effect(
         context,
     )
     assert rejected.response["error_type"] == "InvalidArgs"
+
+
+def test_dispatched_provider_failure_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = _responses()
+    responses["xhs_like_feed"] = ProviderError("contains secret details")
+    contribution, client = _create(monkeypatch, responses, mode="live")
+    binding = _bindings(contribution)[plugin.WRITE_TOOLS[3]]
+    context, feed_ref, _ = _write_context()
+
+    result = _invoke(binding, {"feed_ref": feed_ref}, context)
+
+    assert result.response["error_type"] == "UnknownSideEffect"
+    assert "secret" not in json.dumps(result.response)
+    assert [name for name, _ in client.calls].count("xhs_like_feed") == 1
+
+
+def test_successful_write_is_not_repeated_in_the_same_tool_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contribution, client = _create(monkeypatch, _responses(), mode="live")
+    binding = _bindings(contribution)[plugin.WRITE_TOOLS[3]]
+    context, feed_ref, _ = _write_context()
+
+    first = _invoke(binding, {"feed_ref": feed_ref}, context)
+    second = _invoke(binding, {"feed_ref": feed_ref}, context)
+
+    assert first.response["status"] == "completed"
+    assert second.response["status"] == "already_done"
+    assert second.response["already_done"] is True
+    assert [name for name, _ in client.calls].count("xhs_like_feed") == 1
+
+
+@pytest.mark.parametrize("tool_name", [plugin.WRITE_TOOLS[1], plugin.WRITE_TOOLS[2]])
+def test_comment_and_reply_reject_overlong_artifact_before_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+) -> None:
+    contribution, client = _create(monkeypatch, _responses(), mode="live")
+    binding = _bindings(contribution)[tool_name]
+    runtime = TickRuntime()
+    feed_ref = runtime.remember_feed("feed-1", TOKEN)
+    comment_ref = runtime.remember_comment("comment-1", "feed-1")
+    transient = TransientStore()
+    transient.put("runtime", runtime)
+    context = _context(
+        transient=transient,
+        reader=Reader({"content.md": b"x" * (plugin.MAX_COMMENT_CHARS + 1)}),
+    )
+    args = {"feed_ref": feed_ref, "artifact_ref": "artifact:one"}
+    if tool_name == plugin.WRITE_TOOLS[2]:
+        args["comment_ref"] = comment_ref
+
+    result = _invoke(binding, args, context)
+
+    assert result.response["error_type"] == "InvalidArtifact"
+    assert client.calls == []
