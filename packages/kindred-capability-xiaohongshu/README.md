@@ -127,6 +127,10 @@ Kindred trace 或日志。
 同一工具环内，文字 ref 与有序图片 refs 共同构成 operation identity。完全相同的调用返回
 `already_done`；图片不同或顺序变化视为不同操作。本 package 不新增跨 tick ledger。
 
+`0.2.1` 为发布稳定性修复：`xhs_publish_draft` 使用独立的长操作超时；浏览器在点击发布前
+失败时返回明确 Provider failure，只有开始提交后结果无法确认才返回 UnknownSideEffect。
+两条路径都不会自动重试。
+
 ## Service handshake
 
 Node 服务在 `/health` 返回：

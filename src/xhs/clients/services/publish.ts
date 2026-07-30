@@ -16,6 +16,28 @@ const PUBLISH_TITLE_MAX = 20;
 /** 平台正文长度上限（小红书正文 ≤ 1000 字） */
 const PUBLISH_CONTENT_MAX = 1000;
 
+type PublishStage =
+  | 'navigation'
+  | 'upload'
+  | 'title_input'
+  | 'content_input'
+  | 'metadata'
+  | 'publish_click'
+  | 'outcome';
+
+export function publishFailureResult(
+  stage: PublishStage,
+  submissionStarted: boolean,
+): PublishResult {
+  return {
+    success: false,
+    error: submissionStarted
+      ? `Publish outcome is unknown after submission started (stage=${stage})`
+      : `Publish failed before submission (stage=${stage})`,
+    sideEffectPossible: submissionStarted,
+  };
+}
+
 /**
  * 按标题/正文字数自适应生成 typeLikeHuman 选项（第三轮 P1）：
  * 长正文自动缩放 maxDurationMs 并压缩延迟，使能在 deadline 内完成且不全文中止。
@@ -97,6 +119,8 @@ export class PublishService {
     await this.ctx.close();
     const context = await this.ctx.ensureContext(config.browser.headless);
     const page = await context.newPage();
+    let stage: PublishStage = 'navigation';
+    let submissionStarted = false;
 
     try {
       // Navigate to creator publish page (matching Go project URL)
@@ -145,6 +169,7 @@ export class PublishService {
       await jitteredSleep(1000);
 
       // Upload images
+      stage = 'upload';
       log.debug('Looking for upload input...');
       const uploadInput = await page.$(PUBLISH_SELECTORS.uploadInput);
       if (!uploadInput) {
@@ -183,6 +208,7 @@ export class PublishService {
       await jitteredSleep(2000);
 
       // Fill title（恢复"替换"语义 + 长度上限 + 软上限防锁阻塞）
+      stage = 'title_input';
       log.debug('Filling title...');
       const title = truncateGrapheme(params.title ?? '', PUBLISH_TITLE_MAX);
       if (title.length < (params.title ?? '').length) {
@@ -203,6 +229,7 @@ export class PublishService {
       }
 
       // Fill content（恢复"替换"语义 + 长度上限 + 软上限防锁阻塞）
+      stage = 'content_input';
       log.debug('Filling content...');
       const content = truncateGrapheme(params.content ?? '', PUBLISH_CONTENT_MAX);
       if (content.length < (params.content ?? '').length) {
@@ -237,6 +264,7 @@ export class PublishService {
       await jitteredSleep(1000);
 
       // Add tags
+      stage = 'metadata';
       if (params.tags && params.tags.length > 0) {
         log.debug('Adding tags', { tags: params.tags });
         for (const tag of params.tags) {
@@ -269,23 +297,26 @@ export class PublishService {
       }
 
       // Click publish button
+      stage = 'publish_click';
       log.info('Clicking publish button...');
       const publishBtn = await this.resolvePublishButton(page);
       if (!publishBtn) {
         return { success: false, error: 'A unique enabled publish button was not found' };
       }
 
+      submissionStarted = true;
       await publishBtn.click();
       log.info('Publish button clicked');
 
+      stage = 'outcome';
       return await this.waitForPublishOutcome(page);
     } catch (error) {
-      log.error('Publish failed', { error: error instanceof Error ? error.message : String(error) });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-        sideEffectPossible: true,
-      };
+      log.error('Publish failed', {
+        stage,
+        errorType: error instanceof Error ? error.name : typeof error,
+        submissionStarted,
+      });
+      return publishFailureResult(stage, submissionStarted);
     } finally {
       if (config.browser.keepOpen) {
         log.info('Keep open mode: publish page stays open for operator inspection');

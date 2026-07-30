@@ -8,6 +8,8 @@ import pytest
 
 from kindred_capability_xiaohongshu.client import (
     MCP_PROTOCOL_VERSION,
+    PACKAGE_VERSION,
+    PUBLISH_DRAFT_TIMEOUT_SECONDS,
     McpClient,
     ProviderError,
     UnknownSideEffect,
@@ -100,7 +102,7 @@ def test_initialize_reports_package_contract_version() -> None:
 
     assert initialize_params["clientInfo"] == {
         "name": "kindred-capability-xiaohongshu",
-        "version": "0.2.0",
+        "version": PACKAGE_VERSION,
     }
 
 
@@ -218,6 +220,34 @@ def test_read_timeout_and_write_timeout_are_distinct() -> None:
             client.call_tool("xhs_like_feed", {})
     finally:
         client.close()
+
+
+def test_publish_uses_long_timeout_without_changing_other_tools() -> None:
+    timeouts: dict[str, float] = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"status": "ok", "service_api_version": "1"})
+        body = json.loads(request.content)
+        if body["method"] == "initialize":
+            result = {"protocolVersion": MCP_PROTOCOL_VERSION}
+        else:
+            tool_name = body["params"]["name"]
+            timeouts[tool_name] = request.extensions["timeout"]["read"]
+            result = {"content": [{"type": "text", "text": json.dumps({"success": True})}]}
+        return httpx.Response(200, json=_response(body["id"], result))
+
+    client = _client(httpx.MockTransport(handle))
+    try:
+        client.call_tool("xhs_like_feed", {})
+        client.call_tool("xhs_publish_draft", {})
+    finally:
+        client.close()
+
+    assert timeouts == {
+        "xhs_like_feed": 1.0,
+        "xhs_publish_draft": PUBLISH_DRAFT_TIMEOUT_SECONDS,
+    }
 
 
 def test_non_allowlisted_tool_is_rejected_without_transport() -> None:

@@ -10,6 +10,8 @@ import httpx
 
 SERVICE_API_VERSION = "1"
 MCP_PROTOCOL_VERSION = "2025-06-18"
+PACKAGE_VERSION = "0.2.1"
+PUBLISH_DRAFT_TIMEOUT_SECONDS = 240.0
 
 _READ_TOOLS = frozenset(
     {
@@ -57,6 +59,7 @@ class McpClient:
         self._mcp_url = f"{root}/mcp"
         self._read_token = read_token or write_token
         self._write_token = write_token
+        self._timeout = timeout
         self._client = httpx.Client(timeout=timeout, transport=transport, trust_env=False)
         self._request_id = 0
         self._ready = False
@@ -74,6 +77,9 @@ class McpClient:
                 "tools/call",
                 {"name": name, "arguments": dict(arguments)},
                 token=self._write_token if write else self._read_token,
+                timeout=(
+                    PUBLISH_DRAFT_TIMEOUT_SECONDS if name == "xhs_publish_draft" else self._timeout
+                ),
             )
         except (httpx.TimeoutException, httpx.TransportError):
             error: ProviderError = (
@@ -124,9 +130,13 @@ class McpClient:
                 {
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "kindred-capability-xiaohongshu", "version": "0.2.0"},
+                    "clientInfo": {
+                        "name": "kindred-capability-xiaohongshu",
+                        "version": PACKAGE_VERSION,
+                    },
                 },
                 token=self._read_token or self._write_token,
+                timeout=self._timeout,
             )
         except (httpx.TimeoutException, httpx.TransportError):
             raise ProviderError("MCP initialize failed") from None
@@ -140,6 +150,7 @@ class McpClient:
         params: Mapping[str, Any],
         *,
         token: str | None,
+        timeout: float,
     ) -> dict[str, Any]:
         self._request_id += 1
         request_id = self._request_id
@@ -158,6 +169,7 @@ class McpClient:
                 "method": method,
                 "params": dict(params),
             },
+            timeout=timeout,
         )
         if response.status_code != 200:
             raise ProviderError(f"MCP returned status {response.status_code}")
