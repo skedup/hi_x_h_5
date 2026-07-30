@@ -442,6 +442,12 @@ def test_dry_run_validates_artifact_and_never_calls_write(
         publish_context,
     )
     assert published.response["dry_run"] is True
+    repeated = _invoke(
+        bindings[plugin.WRITE_TOOLS[0]],
+        _publish_args(),
+        publish_context,
+    )
+    assert repeated.response["status"] == "already_done"
     reader = _compose_reader(content=b"comment")
     for name in (plugin.WRITE_TOOLS[1], plugin.WRITE_TOOLS[2]):
         runtime = TickRuntime()
@@ -567,7 +573,13 @@ def test_publish_preserves_nine_image_order_and_uses_unique_temp_names(
     context, refs = _publish_context(images)
     observed_paths: list[str] = []
     observed_images: list[bytes] = []
+    cleanup_options: list[bool] = []
     responses = _responses()
+    original_temporary_directory = plugin.tempfile.TemporaryDirectory
+
+    def temporary_directory(*args: Any, **kwargs: Any) -> Any:
+        cleanup_options.append(kwargs.get("ignore_cleanup_errors", False))
+        return original_temporary_directory(*args, **kwargs)
 
     def capture_create(args: dict[str, Any]) -> dict[str, Any]:
         paths = [Path(value) for value in args["images"]]
@@ -578,6 +590,7 @@ def test_publish_preserves_nine_image_order_and_uses_unique_temp_names(
         return {"success": True, "draftId": "draft-1"}
 
     responses["xhs_create_draft"] = capture_create
+    monkeypatch.setattr(plugin.tempfile, "TemporaryDirectory", temporary_directory)
     contribution, _ = _create(monkeypatch, responses, mode="live")
     result = _invoke(
         _bindings(contribution)[plugin.WRITE_TOOLS[0]],
@@ -587,6 +600,7 @@ def test_publish_preserves_nine_image_order_and_uses_unique_temp_names(
 
     assert result.response["image_count"] == 9
     assert observed_images == images
+    assert cleanup_options == [True]
     assert observed_paths
     assert all(not Path(path).exists() for path in observed_paths)
     assert not any(ref in json.dumps(result.response) for ref in [TEXT_REF, *refs])

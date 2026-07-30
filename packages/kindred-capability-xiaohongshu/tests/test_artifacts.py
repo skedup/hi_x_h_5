@@ -79,7 +79,15 @@ def _context(
     )
 
 
-def _png(red: int = 0) -> bytes:
+def _png(
+    red: int = 0,
+    *,
+    width: int = 1,
+    height: int = 1,
+    bit_depth: int = 8,
+    color_type: int = 6,
+    include_idat: bool = True,
+) -> bytes:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (
             struct.pack(">I", len(data))
@@ -88,11 +96,12 @@ def _png(red: int = 0) -> bytes:
             + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
         )
 
-    header = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+    header = struct.pack(">IIBBBBB", width, height, bit_depth, color_type, 0, 0, 0)
     pixels = zlib.compress(b"\x00" + bytes((red, 0, 0, 255)))
-    return (
-        b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", pixels) + chunk(b"IEND", b"")
-    )
+    body = chunk(b"IHDR", header)
+    if include_idat:
+        body += chunk(b"IDAT", pixels)
+    return b"\x89PNG\r\n\x1a\n" + body + chunk(b"IEND", b"")
 
 
 def test_reads_committed_compose_profile() -> None:
@@ -210,10 +219,20 @@ def test_draw_ref_must_be_visible_committed_and_use_draw_profile() -> None:
         b"not-png",
         _png()[:-1],
         _png()[:-8] + b"\x00\x00\x00\x00IEND\x00\x00\x00\x00",
-        b"x" * (MAX_IMAGE_BYTES + 1),
+        _png(include_idat=False),
+        _png(width=0),
+        _png(height=0),
+        _png(bit_depth=4, color_type=6),
     ],
 )
-def test_invalid_or_oversized_png_is_rejected(image: bytes) -> None:
+def test_invalid_png_is_rejected(image: bytes) -> None:
+    reader = Reader({"artifact:image": Bundle(DRAW_PROFILE, {"image.png": image})})
+    with pytest.raises(InvalidArtifact):
+        read_draw_images(_context(reader), ["artifact:image"])
+
+
+def test_oversized_png_is_rejected() -> None:
+    image = b"x" * (MAX_IMAGE_BYTES + 1)
     reader = Reader({"artifact:image": Bundle(DRAW_PROFILE, {"image.png": image})})
     with pytest.raises(InvalidArtifact):
         read_draw_images(_context(reader), ["artifact:image"])

@@ -348,6 +348,7 @@ def _handle_write(
         if previous is False:
             return _error(call, "UnknownSideEffect", "write outcome is unknown")
         if mode == "dry_run":
+            runtime.operations[fingerprint] = True
             return ToolResult.ok(
                 call,
                 {"ok": True, "mode": mode, "status": "dry_run", "dry_run": True},
@@ -390,7 +391,10 @@ def _prepare_write(
         images = read_draw_images(context, call.args.get("image_artifact_refs"))
 
         def publish() -> dict[str, Any]:
-            with tempfile.TemporaryDirectory(prefix="kindred-xhs-") as directory:
+            with tempfile.TemporaryDirectory(
+                prefix="kindred-xhs-",
+                ignore_cleanup_errors=True,
+            ) as directory:
                 image_paths: list[str] = []
                 for index, image in enumerate(images, start=1):
                     target = Path(directory) / f"{index:03d}.png"

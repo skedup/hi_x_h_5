@@ -111,6 +111,7 @@ def _validate_png(value: bytes) -> None:
         raise InvalidArtifact("image.png is invalid")
     cursor = len(_PNG_SIGNATURE)
     first = True
+    seen_idat = False
     while cursor < len(value):
         if cursor + 12 > len(value):
             break
@@ -125,8 +126,30 @@ def _validate_png(value: bytes) -> None:
             break
         if first and (chunk_type != b"IHDR" or length != 13):
             break
+        if first:
+            width = int.from_bytes(chunk_data[:4], "big")
+            height = int.from_bytes(chunk_data[4:8], "big")
+            bit_depth, color_type, compression, filter_method, interlace = chunk_data[8:]
+            valid_depths = {
+                0: {1, 2, 4, 8, 16},
+                2: {8, 16},
+                3: {1, 2, 4, 8},
+                4: {8, 16},
+                6: {8, 16},
+            }
+            if (
+                width == 0
+                or height == 0
+                or bit_depth not in valid_depths.get(color_type, set())
+                or compression != 0
+                or filter_method != 0
+                or interlace not in {0, 1}
+            ):
+                break
+        if chunk_type == b"IDAT" and length > 0:
+            seen_idat = True
         if chunk_type == b"IEND":
-            if length == 0 and end == len(value):
+            if length == 0 and seen_idat and end == len(value):
                 return
             break
         first = False

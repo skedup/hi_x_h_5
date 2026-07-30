@@ -78,6 +78,32 @@ def test_json_and_sse_response(content_type: str) -> None:
         client.close()
 
 
+def test_initialize_reports_package_contract_version() -> None:
+    initialize_params: dict[str, Any] = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"status": "ok", "service_api_version": "1"})
+        body = json.loads(request.content)
+        if body["method"] == "initialize":
+            initialize_params.update(body["params"])
+            result = {"protocolVersion": MCP_PROTOCOL_VERSION}
+        else:
+            result = {"content": [{"type": "text", "text": '{"count": 0, "items": []}'}]}
+        return httpx.Response(200, json=_response(body["id"], result))
+
+    client = _client(httpx.MockTransport(handle))
+    try:
+        client.call_tool("xhs_list_feeds", {})
+    finally:
+        client.close()
+
+    assert initialize_params["clientInfo"] == {
+        "name": "kindred-capability-xiaohongshu",
+        "version": "0.2.0",
+    }
+
+
 @pytest.mark.parametrize("service_version", [None, "", "2"])
 def test_service_api_version_fails_before_mcp(service_version: object) -> None:
     calls: list[str] = []

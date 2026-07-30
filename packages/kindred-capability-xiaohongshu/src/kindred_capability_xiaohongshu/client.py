@@ -124,7 +124,7 @@ class McpClient:
                 {
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "kindred-capability-xiaohongshu", "version": "0.1"},
+                    "clientInfo": {"name": "kindred-capability-xiaohongshu", "version": "0.2.0"},
                 },
                 token=self._read_token or self._write_token,
             )
