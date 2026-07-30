@@ -71,8 +71,9 @@ package 不枚举其他 capability 的 secret，也不在异常或 ToolResult �
 - `xiaohongshu_favorite_post`
 - `xiaohongshu_like_comment`
 
-`write_mode=none` 时不贡献写 ToolBinding；`dry_run` 会完整校验引用和 Artifact，但不会调用任何上游
-写工具；`live` 才调用 Node 服务。EXT2 只用 fake service 验证 `live`，不执行真实写操作。
+`write_mode=none` 时不贡献写 ToolBinding，也不申请 ArtifactReader 或 Artifact profile；
+`dry_run/live` 要求 Host 同时启用 Compose 和 Draw contribution。`dry_run` 会完整校验引用和
+Artifact，但不会调用任何上游写工具；`live` 才调用 Node 服务。
 
 package 只阻止同一工具环中的直接重复写；跨工具环继续使用 `hi_x_h_5` 原生 best-effort dedup，
 不新增 package 私有 ledger 或改变 Node 的去重身份。comment/reply 的 Artifact 正文最多 180 字。
@@ -81,38 +82,50 @@ package 只阻止同一工具环中的直接重复写；跨工具环继续使用
 capability-scoped `TransientStore`，随工具环结束失效；伪造、跨 tick、过期引用和父帖子不匹配
 都会在 MCP 调用前拒绝。
 
-## Compose Artifact
+## Publish Artifact
 
-发布、评论和回复只接受 `artifact_ref`，消费 profile：
+`kindred-capability-xiaohongshu==0.2.0` 将发布改为显式消费当前 Activity run 中的文字与图片：
 
 ```text
-kindred.compose.xiaohongshu.v1
+xiaohongshu_publish_post(
+  text_artifact_ref,
+  image_artifact_refs
+)
 ```
 
-package 同时要求 `artifact.explicit_refs.v1`，只接受当前 Activity run 中已经由 T3 持久化的 ref。
-目录约定：
+- `text_artifact_ref`：一个 committed `kindred.compose.xiaohongshu.v1`；
+- `image_artifact_refs`：按平台展示顺序排列的 1~9 个 committed
+  `kindred.draw.image.v1`；
+- 两类 ref 都必须由 `artifact.explicit_refs.v1` 证明属于当前 Activity run；
+- 图片 ref 不得重复，每个 Draw Artifact 只读取固定 member `image.png`；
+- 每张图片上限 8 MiB，必须是结构与 CRC 均有效的 PNG；
+- 任一 Artifact 失败时，不创建临时发布目录，也不调用 Node 服务。
+
+文字 Artifact 目录约定：
 
 ```text
 artifact.json          # Host 生成，package 不写
 title.txt               # publish 必需
 content.md              # publish/comment/reply 必需
-assets/index.json       # publish 图片索引，可选
-assets/<image>          # 直接普通文件
 ```
 
-`assets/index.json`：
+图片 Artifact 目录约定：
 
-```json
-{"files":["assets/01.png","assets/02.jpg"]}
+```text
+artifact.json
+image.png
 ```
 
-索引最多 9 项，只接受 `assets/` 直接子文件和 `.png/.jpg/.jpeg/.webp`。ArtifactReader 当前不提供
-目录枚举，因此无索引即视为没有图片。现有 Node 发布链要求至少一张图片；没有图片的 Artifact
-可以用于评论/回复，但发布会返回结构化 `InvalidArtifact`。
+评论和回复继续只接受 Compose `artifact_ref`，只读取 `content.md`，不读取 Draw Artifact。
+旧 publish `artifact_ref`、Compose 内 `assets/index.json` 和内嵌图片不再兼容。
 
-发布时 package 在单次 invocation 的临时目录恢复图片，连续调用
+发布时 package 先完整校验全部 Artifact，再按输入顺序将图片恢复为单次 invocation 临时目录中的
+`001.png`~`009.png`，连续调用
 `xhs_create_draft -> xhs_publish_draft`，随后删除临时目录。临时绝对路径不会进入模型结果、
 Kindred trace 或日志。
+
+同一工具环内，文字 ref 与有序图片 refs 共同构成 operation identity。完全相同的调用返回
+`already_done`；图片不同或顺序变化视为不同操作。本 package 不新增跨 tick ledger。
 
 ## Service handshake
 
@@ -128,6 +141,8 @@ Node 服务在 `/health` 返回：
 ```
 
 `service_api_version` 是 package 与服务之间的稳定接口版本，不随 npm patch version 自动变化。
+`0.2.0` 的不兼容变化只发生在 Portable ToolDef 和 Artifact consumer，Node MCP/HTTP 合同未变，
+因此 service API 继续为 `1`。
 package 首次调用顺序固定为：
 
 1. `GET /health` 并校验 `service_api_version`；

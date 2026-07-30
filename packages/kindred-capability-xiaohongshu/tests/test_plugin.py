@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import base64
 import json
+import struct
+import zlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -16,12 +20,33 @@ from kindred_capability_sdk import (
 )
 
 from kindred_capability_xiaohongshu import plugin
-from kindred_capability_xiaohongshu.artifacts import FACT, PROFILE
+from kindred_capability_xiaohongshu.artifacts import COMPOSE_PROFILE, DRAW_PROFILE, FACT
 from kindred_capability_xiaohongshu.client import ProviderError, UnknownSideEffect
 from kindred_capability_xiaohongshu.session import TickRuntime
 
 TOKEN = "synthetic-xsec-token"
 SECRET = "synthetic-bearer-secret"
+TEXT_REF = "artifact:text"
+IMAGE_REF = "artifact:image-1"
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+def _png(red: int) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+    pixels = zlib.compress(b"\x00" + bytes((red, 0, 0, 255)))
+    return (
+        b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", pixels) + chunk(b"IEND", b"")
+    )
 
 
 @dataclass
@@ -33,15 +58,22 @@ class Secrets:
 
 
 @dataclass
-class Reader:
+class Bundle:
+    profile: str
     files: dict[str, bytes]
+    producer: str = "test"
+
+
+@dataclass
+class Reader:
+    bundles: dict[str, Bundle]
 
     def describe_committed(self, artifact_ref: str) -> ArtifactDescriptor:
-        return ArtifactDescriptor(artifact_ref, "compose", PROFILE)
+        bundle = self.bundles[artifact_ref]
+        return ArtifactDescriptor(artifact_ref, bundle.producer, bundle.profile)
 
     def read_file(self, artifact_ref: str, relative_path: str, *, size_limit: int) -> bytes:
-        del artifact_ref
-        value = self.files[relative_path]
+        value = self.bundles[artifact_ref].files[relative_path]
         if len(value) > size_limit:
             raise ValueError("too large")
         return value
@@ -99,20 +131,23 @@ def _context(
     *,
     transient: TransientStore | None = None,
     reader: Reader | None = None,
-    artifact_ref: str = "artifact:one",
 ) -> InvocationContext:
+    artifacts = (
+        []
+        if reader is None
+        else [
+            {
+                "artifact_ref": ref,
+                "producer": bundle.producer,
+                "profile": bundle.profile,
+            }
+            for ref, bundle in reader.bundles.items()
+        ]
+    )
     facts = (
         FactView(
             FACT,
-            {
-                "artifacts": [
-                    {
-                        "artifact_ref": artifact_ref,
-                        "producer": "compose",
-                        "profile": PROFILE,
-                    }
-                ]
-            },
+            {"artifacts": artifacts},
         ),
     )
     return InvocationContext(
@@ -122,6 +157,17 @@ def _context(
         transient=transient or TransientStore(),
         artifact_reader=reader,
     )
+
+
+def _compose_reader(*, content: bytes = b"content", title: bytes = b"title") -> Reader:
+    return Reader({TEXT_REF: Bundle(COMPOSE_PROFILE, {"title.txt": title, "content.md": content})})
+
+
+def _publish_args(image_refs: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "text_artifact_ref": TEXT_REF,
+        "image_artifact_refs": [IMAGE_REF] if image_refs is None else image_refs,
+    }
 
 
 def _invoke(binding: Any, args: dict[str, Any], context: InvocationContext) -> Any:
@@ -212,13 +258,15 @@ def test_tool_surface_and_write_mode_gate(monkeypatch: pytest.MonkeyPatch) -> No
     none, client = _create(monkeypatch, _responses(), mode="none")
     assert tuple(_bindings(none)) == plugin.READ_TOOLS
     assert none.required_host_services == frozenset()
+    assert none.required_fact_views == frozenset()
+    assert none.consumed_artifact_profiles == frozenset()
 
     dry, _ = _create(monkeypatch, _responses(), mode="dry_run")
     bindings = _bindings(dry)
     assert tuple(bindings) == plugin.READ_TOOLS + plugin.WRITE_TOOLS
     assert dry.required_host_services == frozenset({"artifact_reader"})
     assert dry.required_fact_views == frozenset({FACT})
-    assert dry.consumed_artifact_profiles == frozenset({PROFILE})
+    assert dry.consumed_artifact_profiles == frozenset({COMPOSE_PROFILE, DRAW_PROFILE})
     assert all(isinstance(binding.tool_def, ToolDef) for binding in bindings.values())
     assert all(bindings[name].tool_def.effect == "read_only" for name in plugin.READ_TOOLS)
     assert all(
@@ -231,7 +279,10 @@ def test_tool_surface_and_write_mode_gate(monkeypatch: pytest.MonkeyPatch) -> No
         plugin.READ_TOOLS[3]: ({"user_ref"}, {"user_ref"}),
         plugin.READ_TOOLS[4]: ({"limit"}, set()),
         plugin.READ_TOOLS[5]: ({"kind", "limit"}, set()),
-        plugin.WRITE_TOOLS[0]: ({"artifact_ref"}, {"artifact_ref"}),
+        plugin.WRITE_TOOLS[0]: (
+            {"text_artifact_ref", "image_artifact_refs"},
+            {"text_artifact_ref", "image_artifact_refs"},
+        ),
         plugin.WRITE_TOOLS[1]: ({"feed_ref", "artifact_ref"}, {"feed_ref", "artifact_ref"}),
         plugin.WRITE_TOOLS[2]: (
             {"feed_ref", "comment_ref", "artifact_ref"},
@@ -246,6 +297,16 @@ def test_tool_surface_and_write_mode_gate(monkeypatch: pytest.MonkeyPatch) -> No
         assert set(parameters["properties"]) == properties
         assert set(parameters["required"]) == required
         assert parameters["additionalProperties"] is False
+    publish_images = bindings[plugin.WRITE_TOOLS[0]].tool_def.parameters["properties"][
+        "image_artifact_refs"
+    ]
+    assert publish_images == {
+        "type": "ARRAY",
+        "description": "Ordered committed Draw image artifact_refs from the current activity.",
+        "items": {"type": "STRING"},
+        "minItems": 1,
+        "maxItems": 9,
+    }
     none.close and none.close()
     assert client.closed
     assert plugin.Settings.parse({"mcp_url": "http://127.0.0.1:18060"}).timeout == 45
@@ -351,7 +412,7 @@ def test_user_and_comment_refs_fail_closed_before_provider(
         {
             "feed_ref": other_feed_ref,
             "comment_ref": comment_ref,
-            "artifact_ref": "artifact:one",
+            "artifact_ref": TEXT_REF,
         },
         context,
     )
@@ -361,9 +422,9 @@ def test_user_and_comment_refs_fail_closed_before_provider(
         {
             "feed_ref": feed_ref,
             "comment_ref": comment_ref,
-            "artifact_ref": "artifact:one",
+            "artifact_ref": TEXT_REF,
         },
-        _context(reader=Reader({"content.md": b"reply"})),
+        _context(reader=_compose_reader(content=b"reply")),
     )
     assert expired.response["error_type"] == "InvalidRef"
     assert client.calls == []
@@ -377,11 +438,11 @@ def test_dry_run_validates_artifact_and_never_calls_write(
     publish_context, _, _ = _write_context()
     published = _invoke(
         bindings[plugin.WRITE_TOOLS[0]],
-        {"artifact_ref": "artifact:one"},
+        _publish_args(),
         publish_context,
     )
     assert published.response["dry_run"] is True
-    reader = Reader({"content.md": b"comment"})
+    reader = _compose_reader(content=b"comment")
     for name in (plugin.WRITE_TOOLS[1], plugin.WRITE_TOOLS[2]):
         runtime = TickRuntime()
         feed_ref = runtime.remember_feed("feed-1", TOKEN)
@@ -389,7 +450,7 @@ def test_dry_run_validates_artifact_and_never_calls_write(
         transient = TransientStore()
         transient.put("runtime", runtime)
         context = _context(transient=transient, reader=reader)
-        args = {"feed_ref": feed_ref, "artifact_ref": "artifact:one"}
+        args = {"feed_ref": feed_ref, "artifact_ref": TEXT_REF}
         if name == plugin.WRITE_TOOLS[2]:
             args["comment_ref"] = comment_ref
         result = _invoke(bindings[name], args, context)
@@ -418,13 +479,31 @@ def _write_context() -> tuple[InvocationContext, str, str]:
     transient.put("runtime", runtime)
     reader = Reader(
         {
-            "title.txt": b"title",
-            "content.md": b"content",
-            "assets/index.json": b'{"files":["assets/one.png"]}',
-            "assets/one.png": b"png",
+            TEXT_REF: Bundle(
+                COMPOSE_PROFILE,
+                {"title.txt": b"title", "content.md": b"content"},
+            ),
+            IMAGE_REF: Bundle(DRAW_PROFILE, {"image.png": PNG}),
         }
     )
     return _context(transient=transient, reader=reader), feed_ref, comment_ref
+
+
+def _publish_context(images: list[bytes]) -> tuple[InvocationContext, list[str]]:
+    refs = [f"artifact:image-{index}" for index in range(1, len(images) + 1)]
+    bundles = {
+        TEXT_REF: Bundle(
+            COMPOSE_PROFILE,
+            {"title.txt": b"title", "content.md": b"content"},
+        )
+    }
+    bundles.update(
+        {
+            ref: Bundle(DRAW_PROFILE, {"image.png": content})
+            for ref, content in zip(refs, images, strict=True)
+        }
+    )
+    return _context(reader=Reader(bundles)), refs
 
 
 def test_all_six_live_write_mappings_use_fake_service(
@@ -433,17 +512,17 @@ def test_all_six_live_write_mappings_use_fake_service(
     contribution, client = _create(monkeypatch, _responses(), mode="live")
     bindings = _bindings(contribution)
     cases = (
-        (plugin.WRITE_TOOLS[0], {"artifact_ref": "artifact:one"}),
+        (plugin.WRITE_TOOLS[0], _publish_args()),
         (
             plugin.WRITE_TOOLS[1],
-            {"feed_ref": "{feed}", "artifact_ref": "artifact:one"},
+            {"feed_ref": "{feed}", "artifact_ref": TEXT_REF},
         ),
         (
             plugin.WRITE_TOOLS[2],
             {
                 "feed_ref": "{feed}",
                 "comment_ref": "{comment}",
-                "artifact_ref": "artifact:one",
+                "artifact_ref": TEXT_REF,
             },
         ),
         (plugin.WRITE_TOOLS[3], {"feed_ref": "{feed}"}),
@@ -481,6 +560,103 @@ def test_all_six_live_write_mappings_use_fake_service(
     assert all(path.startswith("/") for path in publish_args["images"])
 
 
+def test_publish_preserves_nine_image_order_and_uses_unique_temp_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    images = [_png(index) for index in range(1, 10)]
+    context, refs = _publish_context(images)
+    observed_paths: list[str] = []
+    observed_images: list[bytes] = []
+    responses = _responses()
+
+    def capture_create(args: dict[str, Any]) -> dict[str, Any]:
+        paths = [Path(value) for value in args["images"]]
+        observed_paths.extend(str(path) for path in paths)
+        observed_images.extend(path.read_bytes() for path in paths)
+        assert [path.name for path in paths] == [f"{index:03d}.png" for index in range(1, 10)]
+        assert len({path.name for path in paths}) == 9
+        return {"success": True, "draftId": "draft-1"}
+
+    responses["xhs_create_draft"] = capture_create
+    contribution, _ = _create(monkeypatch, responses, mode="live")
+    result = _invoke(
+        _bindings(contribution)[plugin.WRITE_TOOLS[0]],
+        _publish_args(refs),
+        context,
+    )
+
+    assert result.response["image_count"] == 9
+    assert observed_images == images
+    assert observed_paths
+    assert all(not Path(path).exists() for path in observed_paths)
+    assert not any(ref in json.dumps(result.response) for ref in [TEXT_REF, *refs])
+
+
+def test_invalid_image_fails_before_any_sidecar_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context, refs = _publish_context([PNG, b"not-png"])
+    contribution, client = _create(monkeypatch, _responses(), mode="live")
+
+    result = _invoke(
+        _bindings(contribution)[plugin.WRITE_TOOLS[0]],
+        _publish_args(refs),
+        context,
+    )
+
+    assert result.response["error_type"] == "InvalidArtifact"
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("failed_tool", "expected_error"),
+    [
+        ("xhs_create_draft", "ProviderError"),
+        ("xhs_publish_draft", "UnknownSideEffect"),
+    ],
+)
+def test_publish_provider_failures_keep_side_effect_classification(
+    monkeypatch: pytest.MonkeyPatch,
+    failed_tool: str,
+    expected_error: str,
+) -> None:
+    responses = _responses()
+    responses[failed_tool] = ProviderError(f"{TEXT_REF} {IMAGE_REF} /private/secret")
+    context, refs = _publish_context([PNG])
+    contribution, client = _create(monkeypatch, responses, mode="live")
+
+    result = _invoke(
+        _bindings(contribution)[plugin.WRITE_TOOLS[0]],
+        _publish_args(refs),
+        context,
+    )
+
+    serialized = json.dumps(result.response)
+    assert result.response["error_type"] == expected_error
+    assert TEXT_REF not in serialized
+    assert IMAGE_REF not in serialized
+    assert "/private/secret" not in serialized
+    image_paths = client.calls[0][1]["images"]
+    assert all(not Path(path).exists() for path in image_paths)
+
+
+def test_publish_operation_identity_includes_ordered_image_refs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context, refs = _publish_context([_png(1), _png(2)])
+    contribution, client = _create(monkeypatch, _responses(), mode="live")
+    binding = _bindings(contribution)[plugin.WRITE_TOOLS[0]]
+
+    first = _invoke(binding, _publish_args(refs), context)
+    repeated = _invoke(binding, _publish_args(refs), context)
+    reordered = _invoke(binding, _publish_args(list(reversed(refs))), context)
+
+    assert first.response["status"] == "published"
+    assert repeated.response["status"] == "already_done"
+    assert reordered.response["status"] == "published"
+    assert [name for name, _ in client.calls].count("xhs_create_draft") == 2
+
+
 def test_write_dedup_budget_raw_args_and_unknown_side_effect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -504,10 +680,37 @@ def test_write_dedup_budget_raw_args_and_unknown_side_effect(
 
     rejected = _invoke(
         bindings[plugin.WRITE_TOOLS[0]],
-        {"artifact_ref": "artifact:one", "title": "raw"},
+        {
+            "text_artifact_ref": TEXT_REF,
+            "image_artifact_refs": [IMAGE_REF],
+            "title": "raw",
+        },
         context,
     )
     assert rejected.response["error_type"] == "InvalidArgs"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"artifact_ref": TEXT_REF},
+        {**_publish_args(), "title": "raw"},
+        {**_publish_args(), "content": "raw"},
+        {**_publish_args(), "path": "/private/raw"},
+        {**_publish_args(), "bytes": "raw"},
+    ],
+)
+def test_publish_rejects_legacy_and_raw_arguments_before_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    args: dict[str, Any],
+) -> None:
+    contribution, client = _create(monkeypatch, _responses(), mode="live")
+    context, _, _ = _write_context()
+
+    result = _invoke(_bindings(contribution)[plugin.WRITE_TOOLS[0]], args, context)
+
+    assert result.response["error_type"] == "InvalidArgs"
+    assert client.calls == []
 
 
 def test_dispatched_provider_failure_is_unknown(
@@ -556,9 +759,9 @@ def test_comment_and_reply_reject_overlong_artifact_before_provider(
     transient.put("runtime", runtime)
     context = _context(
         transient=transient,
-        reader=Reader({"content.md": b"x" * (plugin.MAX_COMMENT_CHARS + 1)}),
+        reader=_compose_reader(content=b"x" * (plugin.MAX_COMMENT_CHARS + 1)),
     )
-    args = {"feed_ref": feed_ref, "artifact_ref": "artifact:one"}
+    args = {"feed_ref": feed_ref, "artifact_ref": TEXT_REF}
     if tool_name == plugin.WRITE_TOOLS[2]:
         args["comment_ref"] = comment_ref
 

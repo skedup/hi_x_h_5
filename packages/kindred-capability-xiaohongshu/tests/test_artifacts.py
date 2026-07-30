@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import struct
+import zlib
+from dataclasses import dataclass, field
 
 import pytest
 from kindred_capability_sdk import (
@@ -11,37 +13,65 @@ from kindred_capability_sdk import (
 )
 
 from kindred_capability_xiaohongshu.artifacts import (
+    COMPOSE_PROFILE,
+    DRAW_PROFILE,
     FACT,
-    PROFILE,
+    MAX_IMAGE_BYTES,
     InvalidArtifact,
     read_compose_bundle,
+    read_draw_images,
 )
+
+
+@dataclass(frozen=True)
+class Bundle:
+    profile: str
+    files: dict[str, bytes]
+    producer: str = "test"
 
 
 @dataclass
 class Reader:
-    files: dict[str, bytes]
-    profile: str = PROFILE
+    bundles: dict[str, Bundle]
+    unavailable: set[str] = field(default_factory=set)
+    reads: list[tuple[str, str]] = field(default_factory=list)
 
     def describe_committed(self, artifact_ref: str) -> ArtifactDescriptor:
-        return ArtifactDescriptor(artifact_ref, "compose", self.profile)
+        if artifact_ref in self.unavailable:
+            raise ValueError("not committed")
+        bundle = self.bundles[artifact_ref]
+        return ArtifactDescriptor(artifact_ref, bundle.producer, bundle.profile)
 
     def read_file(self, artifact_ref: str, relative_path: str, *, size_limit: int) -> bytes:
-        del artifact_ref
-        value = self.files[relative_path]
+        self.reads.append((artifact_ref, relative_path))
+        value = self.bundles[artifact_ref].files[relative_path]
         if len(value) > size_limit:
             raise ValueError("too large")
         return value
 
 
-def _context(reader: Reader, *, ref: str = "artifact:one") -> InvocationContext:
+def _context(
+    reader: Reader,
+    *,
+    visible_refs: tuple[str, ...] | None = None,
+) -> InvocationContext:
+    refs = tuple(reader.bundles) if visible_refs is None else visible_refs
     return InvocationContext(
         tick_id=1,
         triggered_at=None,
         facts=(
             FactView(
                 FACT,
-                {"artifacts": [{"artifact_ref": ref, "producer": "compose", "profile": PROFILE}]},
+                {
+                    "artifacts": [
+                        {
+                            "artifact_ref": ref,
+                            "producer": reader.bundles[ref].producer,
+                            "profile": reader.bundles[ref].profile,
+                        }
+                        for ref in refs
+                    ]
+                },
             ),
         ),
         transient=TransientStore(),
@@ -49,89 +79,147 @@ def _context(reader: Reader, *, ref: str = "artifact:one") -> InvocationContext:
     )
 
 
-def test_reads_committed_profile_and_indexed_assets() -> None:
+def _png(red: int = 0) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+    pixels = zlib.compress(b"\x00" + bytes((red, 0, 0, 255)))
+    return (
+        b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", pixels) + chunk(b"IEND", b"")
+    )
+
+
+def test_reads_committed_compose_profile() -> None:
     reader = Reader(
         {
-            "title.txt": "标题".encode(),
-            "content.md": "正文".encode(),
-            "assets/index.json": b'{"files":["assets/one.png"]}',
-            "assets/one.png": b"\x89PNG\r\n\x1a\n",
+            "artifact:text": Bundle(
+                COMPOSE_PROFILE,
+                {"title.txt": "标题".encode(), "content.md": "正文".encode()},
+            )
         }
     )
     bundle = read_compose_bundle(
         _context(reader),
-        "artifact:one",
+        "artifact:text",
         require_title=True,
-        include_assets=True,
     )
     assert bundle.title == "标题"
     assert bundle.content == "正文"
-    assert bundle.assets == (("one.png", b"\x89PNG\r\n\x1a\n"),)
 
 
 @pytest.mark.parametrize(
     ("ref", "profile"),
-    [("artifact:other", PROFILE), ("artifact:one", "kindred.compose.outbound.v1")],
+    [
+        ("artifact:other", COMPOSE_PROFILE),
+        ("artifact:text", "kindred.compose.outbound.v1"),
+    ],
 )
 def test_unknown_current_run_or_profile_is_rejected(ref: str, profile: str) -> None:
-    reader = Reader({"content.md": b"text"}, profile=profile)
+    reader = Reader({"artifact:text": Bundle(profile, {"content.md": b"text"})})
     with pytest.raises(InvalidArtifact):
         read_compose_bundle(
             _context(reader),
             ref,
             require_title=False,
-            include_assets=False,
         )
 
 
-@pytest.mark.parametrize(
-    "index",
-    [
-        b"not-json",
-        b'{"files":"assets/one.png"}',
-        b'{"files":["../one.png"]}',
-        b'{"files":["assets/nested/one.png"]}',
-        b'{"files":["assets/one.exe"]}',
-        b'{"files":["assets/one.png","assets/one.png"]}',
-        b'{"files":["assets/1.png","assets/2.png","assets/3.png","assets/4.png","assets/5.png","assets/6.png","assets/7.png","assets/8.png","assets/9.png","assets/10.png"]}',
-    ],
-)
-def test_invalid_asset_index_is_rejected(index: bytes) -> None:
+def test_comment_read_does_not_read_draw_artifacts() -> None:
     reader = Reader(
         {
-            "title.txt": b"title",
-            "content.md": b"content",
-            "assets/index.json": index,
-            "assets/one.png": b"image",
+            "artifact:text": Bundle(COMPOSE_PROFILE, {"content.md": b"comment"}),
+            "artifact:image": Bundle(DRAW_PROFILE, {"image.png": _png()}),
         }
     )
-    with pytest.raises(InvalidArtifact):
-        read_compose_bundle(
-            _context(reader),
-            "artifact:one",
-            require_title=True,
-            include_assets=True,
-        )
-
-
-def test_comment_read_does_not_enumerate_or_read_assets() -> None:
-    reader = Reader({"content.md": b"comment"})
     bundle = read_compose_bundle(
         _context(reader),
-        "artifact:one",
+        "artifact:text",
         require_title=False,
-        include_assets=False,
     )
     assert bundle.title == ""
-    assert bundle.assets == ()
+    assert reader.reads == [("artifact:text", "content.md")]
 
 
 @pytest.mark.parametrize("files", [{}, {"content.md": b"content"}])
-def test_missing_required_file_is_invalid_artifact(files: dict[str, bytes]) -> None:
+def test_missing_required_compose_file_is_invalid_artifact(files: dict[str, bytes]) -> None:
+    reader = Reader({"artifact:text": Bundle(COMPOSE_PROFILE, files)})
     with pytest.raises(InvalidArtifact, match="unavailable"):
         read_compose_bundle(
-            _context(Reader(files)),
-            "artifact:one",
+            _context(reader),
+            "artifact:text",
             require_title=True,
-            include_assets=False,
         )
+
+
+def test_reads_one_to_nine_draw_images_in_input_order() -> None:
+    refs = tuple(f"artifact:image-{index}" for index in range(1, 10))
+    reader = Reader(
+        {
+            ref: Bundle(DRAW_PROFILE, {"image.png": _png(index)})
+            for index, ref in enumerate(refs, start=1)
+        }
+    )
+    images = read_draw_images(_context(reader), list(reversed(refs)))
+    assert [image.artifact_ref for image in images] == list(reversed(refs))
+    assert [image.content for image in images] == [_png(index) for index in reversed(range(1, 10))]
+
+
+@pytest.mark.parametrize(
+    "refs",
+    [
+        None,
+        "artifact:image",
+        [],
+        ["artifact:image"] * 10,
+        ["artifact:image", "artifact:image"],
+        ["artifact:image", 1],
+    ],
+)
+def test_invalid_draw_ref_list_is_rejected(refs: object) -> None:
+    reader = Reader({"artifact:image": Bundle(DRAW_PROFILE, {"image.png": _png()})})
+    with pytest.raises(InvalidArtifact):
+        read_draw_images(_context(reader), refs)
+
+
+def test_draw_ref_must_be_visible_committed_and_use_draw_profile() -> None:
+    reader = Reader(
+        {
+            "artifact:image": Bundle(DRAW_PROFILE, {"image.png": _png()}),
+            "artifact:text": Bundle(COMPOSE_PROFILE, {"image.png": _png()}),
+        },
+        unavailable={"artifact:image"},
+    )
+    with pytest.raises(InvalidArtifact):
+        read_draw_images(_context(reader, visible_refs=("artifact:text",)), ["artifact:image"])
+    with pytest.raises(InvalidArtifact):
+        read_draw_images(_context(reader), ["artifact:text"])
+    with pytest.raises(InvalidArtifact):
+        read_draw_images(_context(reader), ["artifact:image"])
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        b"",
+        b"not-png",
+        _png()[:-1],
+        _png()[:-8] + b"\x00\x00\x00\x00IEND\x00\x00\x00\x00",
+        b"x" * (MAX_IMAGE_BYTES + 1),
+    ],
+)
+def test_invalid_or_oversized_png_is_rejected(image: bytes) -> None:
+    reader = Reader({"artifact:image": Bundle(DRAW_PROFILE, {"image.png": image})})
+    with pytest.raises(InvalidArtifact):
+        read_draw_images(_context(reader), ["artifact:image"])
+
+
+def test_missing_image_member_is_rejected() -> None:
+    reader = Reader({"artifact:image": Bundle(DRAW_PROFILE, {})})
+    with pytest.raises(InvalidArtifact, match="unavailable"):
+        read_draw_images(_context(reader), ["artifact:image"])

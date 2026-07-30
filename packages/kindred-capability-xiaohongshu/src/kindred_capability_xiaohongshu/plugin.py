@@ -21,7 +21,14 @@ from kindred_capability_sdk import (
     ToolResult,
 )
 
-from .artifacts import FACT, PROFILE, InvalidArtifact, read_compose_bundle
+from .artifacts import (
+    COMPOSE_PROFILE,
+    DRAW_PROFILE,
+    FACT,
+    InvalidArtifact,
+    read_compose_bundle,
+    read_draw_images,
+)
 from .client import McpClient, ProviderError, UnknownSideEffect
 from .session import (
     MAX_RESULTS,
@@ -124,9 +131,16 @@ _LIMIT_5 = {"type": "INTEGER", "description": "Maximum result count, 1-10. Defau
 _LIMIT_10 = {"type": "INTEGER", "description": "Maximum result count, 1-10. Defaults to 10."}
 _FEED_REF = {"type": "STRING", "description": "Opaque feed_ref returned in this tool loop."}
 _COMMENT_REF = {"type": "STRING", "description": "Opaque comment_ref returned in this tool loop."}
-_ARTIFACT_REF = {
+_COMPOSE_ARTIFACT_REF = {
     "type": "STRING",
     "description": "Committed Xiaohongshu compose artifact_ref from the current activity.",
+}
+_DRAW_ARTIFACT_REFS = {
+    "type": "ARRAY",
+    "description": "Ordered committed Draw image artifact_refs from the current activity.",
+    "items": {"type": "STRING"},
+    "minItems": 1,
+    "maxItems": 9,
 }
 
 _DESCRIPTIONS = {
@@ -136,7 +150,7 @@ _DESCRIPTIONS = {
     READ_TOOLS[3]: "Read one profile by a user_ref returned in this tool loop.",
     READ_TOOLS[4]: "Read posts published by the current Xiaohongshu account.",
     READ_TOOLS[5]: "Read Xiaohongshu notifications; private messages are unsupported.",
-    WRITE_TOOLS[0]: "Publish a committed compose artifact; raw content is rejected.",
+    WRITE_TOOLS[0]: "Publish committed text and image artifacts from the current activity.",
     WRITE_TOOLS[1]: "Comment on a selected post using a committed compose artifact.",
     WRITE_TOOLS[2]: "Reply to a selected comment using a committed compose artifact.",
     WRITE_TOOLS[3]: "Like a post selected earlier in this tool loop.",
@@ -153,12 +167,15 @@ _PROPERTIES: dict[str, Mapping[str, Any]] = {
         "kind": {"type": "STRING", "enum": ["all", "mentions", "likes", "connections"]},
         "limit": _LIMIT_10,
     },
-    WRITE_TOOLS[0]: {"artifact_ref": _ARTIFACT_REF},
-    WRITE_TOOLS[1]: {"feed_ref": _FEED_REF, "artifact_ref": _ARTIFACT_REF},
+    WRITE_TOOLS[0]: {
+        "text_artifact_ref": _COMPOSE_ARTIFACT_REF,
+        "image_artifact_refs": _DRAW_ARTIFACT_REFS,
+    },
+    WRITE_TOOLS[1]: {"feed_ref": _FEED_REF, "artifact_ref": _COMPOSE_ARTIFACT_REF},
     WRITE_TOOLS[2]: {
         "feed_ref": _FEED_REF,
         "comment_ref": _COMMENT_REF,
-        "artifact_ref": _ARTIFACT_REF,
+        "artifact_ref": _COMPOSE_ARTIFACT_REF,
     },
     WRITE_TOOLS[3]: {"feed_ref": _FEED_REF},
     WRITE_TOOLS[4]: {"feed_ref": _FEED_REF},
@@ -168,7 +185,7 @@ _REQUIRED = {
     READ_TOOLS[1]: ("keyword",),
     READ_TOOLS[2]: ("feed_ref",),
     READ_TOOLS[3]: ("user_ref",),
-    WRITE_TOOLS[0]: ("artifact_ref",),
+    WRITE_TOOLS[0]: ("text_artifact_ref", "image_artifact_refs"),
     WRITE_TOOLS[1]: ("feed_ref", "artifact_ref"),
     WRITE_TOOLS[2]: ("feed_ref", "comment_ref", "artifact_ref"),
     WRITE_TOOLS[3]: ("feed_ref",),
@@ -211,7 +228,9 @@ def create_capability(
     definitions = _TOOL_DEFS if parsed.write_mode != "none" else _TOOL_DEFS[: len(READ_TOOLS)]
     services = frozenset({"artifact_reader"}) if parsed.write_mode != "none" else frozenset()
     facts = frozenset({FACT}) if parsed.write_mode != "none" else frozenset()
-    profiles = frozenset({PROFILE}) if parsed.write_mode != "none" else frozenset()
+    profiles = (
+        frozenset({COMPOSE_PROFILE, DRAW_PROFILE}) if parsed.write_mode != "none" else frozenset()
+    )
     return CapabilityContribution(
         tuple(ToolBinding(tool_def, handle) for tool_def in definitions),
         required_host_services=services,
@@ -362,22 +381,20 @@ def _prepare_write(
     reserve_interaction: bool,
 ) -> tuple[tuple[str, ...], Callable[[], dict[str, Any]]]:
     if call.name == WRITE_TOOLS[0]:
-        _require_keys(call, {"artifact_ref"}, exact=True)
+        _require_keys(call, {"text_artifact_ref", "image_artifact_refs"}, exact=True)
         bundle = read_compose_bundle(
             context,
-            call.args.get("artifact_ref"),
+            call.args.get("text_artifact_ref"),
             require_title=True,
-            include_assets=True,
         )
-        if not bundle.assets:
-            raise InvalidArtifact("publish artifact has no indexed image")
+        images = read_draw_images(context, call.args.get("image_artifact_refs"))
 
         def publish() -> dict[str, Any]:
             with tempfile.TemporaryDirectory(prefix="kindred-xhs-") as directory:
                 image_paths: list[str] = []
-                for name, content in bundle.assets:
-                    target = Path(directory) / name
-                    target.write_bytes(content)
+                for index, image in enumerate(images, start=1):
+                    target = Path(directory) / f"{index:03d}.png"
+                    target.write_bytes(image.content)
                     image_paths.append(str(target))
                 draft = client.call_tool(
                     "xhs_create_draft",
@@ -393,10 +410,14 @@ def _prepare_write(
                 return {
                     "status": "published",
                     "post_ref": _opaque_result("post", note_id),
-                    "image_count": len(bundle.assets),
+                    "image_count": len(images),
                 }
 
-        return ("publish", bundle.artifact_ref), publish
+        return (
+            "publish",
+            bundle.artifact_ref,
+            *(image.artifact_ref for image in images),
+        ), publish
 
     if call.name in {WRITE_TOOLS[1], WRITE_TOOLS[2]}:
         expected = (
@@ -415,7 +436,6 @@ def _prepare_write(
             context,
             call.args.get("artifact_ref"),
             require_title=False,
-            include_assets=False,
         )
         if len(bundle.content) > MAX_COMMENT_CHARS:
             raise InvalidArtifact(f"comment content exceeds {MAX_COMMENT_CHARS} characters")
