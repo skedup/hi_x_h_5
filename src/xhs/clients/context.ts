@@ -66,6 +66,8 @@ export interface BrowserClientOptions {
   onStateChange?: (state: any) => void | Promise<void>;
 }
 
+type ProfileContextLauncher = typeof launchProfileContext;
+
 /**
  * Shared browser context manager.
  * Encapsulates browser lifecycle and provides shared access to browser/context.
@@ -75,9 +77,12 @@ export class BrowserContextManager {
   browser: Browser | null = null;
   context: BrowserContext | null = null;
   options: BrowserClientOptions;
+  private readonly launchContext: ProfileContextLauncher;
+  private closing = false;
 
-  constructor(options: BrowserClientOptions) {
+  constructor(options: BrowserClientOptions, launchContext: ProfileContextLauncher = launchProfileContext) {
     this.options = options;
+    this.launchContext = launchContext;
   }
 
   /**
@@ -111,19 +116,29 @@ export class BrowserContextManager {
       );
     }
     const profileDir = paths.getBrowserProfileDir(this.options.profileId);
-    const session = await launchProfileContext(profileDir, headless, this.options.proxy);
+    const session = await this.launchContext(profileDir, headless, this.options.proxy);
     this.browser = session.browser;
     this.context = session.context;
+    session.context.on('close', () => this.clearClosedSession(session.browser, session.context));
+    session.browser.on('disconnected', () => this.clearClosedSession(session.browser, session.context));
   }
 
   /**
    * Close browser and cleanup resources
    */
   async close(): Promise<void> {
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
+    const browser = this.browser;
+    const context = this.context;
+    if (!browser) {
       this.context = null;
+      return;
+    }
+    this.closing = true;
+    try {
+      await browser.close();
+    } finally {
+      this.clearClosedSession(browser, context);
+      this.closing = false;
     }
   }
 
@@ -132,10 +147,22 @@ export class BrowserContextManager {
    * Defaults to config.browser.headless (which respects DEBUG env)
    */
   async ensureContext(headless = config.browser.headless): Promise<BrowserContext> {
-    if (!this.context) {
+    if (this.browser && !this.browser.isConnected()) {
+      this.clearClosedSession(this.browser, this.context);
+    }
+    if (!this.context || !this.browser) {
       await this.init(headless);
     }
     return this.context!;
+  }
+
+  private clearClosedSession(browser: Browser, context: BrowserContext | null): void {
+    if (this.browser !== browser && this.context !== context) return;
+    if (this.browser === browser) this.browser = null;
+    if (this.context === context) this.context = null;
+    if (!this.closing) {
+      log.warn('Browser context closed; the next request will reopen the persistent profile');
+    }
   }
 
   /**
