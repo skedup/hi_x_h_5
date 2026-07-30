@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kindred-capability-xiaohongshu"
-version = "0.1.0"
+version = "0.2.0"
 description = "Portable Xiaohongshu capability backed by hi_x_h_5"
 requires-python = ">=3.10"
 license = { text = "MIT" }
