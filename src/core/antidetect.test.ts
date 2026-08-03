@@ -5,7 +5,7 @@
  * @module core/antidetect.test
  */
 import { describe, it, expect } from 'bun:test';
-import { CooccurrenceGuard } from './antidetect.js';
+import { CooccurrenceGuard, sha256OfText } from './antidetect.js';
 
 // 构造一个确定性的测试配置
 function makeCfg(overrides: any = {}) {
@@ -228,6 +228,64 @@ describe('R4 软业务失败与并发占用状态机', () => {
     await g.afterAction({ accountId: A, action: 'comment', success: false, dedupKey: 'k', reservation: b1.reservation });
     // 全部失败 → 占用回收，B 可复用
     expect((await g.beforeAction({ accountId: B, action: 'comment', dedupKey: 'k' })).allow).toBe(true);
+  });
+});
+
+describe('A4 · comment_text 正文哈希键跨路径互斥（explore ↔ tools/interaction.ts）', () => {
+  // explore.ts 内部评论与 tools/interaction.ts 的 xhs_post_comment 均使用
+  // `comment_text:${sha256OfText(content)}` 作为 dedupKey（同一前缀+算法），
+  // 使两条路径对「相同文案」天然共用同一去重键空间，无需关心 noteId 是否相同。
+  const buildDedupKey = (content: string) => `comment_text:${sha256OfText(content)}`;
+
+  it('账号 A 用 explore 内部评论提交某文案后，账号 B 用工具接口发相同文案（不同 note）被拦截', async () => {
+    const g = new CooccurrenceGuard(makeCfg());
+    const sameText = '这条笔记真不错，学到了！';
+
+    // 模拟 explore.ts：账号 A 在 noteId=note-1 上生成并提交该评论文案
+    const explore = await g.beforeAction({
+      accountId: A,
+      action: 'comment',
+      dedupKey: buildDedupKey(sameText),
+      xsecToken: 'tok-note-1',
+    });
+    expect(explore.allow).toBe(true);
+    await g.afterAction({
+      accountId: A,
+      action: 'comment',
+      success: true,
+      dedupKey: buildDedupKey(sameText),
+      xsecToken: 'tok-note-1',
+      reservation: explore.reservation,
+    });
+
+    // 模拟 tools/interaction.ts 的 xhs_post_comment：账号 B 在完全不同的 noteId 上发相同文案
+    const tool = await g.beforeAction({
+      accountId: B,
+      action: 'comment',
+      dedupKey: buildDedupKey(sameText),
+      xsecToken: 'tok-note-2-completely-different',
+    });
+    expect(tool.allow).toBe(false);
+    expect(tool.reason).toBe('cross_account_dedup');
+  });
+
+  it('文案不同（哈希不同）则不互斥，账号 B 可正常发布', async () => {
+    const g = new CooccurrenceGuard(makeCfg());
+    const explore = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: buildDedupKey('文案甲') });
+    await g.afterAction({ accountId: A, action: 'comment', success: true, dedupKey: buildDedupKey('文案甲'), reservation: explore.reservation });
+
+    const tool = await g.beforeAction({ accountId: B, action: 'comment', dedupKey: buildDedupKey('文案乙') });
+    expect(tool.allow).toBe(true);
+  });
+
+  it('同账号跨路径（explore 与工具）复用相同文案时放行（去重仅跨账号）', async () => {
+    const g = new CooccurrenceGuard(makeCfg());
+    const sameText = '同一账号重复使用的文案';
+    const explore = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: buildDedupKey(sameText) });
+    await g.afterAction({ accountId: A, action: 'comment', success: true, dedupKey: buildDedupKey(sameText), reservation: explore.reservation });
+
+    const tool = await g.beforeAction({ accountId: A, action: 'comment', dedupKey: buildDedupKey(sameText) });
+    expect(tool.allow).toBe(true);
   });
 });
 

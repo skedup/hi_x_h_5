@@ -16,7 +16,7 @@ import {
   NoteBrief,
   AccountInfo,
 } from '../../../core/explore-ai.js';
-import { getCooccurrenceGuard } from '../../../core/antidetect.js';
+import { getCooccurrenceGuard, sha256OfText } from '../../../core/antidetect.js';
 import { isWriteAllowed, getLiveness } from '../../../core/liveness.js';
 import { EXPLORE_SELECTORS } from '../constants.js';
 
@@ -474,42 +474,52 @@ export class ExploreService {
                     log.warn('explore 评论前门禁未过，跳过', { noteId: selectedFeed.id, reason: canComment.reason });
                   } else {
                   const commentResult = await generateComment(accountInfo, noteDetail.title, noteDetail.desc);
-                  // R2-3：内部写操作经共现守卫（配额/去重/xsec/熔断）
-                  const resv = await guard.beforeAction({
-                    accountId,
-                    action: 'comment',
-                    dedupKey: `explore:comment:${selectedFeed.id}`,
-                    xsecToken: selectedFeed.xsecToken,
-                  });
-                  if (!resv.allow) {
-                    log.warn('explore 内部评论被共现守卫拦截', { noteId: selectedFeed.id, reason: resv.reason });
+                  // 蓝军 A4：AI 生成失败/解析失败时 skip=true，禁止用固定兜底文案发评论，
+                  // 也不得进入共现守卫预占或计入 notesCommented。
+                  if (commentResult.skip || !commentResult.comment) {
+                    log.debug('AI 未生成有效评论，跳过本次评论', { noteId: selectedFeed.id });
                   } else {
-                    // R4 P1 1019834745：写前再次检查设备在场（覆盖 generateComment 异步窗口）
-                    const canWrite = this.assertCanWrite(abortController);
-                    if (!canWrite.ok) {
-                      await guard.cancelReservation(resv.reservation, accountId);
-                      log.warn('explore 评论前写门禁未过，回滚 reservation 跳过', { noteId: selectedFeed.id, reason: canWrite.reason });
+                    const commentText = commentResult.comment;
+                    // 蓝军 A4：与 tools/interaction.ts 的 xhs_post_comment 使用同一前缀的正文哈希键，
+                    // 使 explore 内部评论与工具评论对相同文案跨账号互斥。
+                    const dedupKey = `comment_text:${sha256OfText(commentText)}`;
+                    // R2-3：内部写操作经共现守卫（配额/去重/xsec/熔断）
+                    const resv = await guard.beforeAction({
+                      accountId,
+                      action: 'comment',
+                      dedupKey,
+                      xsecToken: selectedFeed.xsecToken,
+                    });
+                    if (!resv.allow) {
+                      log.warn('explore 内部评论被共现守卫拦截', { noteId: selectedFeed.id, reason: resv.reason });
                     } else {
-                      const commented = await this.commentInModal(page, commentResult.comment);
-                      if (commented) {
-                        db.explore.logAction(sessionId, {
-                          noteId: selectedFeed.id,
-                          noteTitle: selectedFeed.noteCard.displayTitle,
-                          action: 'commented',
-                          content: commentResult.comment,
+                      // R4 P1 1019834745：写前再次检查设备在场（覆盖 generateComment 异步窗口）
+                      const canWrite = this.assertCanWrite(abortController);
+                      if (!canWrite.ok) {
+                        await guard.cancelReservation(resv.reservation, accountId);
+                        log.warn('explore 评论前写门禁未过，回滚 reservation 跳过', { noteId: selectedFeed.id, reason: canWrite.reason });
+                      } else {
+                        const commented = await this.commentInModal(page, commentText);
+                        if (commented) {
+                          db.explore.logAction(sessionId, {
+                            noteId: selectedFeed.id,
+                            noteTitle: selectedFeed.noteCard.displayTitle,
+                            action: 'commented',
+                            content: commentText,
+                          });
+                          notesCommented++;
+                          db.explore.markNoteExplored(accountId, selectedFeed.id, true);
+                          log.info('Commented on note', { noteId: selectedFeed.id, comment: commentText });
+                        }
+                        await guard.afterAction({
+                          accountId,
+                          action: 'comment',
+                          success: commented,
+                          dedupKey,
+                          xsecToken: selectedFeed.xsecToken,
+                          reservation: resv.reservation,
                         });
-                        notesCommented++;
-                        db.explore.markNoteExplored(accountId, selectedFeed.id, true);
-                        log.info('Commented on note', { noteId: selectedFeed.id, comment: commentResult.comment });
                       }
-                      await guard.afterAction({
-                        accountId,
-                        action: 'comment',
-                        success: commented,
-                        dedupKey: `explore:comment:${selectedFeed.id}`,
-                        xsecToken: selectedFeed.xsecToken,
-                        reservation: resv.reservation,
-                      });
                     }
                   }
                   }
