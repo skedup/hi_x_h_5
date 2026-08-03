@@ -35,6 +35,15 @@ function parseInteger(value: string | undefined, defaultValue: number): number {
 }
 
 /**
+ * 解析 xsecToken 绑定模式（A3：抽成独立函数，便于单测覆盖“env 未设置时默认值”，
+ * 不依赖模块加载时的 process.env 快照）。
+ */
+export function parseXsecMode(value: string | undefined, defaultValue: 'block' | 'warn'): 'block' | 'warn' {
+  if (value === 'block' || value === 'warn') return value;
+  return defaultValue;
+}
+
+/**
  * 解析日志级别
  */
 function parseLogLevel(value: string | undefined, defaultValue: LogLevelName): LogLevelName {
@@ -156,8 +165,12 @@ export const config = {
     xsecTokenBinding: {
       /** 总开关 */
       enabled: parseBoolean(process.env.XHS_MCP_AD_XSEC, true),
-      /** block: 跨账号复用直接拦截；warn: 仅告警放行（默认，避免误伤正常多账号） */
-      mode: (process.env.XHS_MCP_AD_XSEC_MODE as 'block' | 'warn') || 'warn',
+      /**
+       * block: 跨账号复用直接拦截；warn: 仅告警放行。
+       * A3（blue-team）：默认由 warn 收紧为 block —— breaking change，
+       * 迁移期可用 `XHS_MCP_AD_XSEC_MODE=warn` 回滚。见 CHANGELOG.md。
+       */
+      mode: parseXsecMode(process.env.XHS_MCP_AD_XSEC_MODE, 'block'),
     },
     /** C2.3 中央限额/熔断（按账号预算、冷却、连续失败熔断进入人工） */
     quota: {

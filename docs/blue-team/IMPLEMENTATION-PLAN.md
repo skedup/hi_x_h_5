@@ -49,10 +49,10 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
-| **做什么** | 默认 `mode='block'`（breaking，CHANGELOG）；`getFeeds` 后 `bindXsecSource`；确认 search/list_feeds 不回退。 |
-| **DoD** | B 用 A 的 token 写 → 拒绝；explore 提取即 committed |
+| **做什么** | 默认 `mode='block'`（**breaking**：仓库无 CHANGELOG.md，已在 `config.ts` 内联注释说明并在本行记录）；`getFeeds` 后立即 `bindXsecSource`（`bindFeedXsecTokens` 辅助函数，`src/xhs/clients/services/explore.ts`）；确认 search/list_feeds（`tools/content.ts`）绑定逻辑未回退。 |
+| **DoD** | B 用 A 的 token 写 → 拒绝（block 模式默认生效）；explore 提取 feed 即 committed（早于点赞/评论） |
 | **回滚** | `XHS_MCP_AD_XSEC_MODE=warn` |
 
 ### A4 · 去掉固定 fallback + 正文键对齐
