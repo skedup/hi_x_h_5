@@ -10,7 +10,7 @@ import { LoginUserInfo, FullUserProfile } from '../types.js';
 import { createLogger } from '../../core/logger.js';
 import { config, paths } from '../../core/config.js';
 import { parseProxyConfig, toPlaywrightProxy } from '../../core/proxy.js';
-import { BROWSER_ARGS } from './constants.js';
+import { getBrowserArgs } from './constants.js';
 
 // Create logger for browser module
 export const log = createLogger('browser');
@@ -34,7 +34,7 @@ export async function launchProfileContext(
   const context = await chromium.launchPersistentContext(profileDir, {
     headless,
     channel: 'chrome',
-    args: BROWSER_ARGS,
+    args: getBrowserArgs(),
     // B1（05 R3）：headful 时 viewport 置 null，消除 screen==viewport 的组合异常指纹；
     // headless（自动化测试）保留固定 viewport。
     viewport: headless ? { width: 1920, height: 1080 } : null,

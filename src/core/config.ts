@@ -130,6 +130,11 @@ export const config = {
     requestInterval: parseInteger(process.env.XHS_MCP_REQUEST_INTERVAL, 2000),
     /** 操作完成后是否保持浏览器打开 (XHS_MCP_KEEP_OPEN)，默认 false */
     keepOpen: parseBoolean(process.env.XHS_MCP_KEEP_OPEN, false),
+    /**
+     * 容器/CI 回滚：为 Chrome 追加 --no-sandbox / --disable-setuid-sandbox（C1）。
+     * 默认 false（桌面/macOS 保留 sandbox）；Docker/root 无权限时需显式 true。
+     */
+    noSandbox: parseBoolean(process.env.XHS_MCP_BROWSER_NO_SANDBOX, false),
   },
 
   /**

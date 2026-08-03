@@ -238,6 +238,7 @@ All configuration can be controlled via environment variables:
 | `XHS_MCP_DATA_DIR` | `~/.xhs-mcp` | Data directory path |
 | `XHS_MCP_LOG_LEVEL` | `debug` | Log level: debug, info, warn, error |
 | `XHS_MCP_HEADLESS` | `true` | 浏览器无头模式，设为 `false` 显示浏览器窗口 |
+| `XHS_MCP_BROWSER_NO_SANDBOX` | `false` | 容器/CI 回滚：追加 `--no-sandbox`；见 `docs/blue-team/C1-BROWSER-ARGS.md` |
 | `XHS_MCP_KEEP_OPEN` | `false` | 操作完成后保持浏览器打开，用于调试 |
 | `XHS_MCP_REQUEST_INTERVAL` | `2000` | Request interval in ms (rate limiting) |
 | `XHS_MCP_TIMEOUT_PAGE_LOAD` | `30000` | Page load timeout in ms |

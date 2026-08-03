@@ -185,7 +185,7 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | 默认移除 no-sandbox / deny-permission-prompts；删重复 AutomationControlled。**容器/CI DoD**：文档写明必须 `XHS_MCP_BROWSER_NO_SANDBOX=true` 否则启动失败属预期。 |
 | **回滚** | env 开 no-sandbox |
