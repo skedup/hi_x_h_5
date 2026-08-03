@@ -5,7 +5,7 @@
  */
 
 import { InteractionResult, CommentResult } from '../../types.js';
-import { sleep, navigateWithRetry, typeLikeHuman, jitteredSleep, rateLimitedSleep } from '../../utils/index.js';
+import { sleep, navigateWithRetry, typeLikeHuman, rateLimitedSleep, heavyTailDelay } from '../../utils/index.js';
 import { BrowserContextManager } from '../context.js';
 import { REQUEST_INTERVAL, INTERACTION_SELECTORS, COMMENT_SELECTORS } from '../constants.js';
 import { createLogger } from '../../../core/logger.js';
@@ -70,7 +70,7 @@ export class InteractService {
         const likeBtn = await page.$(INTERACTION_SELECTORS.likeButton);
         if (likeBtn) {
           await likeBtn.click();
-          await jitteredSleep(500);
+          await heavyTailDelay(500); // B1：动作后 dwell（行为，非功能轮询）
         } else {
           return {
             success: false,

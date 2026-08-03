@@ -6,7 +6,7 @@
 
 import { Page } from 'patchright';
 import { BrowserContextManager, log } from '../context.js';
-import { sleep, typeLikeHuman, jitteredSleep } from '../../utils/index.js';
+import { sleep, typeLikeHuman, jitteredSleep, heavyTailDelay, sampleHeavyTailMs } from '../../utils/index.js';
 import { config } from '../../../core/config.js';
 import { getDatabase, ExploreSessionResult } from '../../../db/index.js';
 import {
@@ -234,7 +234,7 @@ export class ExploreService {
           const quickScrolls = 3 + Math.floor(Math.random() * 3); // 3-5 次
           for (let i = 0; i < quickScrolls; i++) {
             await this.humanScroll(page);
-            await sleep(200 + Math.random() * 300);
+            await heavyTailDelay(350, { minMs: 200, maxMs: 500 }); // B1：快滑步间
           }
           continue;
         }
@@ -243,19 +243,22 @@ export class ExploreService {
         if (behaviorRoll < 0.15) {
           log.debug('Behavior: scroll back');
           await page.mouse.wheel(0, -(200 + Math.random() * 200));
-          await sleep(1000 + Math.random() * 1000);
+          await heavyTailDelay(1500, { minMs: 1000, maxMs: 2000 }); // B1：回看停顿
         }
 
         // 正常滑动 1-3 次
         const scrollCount = 1 + Math.floor(Math.random() * 3);
         for (let i = 0; i < scrollCount; i++) {
           await this.humanScroll(page);
-          await sleep(400 + Math.random() * 400);
+          await heavyTailDelay(600, { minMs: 400, maxMs: 800 }); // B1：滑动步间
         }
 
-        // 停顿阅读：正常 3-8 秒，10% 概率长时间停留 10-20 秒
+        // 停顿阅读：基准 5s 重尾；10% 概率以 15s 为中位的长停（仍可 abort）
         const isLongPause = Math.random() < 0.1;
-        const readingDelay = isLongPause ? 10000 + Math.random() * 10000 : 3000 + Math.random() * 5000;
+        const readingBase = isLongPause ? 15000 : 5000;
+        const readingDelay = isLongPause
+          ? sampleHeavyTailMs(readingBase, { minMs: 10000, maxMs: 20000 })
+          : sampleHeavyTailMs(readingBase, { minMs: 3000, maxMs: 8000 });
         if (isLongPause) {
           log.debug('Behavior: long pause');
         }
@@ -362,15 +365,18 @@ export class ExploreService {
                 // 15% 概率快速关掉（假装不感兴趣）
                 if (Math.random() < 0.15) {
                   log.debug('Behavior: quick close (not interested)');
-                  await sleep(800 + Math.random() * 700);
+                  await heavyTailDelay(1150, { minMs: 800, maxMs: 1500 });
                   await this.closeModal(page);
-                  await sleep(500 + Math.random() * 500);
+                  await heavyTailDelay(750, { minMs: 500, maxMs: 1000 });
                   continue;
                 }
 
-                // 正常阅读：3-8 秒，10% 概率长时间 10-20 秒
+                // 正常阅读：基准 5s 重尾；10% 深度阅读以 15s 为中位
                 const isDeepRead = Math.random() < 0.1;
-                const modalReadDelay = isDeepRead ? 10000 + Math.random() * 10000 : 3000 + Math.random() * 5000;
+                const modalReadBase = isDeepRead ? 15000 : 5000;
+                const modalReadDelay = isDeepRead
+                  ? sampleHeavyTailMs(modalReadBase, { minMs: 10000, maxMs: 20000 })
+                  : sampleHeavyTailMs(modalReadBase, { minMs: 3000, maxMs: 8000 });
                 if (isDeepRead) {
                   log.debug('Behavior: deep reading');
                 }
@@ -544,9 +550,9 @@ export class ExploreService {
                   }
                 }
 
-                // 关闭 modal，随机停顿
+                // 关闭 modal，随机停顿（B1 重尾）
                 await this.closeModal(page);
-                await sleep(800 + Math.random() * 1500);
+                await heavyTailDelay(1500, { minMs: 800, maxMs: 2300 });
               }
             }
           } else {
@@ -632,7 +638,7 @@ export class ExploreService {
 
     for (let i = 0; i < steps; i++) {
       await page.mouse.wheel(0, distance / steps);
-      await sleep(20 + Math.random() * 60);
+      await heavyTailDelay(50, { minMs: 20, maxMs: 80 }); // B1：滚轮步间
     }
   }
 
@@ -702,11 +708,11 @@ export class ExploreService {
 
       // 先滚动到可见区域
       await cover.scrollIntoViewIfNeeded();
-      await jitteredSleep(300);
+      await heavyTailDelay(300);
 
       // 真实鼠标点击（force 跳过可操作性断言但仍是 CDP 真实事件，isTrusted=true，规避 el.click() 的 isTrusted=false）
       await cover.click({ force: true });
-      await jitteredSleep(500);
+      await heavyTailDelay(500);
 
       // 等待 modal 出现
       await page.waitForSelector(EXPLORE_SELECTORS.noteContainer, { timeout: 5000 });
@@ -787,7 +793,7 @@ export class ExploreService {
 
       // 点赞
       await likeBtn.click();
-      await jitteredSleep(500);
+      await heavyTailDelay(500);
       return true;
     } catch (error) {
       log.warn('Failed to like in modal', { error });
@@ -830,7 +836,7 @@ export class ExploreService {
 
       // 点赞
       await likeBtn.click();
-      await jitteredSleep(500);
+      await heavyTailDelay(500);
       log.debug('Liked comment', { commentId });
       return true;
     } catch (error) {
@@ -852,7 +858,7 @@ export class ExploreService {
       }
 
       await inputArea.click();
-      await jitteredSleep(500);
+      await heavyTailDelay(500);
 
       // 输入评论内容
       const commentInput = await page.$(EXPLORE_SELECTORS.commentInput);
@@ -864,7 +870,7 @@ export class ExploreService {
       await commentInput.click();
       await typeLikeHuman(page, content);
 
-      await jitteredSleep(500);
+      await heavyTailDelay(500);
 
       // 点击提交按钮
       const submitBtn = await page.$(EXPLORE_SELECTORS.commentSubmit);
@@ -891,13 +897,13 @@ export class ExploreService {
       const closeBtn = await page.$(EXPLORE_SELECTORS.closeButton);
       if (closeBtn) {
         await closeBtn.click();
-        await jitteredSleep(500);
+        await heavyTailDelay(500);
         return;
       }
 
       // 备选：按 ESC
       await page.keyboard.press('Escape');
-      await jitteredSleep(500);
+      await heavyTailDelay(500);
     } catch (error) {
       log.warn('Failed to close modal', { error });
       // 尝试按 ESC
