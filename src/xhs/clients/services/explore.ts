@@ -35,6 +35,7 @@ import {
   computeEffectiveOpenRate,
   computeFeedVideoRatio,
   createOpenRateCooldownState,
+  filterExploreOpenCandidates,
   shouldContactVideoFeed,
   updateOpenRateStateAfterRound,
 } from './explore-helpers.js';
@@ -355,17 +356,13 @@ export class ExploreService {
           log.debug('Visible notes in DOM', { count: visibleIds.size });
 
           const wantVideoContact = allowVideo && shouldContactVideoFeed(videoRatio, Math.random());
-          let candidateFeeds = feeds.filter((f) => {
-            if (!visibleIds.has(f.id) || openedInSession.has(f.id)) return false;
-            if (!allowVideo) return f.noteCard.type !== 'video';
-            if (wantVideoContact) return f.noteCard.type === 'video';
-            return f.noteCard.type !== 'video';
+          // B4：始终按 wantVideoContact 过滤；无匹配类型时本轮不打开（禁止 fallback 打穿视频模型）
+          let candidateFeeds = filterExploreOpenCandidates(feeds, {
+            visibleIds,
+            openedInSession,
+            allowVideo,
+            wantVideoContact,
           });
-          if (candidateFeeds.length === 0 && allowVideo) {
-            candidateFeeds = feeds.filter(
-              (f) => visibleIds.has(f.id) && !openedInSession.has(f.id),
-            );
-          }
 
           // 跨会话去重：排除之前互动过的笔记
           if (deduplicate && candidateFeeds.length > 0) {
@@ -425,15 +422,15 @@ export class ExploreService {
               const opened = await this.openNoteModal(page, selectedFeed.id);
 
               if (opened) {
-                // B4：视频必须 dwell，禁止打开即关凑 opened 统计
-                if (!isVideoNote && Math.random() < 0.15) {
+                // B4：视频必须 dwell，禁止打开即关凑 opened 统计。
+                // quick-close 不得 continue——须落到下方 updateOpenRateStateAfterRound / updateSessionStats。
+                const quickClose = !isVideoNote && Math.random() < 0.15;
+                if (quickClose) {
                   log.debug('Behavior: quick close (not interested)');
                   await heavyTailDelay(1150, { minMs: 800, maxMs: 1500 });
                   await this.closeModal(page);
                   await heavyTailDelay(750, { minMs: 500, maxMs: 1000 });
-                  continue;
-                }
-
+                } else {
                 // 正常阅读：基准 5s 重尾；10% 深度阅读以 15s 为中位
                 const isDeepRead = Math.random() < 0.1;
                 const modalReadBase = isDeepRead ? 15000 : 5000;
@@ -616,6 +613,7 @@ export class ExploreService {
                 // 关闭 modal，随机停顿（B1 重尾）
                 await this.closeModal(page);
                 await heavyTailDelay(1500, { minMs: 800, maxMs: 2300 });
+                } // end else non-quick-close
               }
             }
           } else {

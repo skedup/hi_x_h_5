@@ -7,6 +7,7 @@ import {
   computeEffectiveOpenRate,
   computeFeedVideoRatio,
   createOpenRateCooldownState,
+  filterExploreOpenCandidates,
   OPEN_RATE_COOLDOWN,
   shouldContactVideoFeed,
   updateOpenRateStateAfterRound,
@@ -80,5 +81,55 @@ describe('B4 视频接触率', () => {
   it('低视频占比时有下限 0.08', () => {
     expect(shouldContactVideoFeed(0.02, 0.07)).toBe(true);
     expect(shouldContactVideoFeed(0.02, 0.09)).toBe(false);
+  });
+});
+
+describe('B4 filterExploreOpenCandidates', () => {
+  const feeds = [
+    { id: 'a', noteCard: { type: 'normal' } },
+    { id: 'b', noteCard: { type: 'video' } },
+    { id: 'c', noteCard: { type: 'video' } },
+  ];
+  const visible = new Set(['a', 'b', 'c']);
+  const opened = new Set<string>();
+
+  it('非视频轮次只返回非视频', () => {
+    const out = filterExploreOpenCandidates(feeds, {
+      visibleIds: visible,
+      openedInSession: opened,
+      allowVideo: true,
+      wantVideoContact: false,
+    });
+    expect(out.map((f) => f.id)).toEqual(['a']);
+  });
+
+  it('视频接触轮次只返回视频', () => {
+    const out = filterExploreOpenCandidates(feeds, {
+      visibleIds: visible,
+      openedInSession: opened,
+      allowVideo: true,
+      wantVideoContact: true,
+    });
+    expect(out.map((f) => f.id)).toEqual(['b', 'c']);
+  });
+
+  it('仅视频可见时非视频轮次返回空（禁止 fallback 打开视频）', () => {
+    const out = filterExploreOpenCandidates(feeds, {
+      visibleIds: new Set(['b', 'c']),
+      openedInSession: opened,
+      allowVideo: true,
+      wantVideoContact: false,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('allowVideo=false 时排除视频', () => {
+    const out = filterExploreOpenCandidates(feeds, {
+      visibleIds: visible,
+      openedInSession: opened,
+      allowVideo: false,
+      wantVideoContact: true,
+    });
+    expect(out.map((f) => f.id)).toEqual(['a']);
   });
 });

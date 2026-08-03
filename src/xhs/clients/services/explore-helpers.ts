@@ -95,3 +95,24 @@ export function shouldContactVideoFeed(
   const contactRate = Math.min(Math.max(videoRatio * 1.15, 0.08), 0.55);
   return roll < contactRate;
 }
+
+/**
+ * 按可见性 + 视频接触意图过滤待打开候选。
+ * 无匹配类型时返回空数组——禁止 fallback 到「任意可见笔记」（否则打穿视频模型）。
+ */
+export function filterExploreOpenCandidates<T extends { id: string; noteCard: { type: string } }>(
+  feeds: T[],
+  opts: {
+    visibleIds: Set<string>;
+    openedInSession: Set<string>;
+    allowVideo: boolean;
+    wantVideoContact: boolean;
+  },
+): T[] {
+  return feeds.filter((f) => {
+    if (!opts.visibleIds.has(f.id) || opts.openedInSession.has(f.id)) return false;
+    if (!opts.allowVideo) return f.noteCard.type !== 'video';
+    if (opts.wantVideoContact) return f.noteCard.type === 'video';
+    return f.noteCard.type !== 'video';
+  });
+}
