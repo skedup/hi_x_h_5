@@ -194,7 +194,7 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | login 忽略全局 headless；`viewport: null`。无 DISPLAY：Xvfb 或 `XHS_MCP_ALLOW_HEADLESS_LOGIN=true`（默认 false）。 |
 | **DoD** | `HEADLESS=true` 时 add_account 仍 headful（有图形环境）；无图形环境有文档路径 |

@@ -237,7 +237,8 @@ All configuration can be controlled via environment variables:
 | `XHS_MCP_PORT` | `18060` | HTTP server port |
 | `XHS_MCP_DATA_DIR` | `~/.xhs-mcp` | Data directory path |
 | `XHS_MCP_LOG_LEVEL` | `debug` | Log level: debug, info, warn, error |
-| `XHS_MCP_HEADLESS` | `true` | 浏览器无头模式，设为 `false` 显示浏览器窗口 |
+| `XHS_MCP_HEADLESS` | `false` | 浏览器无头模式（写操作另有 headlessWriteGate）；登录默认不受此影响，见 `XHS_MCP_ALLOW_HEADLESS_LOGIN` |
+| `XHS_MCP_ALLOW_HEADLESS_LOGIN` | `false` | C2 登录 headless 逃生口；`false` 时 add_account 强制 headful + viewport:null；见 `docs/blue-team/C2-LOGIN-HEADFUL.md` |
 | `XHS_MCP_BROWSER_NO_SANDBOX` | `false` | 容器/CI 回滚：追加 `--no-sandbox`；见 `docs/blue-team/C1-BROWSER-ARGS.md` |
 | `XHS_MCP_KEEP_OPEN` | `false` | 操作完成后保持浏览器打开，用于调试 |
 | `XHS_MCP_REQUEST_INTERVAL` | `2000` | Request interval in ms (rate limiting) |
@@ -366,7 +367,7 @@ Key tables (通过 Repository 类访问):
 - Respect rate limits - configurable via `XHS_MCP_REQUEST_INTERVAL` (default 2s)
 - Publishing operations may require visible browser (`XHS_MCP_HEADLESS=false`)
 - All database operations are synchronous (better-sqlite3)
-- Login runs in headless mode by default (controllable via `XHS_MCP_HEADLESS`)
+- Login is **headful by default** (ignores `XHS_MCP_HEADLESS` unless `XHS_MCP_ALLOW_HEADLESS_LOGIN=true`); see `docs/blue-team/C2-LOGIN-HEADFUL.md`
 - Use `createLogger('module-name')` for logging instead of `console.error/log`
 - Extract magic numbers to constant objects with Chinese comments
 - All code comments should be in Chinese for consistency

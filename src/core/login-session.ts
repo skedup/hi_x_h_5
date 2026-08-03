@@ -9,7 +9,7 @@ import { existsSync, rmSync } from 'node:fs';
 import { LoginUserInfo, FullUserProfile } from '../xhs/types.js';
 import { sleep } from '../xhs/utils/index.js';
 import { createLogger } from './logger.js';
-import { config } from './config.js';
+import { resolveLoginHeadless } from './config.js';
 import { getLoginProfileDir } from './profile.js';
 import { QR_CODE_SELECTOR, LOGIN_STATUS_SELECTOR, URLS } from '../xhs/clients/constants.js';
 import { launchProfileContext } from '../xhs/clients/context.js';
@@ -168,9 +168,11 @@ export class LoginSessionManager {
     const id = this.generateSessionId();
     log.info('Creating login session', { id, accountName, hasProxy: !!proxy });
 
+    const loginHeadless = resolveLoginHeadless();
+    log.info('Login browser mode resolved', { loginHeadless });
     const { browser, context } = await launchProfileContext(
       getLoginProfileDir(id),
-      config.browser.headless,
+      loginHeadless,
       proxy,
     );
 
