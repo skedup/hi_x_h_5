@@ -737,6 +737,53 @@ export async function humanScroll(page: Page, options: HumanScrollOptions = {}):
   }
 }
 
+export interface WheelApproachOptions {
+  /** 最大 wheel 逼近步数（默认 5） */
+  maxWheelSteps?: number;
+  /** 视口内边距（默认 60px） */
+  viewportMargin?: number;
+}
+
+/**
+ * B4：wheel 小步逼近目标元素，替代裸 scrollIntoViewIfNeeded。
+ * 先用 mouse.wheel 向目标方向滚动；仍不可见时 scrollIntoViewIfNeeded 兜底。
+ */
+export async function wheelApproachElement(
+  page: Page,
+  element: ElementHandle,
+  options: WheelApproachOptions = {},
+): Promise<void> {
+  const maxWheelSteps = options.maxWheelSteps ?? 5;
+  const margin = options.viewportMargin ?? 60;
+  const viewport = page.viewportSize();
+  const vh = viewport?.height ?? 800;
+
+  const isComfortablyVisible = async (): Promise<boolean> => {
+    const box = await element.boundingBox();
+    if (!box || box.width <= 0 || box.height <= 0) return false;
+    return box.y >= margin && box.y + box.height <= vh - margin;
+  };
+
+  if (await isComfortablyVisible()) return;
+
+  for (let i = 0; i < maxWheelSteps; i++) {
+    const box = await element.boundingBox();
+    if (!box) break;
+    if (box.y >= margin && box.y + box.height <= vh - margin) return;
+
+    const delta =
+      box.y < margin
+        ? -(120 + Math.random() * 180)
+        : 150 + Math.random() * 220;
+    await page.mouse.wheel(0, delta);
+    await heavyTailDelayBetween(80, 220);
+  }
+
+  if (!(await isComfortablyVisible())) {
+    await element.scrollIntoViewIfNeeded().catch(() => {});
+  }
+}
+
 /**
  * Scroll to the bottom of a page using human-like behavior.
  * Calls humanScroll repeatedly until reaching the bottom.

@@ -81,6 +81,19 @@ export const SCROLL_CONFIG = {
 } as const;
 
 /**
+ * Explore 专用滚动 preset（B4）：步间延迟短于搜索 SCROLL_CONFIG，
+ * 避免 humanScroll 内置 1–2s 读延迟拖垮 explore duration。
+ */
+export const SCROLL_CONFIG_EXPLORE = {
+  MIN_DISTANCE: 300,
+  MAX_DISTANCE: 700,
+  MIN_DELAY: 400,
+  MAX_DELAY: 900,
+  SCROLL_BACK_CHANCE: 0.1,
+  MOUSE_MOVE_CHANCE: 0.35,
+} as const;
+
+/**
  * UI 操作延迟常量（毫秒）
  * 用于等待 UI 动画和状态更新
  */

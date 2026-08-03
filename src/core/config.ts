@@ -268,6 +268,13 @@ export const config = {
       /** 最少阅读滚动次数（humanScroll / wheel） */
       minReadScrolls: parseInteger(process.env.XHS_MCP_AD_INTERACT_MIN_SCROLLS, 1),
     },
+    /**
+     * B4 Explore 视频接触：按 feed 视频占比打开并 dwell，不再硬跳过全部视频。
+     * 回滚：`XHS_MCP_AD_EXPLORE_ALLOW_VIDEO=false` → 退回非视频路径（与旧行为一致）。
+     */
+    explore: {
+      allowVideo: parseBoolean(process.env.XHS_MCP_AD_EXPLORE_ALLOW_VIDEO, true),
+    },
   },
 
   /**

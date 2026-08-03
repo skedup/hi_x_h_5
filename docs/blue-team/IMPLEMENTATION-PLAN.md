@@ -137,10 +137,11 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0/P1 |
 | **做什么** | ① 删私有滚动；用 **`SCROLL_CONFIG_EXPLORE`**（步间短于搜索，避免拖垮 `duration`）。② 视频按 **相对 feed 视频占比的接触率**，不能只「打开即关」凑 opened。③ 评论 revise 参数。④ 打开率改冷却/衰减。⑤ wheel 逼近替代裸 `scrollIntoViewIfNeeded`。 |
-| **回滚** | `explore.allowVideo=false` |
+| **回滚** | `XHS_MCP_AD_EXPLORE_ALLOW_VIDEO=false` |
+| **触及** | [B4-CALL-SITES.md](./B4-CALL-SITES.md) |
 
 ### B5 · IME 策略
 
