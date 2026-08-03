@@ -99,16 +99,28 @@ export class PublishService {
       return { success: false, error: 'Not logged in. Please use xhs_add_account first.' };
     }
 
-    // 处理 HTTP URL 图片：下载到本地临时目录
+    // 先建会话再拉配图：HTTP URL 经账号 APIRequestContext（C4，对齐 downloadFile）
+    await this.ctx.close();
+    const context = await this.ctx.ensureContext(config.browser.headless);
+
     let imagePaths = params.images;
     const hasHttpUrls = params.images.some((p) => isHttpUrl(p));
     if (hasHttpUrls) {
-      log.info('Detected HTTP image URLs, downloading to local...');
+      log.info('Detected HTTP image URLs, downloading via account request...');
       try {
-        imagePaths = await resolveImagePaths(params.images);
+        const apiRequest = this.ctx.request;
+        if (!apiRequest) {
+          await this.ctx.close().catch(() => {});
+          return {
+            success: false,
+            error: 'Account egress unavailable: browser context request missing for HTTP image download.',
+          };
+        }
+        imagePaths = await resolveImagePaths(params.images, apiRequest);
         log.info('HTTP images downloaded', { count: imagePaths.length });
       } catch (error) {
         log.error('Failed to download HTTP images', { error: error instanceof Error ? error.message : String(error) });
+        await this.ctx.close().catch(() => {});
         return {
           success: false,
           error: `Failed to download HTTP images: ${error instanceof Error ? error.message : String(error)}`,
@@ -116,8 +128,6 @@ export class PublishService {
       }
     }
 
-    await this.ctx.close();
-    const context = await this.ctx.ensureContext(config.browser.headless);
     const page = await context.newPage();
     let stage: PublishStage = 'navigation';
     let submissionStarted = false;
