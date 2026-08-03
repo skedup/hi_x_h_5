@@ -130,6 +130,12 @@ export const config = {
     requestInterval: parseInteger(process.env.XHS_MCP_REQUEST_INTERVAL, 2000),
     /** 操作完成后是否保持浏览器打开 (XHS_MCP_KEEP_OPEN)，默认 false */
     keepOpen: parseBoolean(process.env.XHS_MCP_KEEP_OPEN, false),
+    /**
+     * C2 登录是否允许走 headless（XHS_MCP_ALLOW_HEADLESS_LOGIN）。
+     * 默认 false：登录忽略全局 headless，强制 headful + viewport:null。
+     * 设为 true 时登录可沿用 config.browser.headless（迁移/CI 逃生口）。
+     */
+    allowHeadlessLogin: parseBoolean(process.env.XHS_MCP_ALLOW_HEADLESS_LOGIN, false),
   },
 
   /**
@@ -357,6 +363,30 @@ export const config = {
     },
   },
 } as const;
+
+/**
+ * C2：解析登录会话是否应使用 headless。
+ * allowHeadlessLogin=false（默认）时强制 headful，忽略全局 XHS_MCP_HEADLESS。
+ */
+export function resolveLoginHeadless(
+  headless: boolean = config.browser.headless,
+  allowHeadlessLogin: boolean = config.browser.allowHeadlessLogin,
+): boolean {
+  if (allowHeadlessLogin) return headless;
+  return false;
+}
+
+/**
+ * C2：headful 启动前检查图形环境；Linux 无 DISPLAY/WAYLAND 时 fail-closed。
+ */
+export function assertDisplayAvailableForHeadful(): void {
+  if (process.platform !== 'linux') return;
+  if (process.env.DISPLAY?.trim() || process.env.WAYLAND_DISPLAY?.trim()) return;
+  throw new Error(
+    'Headful browser required for login but no DISPLAY (or WAYLAND_DISPLAY) is set. ' +
+      'Use Xvfb (e.g. xvfb-run bun run start) or set XHS_MCP_ALLOW_HEADLESS_LOGIN=true to allow headless login.',
+  );
+}
 
 /**
  * 派生路径（基于 data.dir）
