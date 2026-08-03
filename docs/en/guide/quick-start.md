@@ -11,7 +11,7 @@ xhs_add_account({ name: "my-account" })
 ```
 
 This will:
-1. Launch a browser (headful by default; follows `XHS_MCP_HEADLESS`)
+1. Launch a browser **headful by default** (ignores `XHS_MCP_HEADLESS` unless `XHS_MCP_ALLOW_HEADLESS_LOGIN=true`; see `docs/blue-team/C2-LOGIN-HEADFUL.md`)
 2. Capture the QR code from the login page
 3. Open the QR code image in your default viewer
 4. Wait for you to scan with the Xiaohongshu app
