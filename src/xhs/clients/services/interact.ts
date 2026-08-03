@@ -7,7 +7,6 @@
 import type { Page } from 'patchright';
 import { InteractionResult, CommentResult, InteractSessionMeta } from '../../types.js';
 import {
-  sleep,
   navigateWithRetry,
   typeLikeHuman,
   jitteredSleep,
@@ -15,6 +14,8 @@ import {
   heavyTailDelay,
   clickWithTrajectory,
   getLastTrajectoryMeta,
+  computeTypingPlan,
+  type TypeLikeHumanOptions,
 } from '../../utils/index.js';
 import {
   InteractSessionOpts,
@@ -33,6 +34,25 @@ function buildNoteUrl(noteId: string, xsecToken: string): string {
     url += `?xsec_token=${encodeURIComponent(xsecToken)}`;
   }
   return url;
+}
+
+/** B6：评论/回复输入启用 revise，与 publish 正文策略对齐 */
+function commentTypingOptions(content: string): TypeLikeHumanOptions {
+  return {
+    reviseGapMin: 4,
+    reviseGapMax: 12,
+    reviseMax: 1,
+    reviseChance: 0.8,
+    ...computeTypingPlan(content, {
+      minDelay: 45,
+      maxDelay: 170,
+      reviseGapMin: 4,
+      reviseGapMax: 12,
+      reviseMax: 1,
+      reviseChance: 0.8,
+      defaultMaxDurationMs: 60000,
+    }),
+  };
 }
 
 /**
@@ -373,7 +393,7 @@ export class InteractService {
       }
 
       await clickWithTrajectory(page, commentInput);
-      await typeLikeHuman(page, content);
+      await typeLikeHuman(page, content, commentTypingOptions(content));
       await heavyTailDelay(300, { minMs: 180, maxMs: 420 });
 
       const submitBtn = await page.$(COMMENT_SELECTORS.submitButton);
@@ -459,14 +479,14 @@ export class InteractService {
       if (accessError) {
         return { success: false, error: accessError };
       }
-      await jitteredSleep(1000);
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
       const reading = await runInteractReadingPhase(page);
       readingStarted = true;
       preDwellMs = reading.preDwellMs;
       readScrollCount = reading.readScrollCount;
 
-      await jitteredSleep(2000);
+      await heavyTailDelay(2000, { minMs: 1200, maxMs: 2800 });
 
       const commentEl = await this.findCommentElement(page, commentId);
       if (!commentEl) {
@@ -508,7 +528,7 @@ export class InteractService {
       }
 
       await clickWithTrajectory(page, commentInput);
-      await typeLikeHuman(page, content);
+      await typeLikeHuman(page, content, commentTypingOptions(content));
       await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
 
       const submitBtn = await page.$('div.bottom button.submit');
@@ -575,7 +595,6 @@ export class InteractService {
    */
   private async findCommentElement(page: any, commentId: string): Promise<any> {
     const maxAttempts = 50;
-    const scrollInterval = 800;
     const selector = `#comment-${commentId}`;
 
     this.logger.debug('查找评论元素', { commentId, selector });
@@ -592,7 +611,7 @@ export class InteractService {
         commentsArea.scrollIntoView({ behavior: 'smooth' });
       }
     });
-    await jitteredSleep(1000);
+    await heavyTailDelay(1000, { minMs: 600, maxMs: 1400 });
 
     el = await page.$(selector);
     if (el) {
@@ -634,7 +653,7 @@ export class InteractService {
       await page.evaluate(() => {
         window.scrollBy(0, window.innerHeight * 0.8);
       });
-      await sleep(scrollInterval);
+      await heavyTailDelay(800, { minMs: 500, maxMs: 1400 });
 
       el = await page.$(selector);
       if (el) {
@@ -681,14 +700,14 @@ export class InteractService {
           error: accessError,
         };
       }
-      await jitteredSleep(1000);
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
       const reading = await runInteractReadingPhase(page);
       readingStarted = true;
       preDwellMs = reading.preDwellMs;
       readScrollCount = reading.readScrollCount;
 
-      await jitteredSleep(2000);
+      await heavyTailDelay(2000, { minMs: 1200, maxMs: 2800 });
 
       const commentEl = await this.findCommentElement(page, commentId);
       if (!commentEl) {

@@ -58,4 +58,17 @@ describe('B1 sampleHeavyTailMs', () => {
       expect(v).toBeLessThanOrEqual(110);
     }
   });
+
+  it('B6：min≠max 时不恒为 base（findCommentElement 滚动步间）', () => {
+    cfg.antiDetect.heavyTail = { enabled: true, sigma: 0.45, maxMultiplier: 8 };
+    const samples = new Set<number>();
+    for (let i = 0; i < 100; i++) {
+      samples.add(sampleHeavyTailMs(800, { minMs: 500, maxMs: 1400 }));
+    }
+    expect(samples.size).toBeGreaterThan(1);
+    for (const v of samples) {
+      expect(v).toBeGreaterThanOrEqual(500);
+      expect(v).toBeLessThanOrEqual(1400);
+    }
+  });
 });
