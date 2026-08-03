@@ -12,7 +12,8 @@
 |----|------|
 | `archiveProfileDir` | `profile.ts`：rename → `{profileId}.archived-{ts}`（对齐 finalizeLoginProfile） |
 | `BrowserContextManager.deleteCookies` | **先 close 再归档**；不再调用 `clearCookies`；JSDoc `@deprecated` 旧语义 |
-| `xhs_delete_cookies` | `removeClient` + `archiveProfileDir` + 清 DB state；描述标明非「只清 Cookie」 |
+| `xhs_delete_cookies` | 持账号锁：`removeClient` → `archiveProfileDir` → 清 DB state；描述标明非「只清 Cookie」 |
+| 竞态 | close 期间须持锁，防止其他工具 `getClient` 重开即将归档的目录 |
 | 术语 | 归档的是 profile **内持久化会话标识**，非硬件指纹 |
 
 ## DoD

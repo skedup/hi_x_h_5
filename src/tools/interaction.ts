@@ -508,21 +508,38 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
         };
       }
 
-      // C5：先关浏览器再归档 profile（勿只 clearCookies）；不清空 profileId，下次登录可转正到同目录
-      db.accounts.updateState(account.id, null);
-      await pool.removeClient(account.id);
-      const archivedPath = archiveProfileDir(account.profileId);
+      // C5：持账号锁串行化登出，避免 close 期间其他工具 getClient 重开即将归档的 profile
+      let release: (() => void) | null = null;
+      try {
+        release = await pool.acquireLock(account.id, 'delete_cookies');
+        // 先关浏览器 → 再归档磁盘 → 最后清 DB（避免归档失败时 state 已空、profile 仍在）
+        await pool.removeClient(account.id);
+        const archivedPath = archiveProfileDir(account.profileId);
+        db.accounts.updateState(account.id, null);
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: archivedPath
-              ? `Logged out account "${account.name}": browser profile archived. Re-login with xhs_add_account.`
-              : `Logged out account "${account.name}": session cleared (no on-disk profile to archive). Re-login with xhs_add_account.`,
-          },
-        ],
-      };
+        return {
+          content: [
+            {
+              type: 'text',
+              text: archivedPath
+                ? `Logged out account "${account.name}": browser profile archived. Re-login with xhs_add_account.`
+                : `Logged out account "${account.name}": session cleared (no on-disk profile to archive). Re-login with xhs_add_account.`,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Failed to log out account "${account.name}": ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      } finally {
+        release?.();
+      }
     }
 
     default:

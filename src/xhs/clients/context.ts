@@ -237,6 +237,7 @@ export class BrowserContextManager {
    *
    * @deprecated 旧实现仅 `context.clearCookies()`，profile 内 IndexedDB 等仍保留。
    * 现改为归档整个 profile 目录；请勿再依赖「只清 Cookie」语义。
+   * 调用方须已持有该账号锁（或经 `xhs_delete_cookies`），避免与并发 getClient 竞态。
    */
   async deleteCookies(): Promise<{ success: boolean; archivedPath?: string | null; error?: string }> {
     try {
