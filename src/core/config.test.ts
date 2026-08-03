@@ -8,7 +8,7 @@
 // 先加载 logger.js，规避 config.ts↔proxy.ts↔logger.ts 既有循环依赖在孤立测试入口下的 TDZ
 import './logger.js';
 import { describe, it, expect } from 'bun:test';
-import { parseXsecMode } from './config.js';
+import { parseXsecMode, parseTypingMode } from './config.js';
 import { config } from './config.js';
 
 describe('A3 xsecToken 绑定默认模式收紧为 block', () => {
@@ -32,6 +32,32 @@ describe('A3 xsecToken 绑定默认模式收紧为 block', () => {
     // 本仓库运行测试时不会设置该 env（见下方断言防御性检查），因此当前单例应体现新默认值。
     if (process.env.XHS_MCP_AD_XSEC_MODE === undefined) {
       expect(config.antiDetect.xsecTokenBinding.mode).toBe('block');
+    }
+  });
+});
+
+describe('B5 typing.mode', () => {
+  it('默认 direct', () => {
+    expect(parseTypingMode(undefined, 'direct')).toBe('direct');
+  });
+
+  it('接受 ime / composition 别名', () => {
+    expect(parseTypingMode('ime', 'direct')).toBe('ime');
+    expect(parseTypingMode('composition', 'direct')).toBe('ime');
+  });
+
+  it('接受 codepoint / keyboard 别名为 direct', () => {
+    expect(parseTypingMode('codepoint', 'direct')).toBe('direct');
+    expect(parseTypingMode('keyboard', 'direct')).toBe('direct');
+  });
+
+  it('非法值回退默认', () => {
+    expect(parseTypingMode('bogus', 'direct')).toBe('direct');
+  });
+
+  it('当前 config 默认 typing.mode 为 direct（未设 env 时）', () => {
+    if (process.env.XHS_MCP_AD_TYPING_MODE === undefined) {
+      expect(config.antiDetect.typing.mode).toBe('direct');
     }
   });
 });

@@ -46,6 +46,7 @@
 #### P0-4 中文输入无 IME composition
 
 - `typeLikeHuman` 按码点 `keyboard.type`；注释已承认无 composition。
+- **B5 结论**：`typing.mode`（`XHS_MCP_AD_TYPING_MODE`）成文；完整 IME composition 为 **wontfix**（见 [B5-IME.md](./B5-IME.md)）。缓解：revise + 重尾间隔。
 
 #### P0-5 Explore 硬跳过全部视频
 
@@ -99,7 +100,7 @@
 1. **Interact 会话化（直链保留）**：重尾 dwell → ≥1 次阅读滚动 → 轨迹 click（`steps≥N`）→ 动作后停留；批处理可 `keepPage`。验收**禁止**使用「<1s 关页」条款。
 2. **轨迹点击原语**：多步 move + hover；`force` 仅 fallback + 审计。
 3. **`heavyTailDelay`**：只替换行为等待（打字、阅读、滚动步间、Interact dwell）；**不要**默改全局 `jitteredSleep`（发布轮询等功能等待保留窄带）。
-4. **IME**：Phase1 策略成文；Phase2 或 `wontfix`。
+4. **IME**：Phase1 策略成文；Phase2 **wontfix**（见 [B5-IME.md](./B5-IME.md)）。
 5. **Explore 视频**：按相对 feed 视频占比设接触率，不能只「打开即关凑统计」。
 
 ### P1
