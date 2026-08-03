@@ -44,11 +44,12 @@
 
 ### Wave B — 行为真实性
 
-1. Interact 会话化：重尾 dwell + 阅读滚动 + Fitts 多步轨迹 + 动作后停留（**「从 feed 点入」列为 Wave D / 可选，本 Wave 保留直链但补齐页内行为**）。
+1. Interact 会话化：重尾 dwell + 阅读滚动 + Fitts 多步轨迹 + 动作后停留（**「从 feed 点入」列为 Wave D**）。
 2. 统一轨迹点击原语；`force: true` 仅 fallback。
-3. 新增 `heavyTailDelay` **仅替换行为等待**；勿默改全局 `jitteredSleep`（发布轮询等功能等待除外）；`rateLimitedSleep` 保 `≥ base`。
+3. 新增 `heavyTailDelay` **仅替换行为等待**；勿默改全局 `jitteredSleep`；`rateLimitedSleep` 保 `≥ base`。
 4. Explore：独立滚动 preset + 视频短接触 + 评论 revise；Interact 评论/回复同样开 revise。
 5. 中文 IME：Phase1 策略成文；Phase2 实现或 `wontfix`。
+6. **B7**：`navigateWithRetry` 重尾重试；`alreadyDone` 短探测会话治理。
 
 ### Wave C — 指纹与环境
 
@@ -57,6 +58,7 @@
 3. 账号级 timezone/locale/geolocation + `grantPermissions` 与代理属地对齐（与 A1 捆绑验收）。
 4. 发布配图走 `APIRequestContext`，**对齐** `downloadFile` 的 Referer/Sec-Fetch。
 5. 登出语义改为归档 profile。
+6. **C8**：代理下 WebRTC/ICE 泄漏缓解（与 A1 捆绑）；**C7**：修正 CLAUDE.md 与 live config。
 
 ---
 

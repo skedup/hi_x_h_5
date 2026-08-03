@@ -13,7 +13,7 @@
 |------|------|
 | MCP 契约 | 新增约束用 env；迁移期可 `warn`；默认收紧须 CHANGELOG |
 | 门禁分轨 | liveness / headlessWriteGate 保持；不作「拟人完成」指标 |
-| **A1 ↔ C3 捆绑** | A1 强制 proxy 后，C3（timezone/locale/geo）不得长期滞后，否则异地 IP + 宿主时区更像农场 |
+| **A1 ↔ C3+C8 捆绑** | A1 强制 proxy 后，C3（timezone/locale/geo）与 C8（WebRTC）不得长期滞后 |
 | **键空间先冻结再持久化** | A5 必须在 A2+A3+A4 之后 |
 | 禁止错误自洽 | 勿在无属地校验时瞎填 geolocation/locale |
 | 测试 | 守卫/多账号补测；行为原语测分布与轨迹 hook |
@@ -154,7 +154,19 @@
 | **做什么** | reply/likeComment → `rateLimitedSleep`；搜索 DELAYS 重尾；**`findCommentElement` 固定 800ms**；**explore modal 写间隔**加 rate limit；Interact 评论/回复 revise（呼应 P1-4）。 |
 | **DoD** | 生产路径无「唯一节拍」300/500/800 |
 
-**Wave B 出口**：Interact 有 dwell+滚动+多步轨迹；行为延迟重尾且功能等待未误伤；Explore 视频接触率可检；IME 策略成文；feed 点入未承诺为本 Wave。
+### B7 · 导航重试与 alreadyDone 短会话
+
+| 字段 | 内容 |
+|------|------|
+| **状态** | todo |
+| **优先级** | P1 |
+| **依据** | 02 P1-11 / P1-12（review 增补） |
+| **做什么** | ① `navigateWithRetry`：失败重载改为重尾间隔 + 上限；禁止 3–5s 均匀连刷同一 URL 成节拍器。② `alreadyDone`（已赞/已藏）：可选短 dwell 后关，或跳过 goto（若调用方能先知状态）；避免「直链探活 → 秒读 state → 关」纯探测会话图。③ 日志区分 `skipped_already_done` vs 真实互动会话。 |
+| **触及** | `utils/index.ts` `navigateWithRetry` · `interact.ts` |
+| **DoD** | 重试间隔分布可检非均匀；alreadyDone 路径有明确策略（跳过或短会话）且单测/日志可区分 |
+| **回滚** | env 关新策略 |
+
+**Wave B 出口**：Interact 有 dwell+滚动+多步轨迹；行为延迟重尾且功能等待未误伤；Explore 视频接触率可检；IME 策略成文；重试/alreadyDone 不再形成均匀探测指纹；feed 点入未承诺为本 Wave。
 
 ---
 
@@ -218,9 +230,34 @@
 |------|------|
 | **状态** | todo |
 | **优先级** | P2 |
-| **做什么** | 删 stealth.js；修正 CLAUDE.md headless 默认与登录描述；环境变量表同步本 plan 全部开关。 |
+| **做什么** | 删 stealth.js；修正 **CLAUDE.md**（headless 默认、登录是否 headless、去掉不存在的 `stealth.js`）；README/环境变量表同步本 plan 全部开关（含 B7/C8）。 |
+| **DoD** | CLAUDE.md 与 `config.ts` 默认值一致；无虚假 stealth 描述 |
 
-**Wave C 出口**：args 干净+容器说明；登录 headful；A1+C3 自洽；配图头一致；登出归档；WebRTC 风险有文档或缓解。
+### C8 · WebRTC / ICE 本地 IP 泄漏缓解
+
+| 字段 | 内容 |
+|------|------|
+| **状态** | todo |
+| **优先级** | P0/P1 |
+| **依据** | 01 P0-4（指纹 review） |
+| **做什么** | ① A1 启用 proxy 时，评估并落地 WebRTC 抑制（如 Chromium 策略 / `webrtc.ip_handling` / 权限或 init 策略——须不引入可观测异常指纹）。② 自检脚本或手工清单：代理下 `RTCPeerConnection` ICE 候选是否仍暴露宿主/机房 IP。③ 若技术不可行：`wontfix` + 威胁模型（仅信任不泄漏的代理类型），写入 01。④ 与 A1 联调：有 proxy 无 WebRTC 缓解不得标 A1 完全 mitigated。 |
+| **触及** | `context.ts` / launch args 或 context 选项 · 文档 · 可选 scripts |
+| **DoD** | 代理会话下 ICE 无宿主公网/局域网泄漏，或书面 `wontfix`；自检步骤进 01 §5 |
+| **回滚** | env 关闭抑制（默认开当 A1 proxy 启用时） |
+| **依赖** | 与 A1 捆绑验收；可与 C3 同 PR |
+
+**Wave C 出口**：args 干净+容器说明；登录 headful；A1+C3 自洽；配图头一致；登出归档；**WebRTC 已缓解或书面接受**；CLAUDE.md 与 live config 一致。
+
+---
+
+## Wave D — 延后项（本轮不实施，仅挂账）
+
+| ID | 项 | 说明 |
+|----|-----|------|
+| D1 | Interact `entry: 'feed'\|'direct'` 有机点入 | 从 explore/search 列表点入替代直链 goto |
+| D2 | 评论/媒体近邻去重（embedding / pHash） | A4 精确 SHA 之后 |
+| D3 | 同 /24 代理共现检测 | 需出口 IP 解析；当前不做 |
+| D4 | 容器/云手机级硬件指纹隔离 | 基建 |
 
 ---
 
@@ -230,13 +267,13 @@
 A1 ──┬── A2（含 explore 键对齐）──┐
      ├── A3                         ├──► A5（键冻结后）
      └── A4 ───────────────────────┘
-A1 完成 → 尽快 C3（捆绑），可与 B 并行启动但不得滞后上量
+A1 完成 → 尽快 C3 + C8（捆绑），可与 B 并行但不得滞后上量
 
 B1 → B2 → B3
-B4 ∥ B2 后半；B5 Phase1 ∥ B1；B6 ∥ B4
+B4 ∥ B2 后半；B5 Phase1 ∥ B1；B6 ∥ B4；B7 ∥ B3
 
 C1/C2 ∥ B
-C3 after/with A1
+C3 + C8 after/with A1
 C4 · C5 · C6 · C7 相对独立
 ```
 
@@ -250,9 +287,9 @@ C4 · C5 · C6 · C7 相对独立
 | PR-B1 | B1 |
 | PR-B2 | B2 + B3（含最小重尾 dwell） |
 | PR-B3 | B4 + B6 |
-| PR-B4 | B5 |
+| PR-B4 | B5 + B7 |
 | PR-C1 | C1 + C2 + C7 |
-| PR-C2 | C3 + C4（A1 后） |
+| PR-C2 | C3 + C8 + C4（A1 后） |
 | PR-C3 | C5 + C6 |
 
 ---
@@ -267,20 +304,23 @@ C4 · C5 · C6 · C7 相对独立
 - [ ] Interact：dwell + 阅读滚动 + steps≥N 轨迹（非「&lt;1s」假 DoD）
 - [ ] 行为重尾；功能 `jitteredSleep` 未误伤；rateLimited ≥ base
 - [ ] Explore 视频接触率可检；explore 滚动 preset
+- [ ] `navigateWithRetry` / `alreadyDone` 无均匀探测指纹
 - [ ] 登录强制 headful（有图形时）；容器 no-sandbox 有文档
 - [ ] A1+C3 时区/languages 自洽；配图 Referer/Sec-Fetch 对齐
+- [ ] 代理下 WebRTC ICE 无宿主泄漏（或 `wontfix` 书面）
+- [ ] CLAUDE.md 与 config 默认一致、无 stealth.js 虚述
 - [ ] 01/02/03 对应 P0 标 mitigated
 
 ---
 
-## 7. 明确不在范围
+## 7. 明确不在本轮范围（见 Wave D）
 
 | 项 | 原因 |
 |----|------|
-| 容器/云手机硬件指纹 | 基建；代码层文档约束 |
-| 同 /24 代理检测 | 无实现；未进 DoD |
-| feed 有机点入 | Wave D |
-| embedding / pHash | Wave D |
+| 容器/云手机硬件指纹 | Wave D4 / 基建 |
+| 同 /24 代理检测 | Wave D3 |
+| feed 有机点入 | Wave D1 |
+| embedding / pHash | Wave D2 |
 | 换驱动 / 重写 MCP | 保持 patchright |
 
 ---
@@ -289,6 +329,6 @@ C4 · C5 · C6 · C7 相对独立
 
 1. 项状态改 `doing`，分支如 `feat/blue-a2-dedup-keys`。  
 2. 合入后 `done` + 蓝军文档 `mitigated`。  
-3. `wontfix` 须产品确认（IME / 同机指纹）。  
+3. `wontfix` 须产品确认（IME / 同机指纹 / WebRTC）。  
 4. **未完成 A1–A5（含键统一）前禁止扩大 `accounts:all` 写流量。**  
-5. **未完成 C3 前谨慎扩大异地代理多账号写。**
+5. **未完成 C3+C8 前谨慎扩大异地代理多账号写。**

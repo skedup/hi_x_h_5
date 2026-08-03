@@ -90,8 +90,8 @@
 
 1. 收紧 `BROWSER_ARGS`：默认去掉 no-sandbox / deny-permission-prompts；删重复的 AutomationControlled 行；容器用 env 开 no-sandbox。
 2. 登录强制 headful + `viewport: null`；无 DISPLAY 用 Xvfb 或 `ALLOW_HEADLESS_LOGIN`。
-3. WebRTC 抑制或代理环境下的泄漏自检；同机共现工程约束。
-4. **A1 与 C3 捆绑**：不得长期「有 proxy 无时区」。
+3. **C8**：WebRTC/ICE 抑制或书面 `wontfix` + 自检清单；同机共现工程约束。
+4. **A1 与 C3+C8 捆绑**：不得长期「有 proxy 无时区 / 未处理 WebRTC」。
 
 ### P1
 

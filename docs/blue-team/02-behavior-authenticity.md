@@ -108,6 +108,7 @@
 7. Explore + Interact 评论/回复开 revise；标签同理。
 8. wheel 逼近可见；B6 纳入固定 800ms + explore 写间隔 `rateLimitedSleep`。
 9. AI fallback 跳过；打开率改冷却/衰减。
+10. **B7**：`navigateWithRetry` 重尾重试；`alreadyDone` 避免纯探测会话（见 plan）。
 
 ### 明确延后（Wave D）
 
