@@ -492,6 +492,41 @@ describe('A5 Guard 持久化（杀进程后仍拦截）', () => {
     expect((await g2.beforeAction({ accountId: B, action: 'like', dedupKey: 'like:note:ttl' })).allow).toBe(true);
   });
 
+  it('同进程内 TTL 到期后惰性过期放行（不依赖重启）', async () => {
+    const store = makeMemoryPersistStore();
+    const cfg = makeCfg({
+      persist: { enabled: true, ttlMs: 1 },
+      quota: { enabled: false, cooldownMsAfterAction: 0 },
+    });
+    const g = new CooccurrenceGuard(cfg);
+    g.attachPersistence(store);
+    const r = await g.beforeAction({ accountId: A, action: 'like', dedupKey: 'like:note:live-ttl' });
+    await g.afterAction({ accountId: A, action: 'like', success: true, reservation: r.reservation });
+    expect((await g.beforeAction({ accountId: B, action: 'like', dedupKey: 'like:note:live-ttl' })).allow).toBe(
+      false,
+    );
+    await new Promise((res) => setTimeout(res, 5));
+    expect((await g.beforeAction({ accountId: B, action: 'like', dedupKey: 'like:note:live-ttl' })).allow).toBe(
+      true,
+    );
+  });
+
+  it('reset 在持久化开启时从库回填 committed，不留下拦截空洞', async () => {
+    const store = makeMemoryPersistStore();
+    const cfg = makeCfg({
+      persist: { enabled: true, ttlMs: 86_400_000 },
+      quota: { enabled: false, cooldownMsAfterAction: 0 },
+    });
+    const g = new CooccurrenceGuard(cfg);
+    g.attachPersistence(store);
+    const r = await g.beforeAction({ accountId: A, action: 'like', dedupKey: 'like:note:reset' });
+    await g.afterAction({ accountId: A, action: 'like', success: true, reservation: r.reservation });
+    g.reset(); // 应重新从 store 加载
+    const blocked = await g.beforeAction({ accountId: B, action: 'like', dedupKey: 'like:note:reset' });
+    expect(blocked.allow).toBe(false);
+    expect(blocked.reason).toBe('cross_account_dedup');
+  });
+
   it('persist.enabled=false 时不写库', async () => {
     const store = makeMemoryPersistStore();
     const cfg = makeCfg({
