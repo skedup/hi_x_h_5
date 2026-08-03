@@ -38,7 +38,7 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | ① 工具：`like:note:${noteId}` · `fav:note:${noteId}` · `like_c:${noteId}:${commentId}`。② **同步改 explore.ts**：弃用或别名映射 `explore:like:` → 同一前缀，使工具赞与 explore 赞互斥。③ unlike/unfavorite 与 like **共用**目标键（防踩踏）。④ 跨路径单测必过。 |
 | **触及** | `tools/interaction.ts` · `explore.ts` · 测试 |
@@ -49,19 +49,20 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
-| **做什么** | 默认 `mode='block'`（breaking，CHANGELOG）；`getFeeds` 后 `bindXsecSource`；确认 search/list_feeds 不回退。 |
-| **DoD** | B 用 A 的 token 写 → 拒绝；explore 提取即 committed |
+| **做什么** | 默认 `mode='block'`（**breaking**：仓库无 CHANGELOG.md，已在 `config.ts` 内联注释说明并在本行记录）；`getFeeds` 后立即 `bindXsecSource`（`bindFeedXsecTokens` 辅助函数，`src/xhs/clients/services/explore.ts`）；确认 search/list_feeds（`tools/content.ts`）绑定逻辑未回退。 |
+| **DoD** | B 用 A 的 token 写 → 拒绝（block 模式默认生效）；explore 提取 feed 即 committed（早于点赞/评论） |
 | **回滚** | `XHS_MCP_AD_XSEC_MODE=warn` |
 
 ### A4 · 去掉固定 fallback + 正文键对齐
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | ① `generateComment` 失败 → 无评论 / 调用方跳过；**禁止**「很棒的分享！」。② `selectLikeTarget` 失败 → `target: 'none'`。③ explore 评论 `dedupKey` 至少 `comment_text:${sha256OfText(content)}`（可双键含 noteId），与 `interaction.ts` **同一前缀**。 |
+| **触及** | `core/explore-ai.ts` · `xhs/clients/services/explore.ts` · `core/explore-ai.test.ts` · `core/antidetect.test.ts` |
 | **DoD** | Gemini mock 失败不增 `notesCommented`；同文案跨帖第二账号被拦（explore↔工具） |
 | **回滚** | 无——禁止恢复固定句 |
 
@@ -80,7 +81,7 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P1 |
 | **依据** | 03 整改「单次调用同 note」——非 P1-6 波次 |
 | **做什么** | `accountNames.length>1` 且互动类带同一 `noteId` → 整批拒绝。 |

@@ -16,7 +16,7 @@ import {
   NoteBrief,
   AccountInfo,
 } from '../../../core/explore-ai.js';
-import { getCooccurrenceGuard } from '../../../core/antidetect.js';
+import { getCooccurrenceGuard, sha256OfText } from '../../../core/antidetect.js';
 import { isWriteAllowed, getLiveness } from '../../../core/liveness.js';
 import { EXPLORE_SELECTORS } from '../constants.js';
 
@@ -41,7 +41,7 @@ export interface ExploreParams {
 /**
  * Feed 数据结构（从 __INITIAL_STATE__ 读取）
  */
-interface FeedItem {
+export interface FeedItem {
   id: string;
   xsecToken: string;
   noteCard: {
@@ -75,6 +75,19 @@ interface NoteDetail {
   title: string;
   desc: string;
   comments: CommentInfo[];
+}
+
+/**
+ * A3（blue-team）：将 getFeeds 提取到的每个 feed 的 xsecToken 绑定到实际执行提取的账号（fail-closed）。
+ * 与 tools/content.ts 中 search / list_feeds 的绑定模式一致——explore 提取 feed 即视为该账号
+ * 首个占用来源，避免后续任何账号用该 token 发起写操作时无法追溯来源账号。
+ * 抽成独立函数便于不依赖真实 Page/DOM 的单测覆盖。
+ */
+export function bindFeedXsecTokens(feeds: FeedItem[], accountId: string): void {
+  const guard = getCooccurrenceGuard();
+  for (const feed of feeds) {
+    if (feed?.xsecToken) guard.bindXsecSource(feed.xsecToken, accountId);
+  }
 }
 
 /**
@@ -251,6 +264,9 @@ export class ExploreService {
 
         // 获取当前 feeds，过滤已看过的（用于统计）
         const feeds = await this.getFeeds(page);
+        // A3（blue-team）：提取 feed 即绑定 xsecToken 来源账号，不等到真正点赞/评论才 bind，
+        // 确保「探索式提取」与 search/list_feeds 一致地 fail-closed 占用来源。
+        bindFeedXsecTokens(feeds, accountId);
         const newFeeds = feeds.filter((f) => {
           if (seenInSession.has(f.id)) return false;
           if (f.noteCard.type === 'video') return false; // 跳过视频
@@ -380,10 +396,12 @@ export class ExploreService {
 
                   if (likeTarget.target === 'post') {
                     // R2-3：内部写操作经共现守卫（配额/去重/xsec/熔断），逐动作策略
+                    // A2：键空间与 tools/interaction.ts 的 xhs_like_feed 统一（like:note:${noteId}），
+                    // 使工具赞与 explore 赞跨路径互斥
                     const resv = await guard.beforeAction({
                       accountId,
                       action: 'like',
-                      dedupKey: `explore:like:${selectedFeed.id}`,
+                      dedupKey: `like:note:${selectedFeed.id}`,
                       xsecToken: selectedFeed.xsecToken,
                     });
                     if (!resv.allow) {
@@ -413,7 +431,7 @@ export class ExploreService {
                           accountId,
                           action: 'like',
                           success: liked,
-                          dedupKey: `explore:like:${selectedFeed.id}`,
+                          dedupKey: `like:note:${selectedFeed.id}`,
                           xsecToken: selectedFeed.xsecToken,
                           reservation: resv.reservation,
                         });
@@ -422,10 +440,11 @@ export class ExploreService {
                   } else if (likeTarget.target.startsWith('comment:')) {
                     // 点赞评论
                     const commentId = likeTarget.target.replace('comment:', '');
+                    // A2：键空间与 tools/interaction.ts 的 xhs_like_comment 统一（like_c:${noteId}:${commentId}）
                     const resv = await guard.beforeAction({
                       accountId,
                       action: 'like_comment',
-                      dedupKey: `explore:like_comment:${selectedFeed.id}:${commentId}`,
+                      dedupKey: `like_c:${selectedFeed.id}:${commentId}`,
                       xsecToken: selectedFeed.xsecToken,
                     });
                     if (!resv.allow) {
@@ -454,7 +473,7 @@ export class ExploreService {
                           accountId,
                           action: 'like_comment',
                           success: liked,
-                          dedupKey: `explore:like_comment:${selectedFeed.id}:${commentId}`,
+                          dedupKey: `like_c:${selectedFeed.id}:${commentId}`,
                           xsecToken: selectedFeed.xsecToken,
                           reservation: resv.reservation,
                         });
@@ -474,42 +493,52 @@ export class ExploreService {
                     log.warn('explore 评论前门禁未过，跳过', { noteId: selectedFeed.id, reason: canComment.reason });
                   } else {
                   const commentResult = await generateComment(accountInfo, noteDetail.title, noteDetail.desc);
-                  // R2-3：内部写操作经共现守卫（配额/去重/xsec/熔断）
-                  const resv = await guard.beforeAction({
-                    accountId,
-                    action: 'comment',
-                    dedupKey: `explore:comment:${selectedFeed.id}`,
-                    xsecToken: selectedFeed.xsecToken,
-                  });
-                  if (!resv.allow) {
-                    log.warn('explore 内部评论被共现守卫拦截', { noteId: selectedFeed.id, reason: resv.reason });
+                  // 蓝军 A4：AI 生成失败/解析失败时 skip=true，禁止用固定兜底文案发评论，
+                  // 也不得进入共现守卫预占或计入 notesCommented。
+                  if (commentResult.skip || !commentResult.comment) {
+                    log.debug('AI 未生成有效评论，跳过本次评论', { noteId: selectedFeed.id });
                   } else {
-                    // R4 P1 1019834745：写前再次检查设备在场（覆盖 generateComment 异步窗口）
-                    const canWrite = this.assertCanWrite(abortController);
-                    if (!canWrite.ok) {
-                      await guard.cancelReservation(resv.reservation, accountId);
-                      log.warn('explore 评论前写门禁未过，回滚 reservation 跳过', { noteId: selectedFeed.id, reason: canWrite.reason });
+                    const commentText = commentResult.comment;
+                    // 蓝军 A4：与 tools/interaction.ts 的 xhs_post_comment 使用同一前缀的正文哈希键，
+                    // 使 explore 内部评论与工具评论对相同文案跨账号互斥。
+                    const dedupKey = `comment_text:${sha256OfText(commentText)}`;
+                    // R2-3：内部写操作经共现守卫（配额/去重/xsec/熔断）
+                    const resv = await guard.beforeAction({
+                      accountId,
+                      action: 'comment',
+                      dedupKey,
+                      xsecToken: selectedFeed.xsecToken,
+                    });
+                    if (!resv.allow) {
+                      log.warn('explore 内部评论被共现守卫拦截', { noteId: selectedFeed.id, reason: resv.reason });
                     } else {
-                      const commented = await this.commentInModal(page, commentResult.comment);
-                      if (commented) {
-                        db.explore.logAction(sessionId, {
-                          noteId: selectedFeed.id,
-                          noteTitle: selectedFeed.noteCard.displayTitle,
-                          action: 'commented',
-                          content: commentResult.comment,
+                      // R4 P1 1019834745：写前再次检查设备在场（覆盖 generateComment 异步窗口）
+                      const canWrite = this.assertCanWrite(abortController);
+                      if (!canWrite.ok) {
+                        await guard.cancelReservation(resv.reservation, accountId);
+                        log.warn('explore 评论前写门禁未过，回滚 reservation 跳过', { noteId: selectedFeed.id, reason: canWrite.reason });
+                      } else {
+                        const commented = await this.commentInModal(page, commentText);
+                        if (commented) {
+                          db.explore.logAction(sessionId, {
+                            noteId: selectedFeed.id,
+                            noteTitle: selectedFeed.noteCard.displayTitle,
+                            action: 'commented',
+                            content: commentText,
+                          });
+                          notesCommented++;
+                          db.explore.markNoteExplored(accountId, selectedFeed.id, true);
+                          log.info('Commented on note', { noteId: selectedFeed.id, comment: commentText });
+                        }
+                        await guard.afterAction({
+                          accountId,
+                          action: 'comment',
+                          success: commented,
+                          dedupKey,
+                          xsecToken: selectedFeed.xsecToken,
+                          reservation: resv.reservation,
                         });
-                        notesCommented++;
-                        db.explore.markNoteExplored(accountId, selectedFeed.id, true);
-                        log.info('Commented on note', { noteId: selectedFeed.id, comment: commentResult.comment });
                       }
-                      await guard.afterAction({
-                        accountId,
-                        action: 'comment',
-                        success: commented,
-                        dedupKey: `explore:comment:${selectedFeed.id}`,
-                        xsecToken: selectedFeed.xsecToken,
-                        reservation: resv.reservation,
-                      });
                     }
                   }
                   }

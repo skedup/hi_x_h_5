@@ -39,9 +39,12 @@ export interface SelectNoteResult {
 
 /**
  * AI 生成评论的结果
+ * 解析失败或调用异常时 `skip: true`、`comment: null`，调用方必须跳过本次评论、
+ * 不得落库/计入成功路径（蓝军 A4：禁止用固定兜底文案掩盖失败）。
  */
 export interface GenerateCommentResult {
-  comment: string;
+  comment: string | null;
+  skip: boolean;
 }
 
 /**
@@ -189,16 +192,17 @@ export async function generateComment(
     const text = response.text || '';
     log.debug('AI comment response', { text: text.slice(0, 200) });
 
-    const result = safeParseJson<GenerateCommentResult>(text);
+    const result = safeParseJson<{ comment?: string }>(text);
     if (result && result.comment) {
-      return result;
+      return { comment: result.comment, skip: false };
     }
 
-    // 如果解析失败，返回一个默认评论
-    return { comment: '很棒的分享！' };
+    // 解析失败：不返回固定兜底文案，调用方应跳过本次评论（蓝军 A4）
+    log.warn('AI 评论响应解析失败，跳过本次评论');
+    return { comment: null, skip: true };
   } catch (error) {
     log.error('AI generate comment failed', { error });
-    return { comment: '很棒的分享！' };
+    return { comment: null, skip: true };
   }
 }
 
@@ -257,10 +261,10 @@ export async function selectLikeTarget(
       return result;
     }
 
-    // 默认点赞帖子
-    return { target: 'post', reason: 'AI 响应解析失败，默认点赞帖子' };
+    // 解析失败：不默认点赞帖子，视为不点赞（蓝军 A4）
+    return { target: 'none', reason: 'AI 响应解析失败，跳过点赞' };
   } catch (error) {
     log.error('AI select like target failed', { error });
-    return { target: 'post', reason: `AI 调用失败: ${error}` };
+    return { target: 'none', reason: `AI 调用失败: ${error}` };
   }
 }

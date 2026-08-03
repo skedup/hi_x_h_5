@@ -310,6 +310,11 @@ export async function executeWithMultipleAccounts<T>(
     xsecToken?: string;
     /** 动作能力分级（蓝军 #3），透传至 executeWithAccount */
     capability?: ToolCapability;
+    /**
+     * A6：本次互动的目标 noteId。若批次账号数 > 1（含 accounts:'all' 解析后），
+     * 整批拒绝执行（不落任何账号），避免单次调用把同一篇笔记的写操作打到多个账号形成强关联特征。
+     */
+    noteId?: string;
   },
 ): Promise<OperationResult<T>[]> {
   // 确定要使用的账户列表
@@ -361,6 +366,19 @@ export async function executeWithMultipleAccounts<T>(
   }
 
   const cap: ToolCapability = options?.capability ?? 'write';
+
+  // A6：拒绝单次同 note 多账号写——同一 noteId 且批次账号数 > 1，整批拒绝，不执行任何账号
+  if (cap === 'write' && options?.noteId && accountNames.length > 1) {
+    log.warn('拒绝单次同 note 多账号写', { noteId: options.noteId, accounts: accountNames, action });
+    return accountNames.map((name) => ({
+      account: pool.getAccount(name)?.name ?? name,
+      success: false,
+      skipped: true,
+      error: `multi_account_same_note_rejected:${options.noteId}`,
+      durationMs: 0,
+    }));
+  }
+
   // A1：多账号写批次出口硬约束（单账号写不强制；read/control 不检查）
   const proxySkipByName = new Map<string, string>();
   if (cap === 'write' && accountNames.length > 1) {

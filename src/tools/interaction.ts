@@ -242,7 +242,14 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
 
           return result;
         },
-        { logParams: { noteId: params.noteId, unlike: params.unlike }, xsecToken: params.xsecToken },
+        {
+          logParams: { noteId: params.noteId, unlike: params.unlike },
+          // A2：like/unlike 共用同一目标键，防止两者互相踩踏绕过去重
+          dedupKey: `like:note:${params.noteId}`,
+          xsecToken: params.xsecToken,
+          // A6：同一 noteId 禁止单次调用打到多个账号
+          noteId: params.noteId,
+        },
       );
 
       if (results.length === 1) {
@@ -290,7 +297,14 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
 
           return result;
         },
-        { logParams: { noteId: params.noteId, unfavorite: params.unfavorite }, xsecToken: params.xsecToken },
+        {
+          logParams: { noteId: params.noteId, unfavorite: params.unfavorite },
+          // A2：favorite/unfavorite 共用同一目标键
+          dedupKey: `fav:note:${params.noteId}`,
+          xsecToken: params.xsecToken,
+          // A6：同一 noteId 禁止单次调用打到多个账号
+          noteId: params.noteId,
+        },
       );
 
       if (results.length === 1) {
@@ -345,6 +359,8 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           // C2.4 跨账号相同评论正文硬拦截
           dedupKey: `comment_text:${sha256OfText(params.content)}`,
           xsecToken: params.xsecToken,
+          // A6：同一 noteId 禁止单次调用打到多个账号
+          noteId: params.noteId,
         },
       );
 
@@ -446,7 +462,14 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
 
           return result;
         },
-        { logParams: { noteId: params.noteId, commentId: params.commentId, unlike: params.unlike }, xsecToken: params.xsecToken },
+        {
+          logParams: { noteId: params.noteId, commentId: params.commentId, unlike: params.unlike },
+          // A2：like_comment/unlike_comment 共用同一目标键（键空间统一）
+          dedupKey: `like_c:${params.noteId}:${params.commentId}`,
+          xsecToken: params.xsecToken,
+          // A6：同一 noteId 禁止单次调用打到多个账号
+          noteId: params.noteId,
+        },
       );
 
       if (results.length === 1) {

@@ -359,3 +359,216 @@ describe('A1 多账号写代理门禁', () => {
     expect(results.every((r) => r.success)).toBe(true);
   });
 });
+
+describe('A2 互动目标 dedup + 键空间统一（跨路径互斥）', () => {
+  beforeAll(() => {
+    cfg.antiDetect.liveness.enabled = false;
+    cfg.antiDetect.headlessWriteGate.enabled = false;
+    cfg.antiDetect.quota.enabled = false;
+    cfg.antiDetect.cooccurrence.enabled = false;
+    cfg.antiDetect.proxyRequired.mode = 'off';
+    cfg.browser.headless = false;
+  });
+  beforeEach(() => getCooccurrenceGuard().reset());
+
+  function poolWith(accts: Array<{ id: string; name: string; status: string }>) {
+    const pool: any = {
+      getAccount: (key: string) => accts.find((a) => a.name === key || a.id === key) ?? null,
+      acquireLock: async () => () => {},
+      getClient: async () => ({ fake: true }),
+      touchAccount: () => {},
+      listAccounts: () => accts,
+    };
+    const db: any = { operations: { log: () => {} } };
+    return { pool: pool as unknown as AccountPool, db: db as unknown as XhsDatabase };
+  }
+
+  it('账号 A explore 风格 like:note:X 提交后，账号 B 工具 like 同键被 cross_account_dedup 拦截', async () => {
+    const guard = getCooccurrenceGuard();
+    // 模拟 explore.ts 内部写路径：直接调用 guard（同进程内共享同一守卫单例）
+    const resv = await guard.beforeAction({ accountId: 'acc-A', action: 'like', dedupKey: 'like:note:X' });
+    expect(resv.allow).toBe(true);
+    await guard.afterAction({
+      accountId: 'acc-A',
+      action: 'like',
+      success: true,
+      dedupKey: 'like:note:X',
+      reservation: resv.reservation,
+    });
+
+    // 模拟 tools/interaction.ts 的 xhs_like_feed 工具路径：走 executeWithAccount，
+    // dedupKey 与 explore 侧统一为 like:note:${noteId}
+    const accts = [{ id: 'B', name: 'acc-B', status: 'active' }];
+    const { pool, db } = poolWith(accts);
+    const res = await executeWithAccount(pool, db, 'acc-B', 'like', async () => ({ success: true }), {
+      capability: 'write',
+      dedupKey: 'like:note:X',
+    });
+    expect(res.success).toBe(false);
+    expect(res.skipped).toBe(true);
+    expect(res.error).toBe('cross_account_dedup');
+  });
+
+  it('like_c 键空间统一：explore 内部点赞评论提交后，工具 like_comment 同键跨账号被拦截', async () => {
+    const guard = getCooccurrenceGuard();
+    const resv = await guard.beforeAction({
+      accountId: 'acc-A',
+      action: 'like_comment',
+      dedupKey: 'like_c:noteX:commentY',
+    });
+    expect(resv.allow).toBe(true);
+    await guard.afterAction({
+      accountId: 'acc-A',
+      action: 'like_comment',
+      success: true,
+      dedupKey: 'like_c:noteX:commentY',
+      reservation: resv.reservation,
+    });
+
+    const accts = [{ id: 'B', name: 'acc-B', status: 'active' }];
+    const { pool, db } = poolWith(accts);
+    const res = await executeWithAccount(pool, db, 'acc-B', 'like_comment', async () => ({ success: true }), {
+      capability: 'write',
+      dedupKey: 'like_c:noteX:commentY',
+    });
+    expect(res.success).toBe(false);
+    expect(res.skipped).toBe(true);
+    expect(res.error).toBe('cross_account_dedup');
+  });
+
+  it('like/unlike 共用同一目标键：unlike 使用与 like 相同的 dedupKey 时同样受跨账号去重约束', async () => {
+    const guard = getCooccurrenceGuard();
+    const resv = await guard.beforeAction({ accountId: 'acc-A', action: 'like', dedupKey: 'like:note:Y' });
+    await guard.afterAction({
+      accountId: 'acc-A',
+      action: 'like',
+      success: true,
+      dedupKey: 'like:note:Y',
+      reservation: resv.reservation,
+    });
+
+    // 账号 B 尝试对同一 noteId 的 unlike 操作（沿用相同 dedupKey）应同样被拦截
+    const accts = [{ id: 'B', name: 'acc-B', status: 'active' }];
+    const { pool, db } = poolWith(accts);
+    const res = await executeWithAccount(pool, db, 'acc-B', 'unlike', async () => ({ success: true }), {
+      capability: 'write',
+      dedupKey: 'like:note:Y',
+    });
+    expect(res.success).toBe(false);
+    expect(res.skipped).toBe(true);
+    expect(res.error).toBe('cross_account_dedup');
+  });
+});
+
+describe('A6 拒绝单次同 note 多账号写', () => {
+  beforeAll(() => {
+    cfg.antiDetect.liveness.enabled = false;
+    cfg.antiDetect.headlessWriteGate.enabled = false;
+    cfg.antiDetect.quota.enabled = false;
+    cfg.antiDetect.cooccurrence.enabled = false;
+    cfg.antiDetect.proxyRequired.mode = 'off';
+    cfg.browser.headless = false;
+  });
+  beforeEach(() => getCooccurrenceGuard().reset());
+
+  function poolWith(accts: Array<{ id: string; name: string; status: string }>) {
+    const pool: any = {
+      getAccount: (key: string) => accts.find((a) => a.name === key || a.id === key) ?? null,
+      acquireLock: async () => () => {},
+      getClient: async () => ({ fake: true }),
+      touchAccount: () => {},
+      listAccounts: () => accts,
+    };
+    const db: any = { operations: { log: () => {} } };
+    return { pool: pool as unknown as AccountPool, db: db as unknown as XhsDatabase };
+  }
+
+  it('accounts 数组长度 > 1 且携带同一 noteId → 整批拒绝，不执行任何账号', async () => {
+    const accts = [
+      { id: '1', name: 'a', status: 'active' },
+      { id: '2', name: 'b', status: 'active' },
+    ];
+    const { pool, db } = poolWith(accts);
+    let ran = 0;
+    const results = await executeWithMultipleAccounts(
+      pool,
+      db,
+      { accounts: ['a', 'b'] },
+      'like',
+      async () => {
+        ran += 1;
+        return { success: true };
+      },
+      { capability: 'write', sequential: true, noteId: 'same-note' },
+    );
+    expect(ran).toBe(0);
+    expect(results).toHaveLength(2);
+    expect(results.every((r) => r.skipped && r.error === 'multi_account_same_note_rejected:same-note')).toBe(true);
+  });
+
+  it("accounts:'all' 解析后 > 1 账号且同一 noteId → 同样整批拒绝", async () => {
+    const accts = [
+      { id: '1', name: 'a', status: 'active' },
+      { id: '2', name: 'b', status: 'active' },
+      { id: '3', name: 'c', status: 'suspended' },
+    ];
+    const { pool, db } = poolWith(accts);
+    let ran = 0;
+    const results = await executeWithMultipleAccounts(
+      pool,
+      db,
+      { accounts: 'all' },
+      'favorite',
+      async () => {
+        ran += 1;
+        return { success: true };
+      },
+      { capability: 'write', sequential: true, noteId: 'note-all' },
+    );
+    expect(ran).toBe(0);
+    // 'all' 仅解析活跃账号（a、b），不含 suspended 的 c
+    expect(results).toHaveLength(2);
+    expect(results.every((r) => r.error === 'multi_account_same_note_rejected:note-all')).toBe(true);
+  });
+
+  it('单账号（含数组长度为 1）携带 noteId 不受影响，正常执行', async () => {
+    const accts = [{ id: '1', name: 'a', status: 'active' }];
+    const { pool, db } = poolWith(accts);
+    let ran = 0;
+    const results = await executeWithMultipleAccounts(
+      pool,
+      db,
+      { accounts: ['a'] },
+      'like',
+      async () => {
+        ran += 1;
+        return { success: true };
+      },
+      { capability: 'write', noteId: 'solo-note' },
+    );
+    expect(ran).toBe(1);
+    expect(results[0].success).toBe(true);
+  });
+
+  it('未提供 noteId 时，多账号批次不受 A6 影响（仅其他门禁生效）', async () => {
+    const accts = [
+      { id: '1', name: 'a', status: 'active' },
+      { id: '2', name: 'b', status: 'active' },
+    ];
+    const { pool, db } = poolWith(accts);
+    let ran = 0;
+    const results = await executeWithMultipleAccounts(
+      pool,
+      db,
+      { accounts: ['a', 'b'] },
+      'like',
+      async () => {
+        ran += 1;
+        return { success: true };
+      },
+      { capability: 'write', sequential: true },
+    );
+    expect(ran).toBe(2);
+    expect(results.every((r) => r.success)).toBe(true);
+  });
+});
