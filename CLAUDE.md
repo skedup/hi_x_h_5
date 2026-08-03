@@ -248,6 +248,10 @@ All configuration can be controlled via environment variables:
 | `XHS_MCP_AD_HEAVY_TAIL` | `true` | B1 行为重尾延迟；`false` 退回窄带均匀；见 `docs/blue-team/B1-CALL-SITES.md` |
 | `XHS_MCP_AD_TRAJECTORY` | `true` | B2 指针轨迹点击；`false` 退回直点 |
 | `XHS_MCP_AD_INTERACT_SESSION` | `true` | B3 Interact 会话化；`false` 跳过入页阅读/滚动与加长后停留；见 `docs/blue-team/B3-CALL-SITES.md` |
+| `XHS_MCP_AD_EXPLORE_ALLOW_VIDEO` | `true` | B4 Explore 视频接触；`false` 硬跳过视频（旧行为）；见 `docs/blue-team/B4-CALL-SITES.md` |
+| `XHS_MCP_AD_NAV_RETRY_HEAVY_TAIL` | `true` | B7 导航失败重试用重尾间隔；`false` 退回均匀 3–5s；见 `docs/blue-team/B7-CALL-SITES.md` |
+| `XHS_MCP_AD_ALREADY_DONE_SHORT` | `true` | B7 已赞/已藏等 alreadyDone 路径用短 post-stay；`false` 与真实互动相同；见 `docs/blue-team/B7-CALL-SITES.md` |
+| `XHS_MCP_AD_ALREADY_DONE_POST_STAY_MS` | `400` | B7 alreadyDone 短 post-stay 基准 ms |
 | `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com` | Gemini API base URL |
 | `GEMINI_API_KEY` | - | Gemini API key (for future AI features) |
 | `GEMINI_IMAGE_GENERATE_MODEL` | `gemini-3-pro-image` | Gemini image generation model |

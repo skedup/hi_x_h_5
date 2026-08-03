@@ -6,7 +6,7 @@
 
 import { Page } from 'patchright';
 import { XhsSearchItem, XhsSearchFilters } from '../../types.js';
-import { sleep, humanScroll, jitteredSleep, rateLimitedSleep } from '../../utils/index.js';
+import { humanScroll, jitteredSleep, rateLimitedSleep, heavyTailDelay, heavyTailDelayBetween } from '../../utils/index.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS, SEARCH_DEFAULTS, SCROLL_CONFIG, DELAYS, REQUEST_INTERVAL, SEARCH_FILTER_MAP } from '../constants.js';
 
@@ -141,7 +141,7 @@ export class SearchService {
             break;
           }
           // 额外等待一下再试
-          await sleep(DELAYS.SCROLL_EXTRA_BASE + Math.random() * DELAYS.SCROLL_EXTRA_RANDOM);
+          await heavyTailDelayBetween(DELAYS.SCROLL_EXTRA_BASE, DELAYS.SCROLL_EXTRA_BASE + DELAYS.SCROLL_EXTRA_RANDOM);
         } else {
           noNewDataCount = 0;
         }
@@ -182,7 +182,7 @@ export class SearchService {
     const filterBtn = await page.$('.filter-btn, .search-filter-btn, [class*="filter"]');
     if (filterBtn) {
       await filterBtn.click();
-      await sleep(DELAYS.FILTER_PANEL_OPEN);
+      await heavyTailDelay(DELAYS.FILTER_PANEL_OPEN, { minMs: 350, maxMs: 700 });
     }
 
     // 应用排序方式
@@ -191,7 +191,7 @@ export class SearchService {
       const sortOption = await page.$(`text="${sortText}"`);
       if (sortOption) {
         await sortOption.click();
-        await sleep(DELAYS.FILTER_CLICK);
+        await heavyTailDelay(DELAYS.FILTER_CLICK, { minMs: 180, maxMs: 420 });
       }
     }
 
@@ -201,7 +201,7 @@ export class SearchService {
       const typeOption = await page.$(`text="${typeText}"`);
       if (typeOption) {
         await typeOption.click();
-        await sleep(DELAYS.FILTER_CLICK);
+        await heavyTailDelay(DELAYS.FILTER_CLICK, { minMs: 180, maxMs: 420 });
       }
     }
 
@@ -211,7 +211,7 @@ export class SearchService {
       const timeOption = await page.$(`text="${timeText}"`);
       if (timeOption) {
         await timeOption.click();
-        await sleep(DELAYS.FILTER_CLICK);
+        await heavyTailDelay(DELAYS.FILTER_CLICK, { minMs: 180, maxMs: 420 });
       }
     }
 
@@ -221,7 +221,7 @@ export class SearchService {
       const scopeOption = await page.$(`text="${scopeText}"`);
       if (scopeOption) {
         await scopeOption.click();
-        await sleep(DELAYS.FILTER_CLICK);
+        await heavyTailDelay(DELAYS.FILTER_CLICK, { minMs: 180, maxMs: 420 });
       }
     }
   }

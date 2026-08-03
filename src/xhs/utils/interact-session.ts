@@ -68,16 +68,35 @@ export async function runInteractReadingPhase(page: Page): Promise<{
   return { enabled: true, preDwellMs, readScrollCount };
 }
 
+export interface InteractPostStayOptions {
+  /** B7：alreadyDone 路径使用短 post-stay，避免完整探测会话指纹 */
+  shortSession?: boolean;
+}
+
 /**
  * 动作后停留（重尾）。关闭会话化时返回 0（由调用方决定是否走短 B1 dwell）。
+ * `shortSession=true` 且 `alreadyDoneShort.enabled` 时用更短 dwell 并标记 skippedAlreadyDone。
  */
-export async function runInteractPostStay(): Promise<{
+export async function runInteractPostStay(
+  options: InteractPostStayOptions = {},
+): Promise<{
   enabled: boolean;
   postStayMs: number;
+  skippedAlreadyDone?: boolean;
 }> {
   const cfg = config.antiDetect.interactSession;
   if (!cfg?.enabled) {
     return { enabled: false, postStayMs: 0 };
+  }
+
+  const shortCfg = config.antiDetect.alreadyDoneShort;
+  if (options.shortSession && shortCfg?.enabled) {
+    const postBase = Math.max(1, shortCfg.postStayMs);
+    const postMin = Math.max(1, Math.round(postBase * 0.5));
+    const postMax = Math.max(postMin, Math.round(postBase * 1.5));
+    const postStayMs = sampleHeavyTailMs(postBase, { minMs: postMin, maxMs: postMax });
+    await sleep(postStayMs);
+    return { enabled: true, postStayMs, skippedAlreadyDone: true };
   }
 
   const postBase = Math.max(1, cfg.postStayMs);
@@ -85,7 +104,7 @@ export async function runInteractPostStay(): Promise<{
   const postMax = Math.max(postMin, Math.round(postBase * 2.5));
   const postStayMs = sampleHeavyTailMs(postBase, { minMs: postMin, maxMs: postMax });
   await sleep(postStayMs);
-  return { enabled: true, postStayMs };
+  return { enabled: true, postStayMs, skippedAlreadyDone: false };
 }
 
 /** 组装并记录会话 meta */
@@ -96,6 +115,7 @@ export function finalizeInteractSessionMeta(parts: {
   postStayMs: number;
   trajectorySteps: number | null;
   keepPage: boolean;
+  skippedAlreadyDone?: boolean;
 }): InteractSessionMeta {
   return recordInteractSessionMeta({
     enabled: parts.enabled,
@@ -104,5 +124,6 @@ export function finalizeInteractSessionMeta(parts: {
     postStayMs: parts.postStayMs,
     trajectorySteps: parts.trajectorySteps,
     keepPage: parts.keepPage,
+    skippedAlreadyDone: parts.skippedAlreadyDone,
   });
 }

@@ -22,10 +22,10 @@
 |-----|----------|------|
 | `jitteredSleep` | `publish.ts` 上传/发布轮询；`explore`/`auth`/`creator` 页就绪 ~2s；interact 提交确认 1–2s、页加载 | 功能等待 |
 | `rateLimitedSleep` | `interact`/`search`/`content` 的 `REQUEST_INTERVAL` | 限流安全下限 |
-| `sleep` 固定 | `interact.findCommentElement` 滚动探测间隔 | 探测节奏；B6 另案 |
+| `sleep` 固定 | ~~`interact.findCommentElement` 滚动探测间隔~~ | B6 已迁 `heavyTailDelay(800, …)` |
 | `sleep` | `publish` 打字辅助极短 40ms | 功能微等待 |
 
 ## 后续（非 B1）
 
-- B6：搜索 `DELAYS`、explore modal 写间隔 rate limit
+- ~~B6：搜索 `DELAYS`、explore modal 写间隔 rate limit~~（见 [B6-CALL-SITES.md](./B6-CALL-SITES.md)）
 - B3：Interact 会话化 dwell 继续用 `heavyTailDelay`

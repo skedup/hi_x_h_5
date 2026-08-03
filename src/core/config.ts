@@ -268,6 +268,29 @@ export const config = {
       /** 最少阅读滚动次数（humanScroll / wheel） */
       minReadScrolls: parseInteger(process.env.XHS_MCP_AD_INTERACT_MIN_SCROLLS, 1),
     },
+    /**
+     * B4 Explore 视频接触：按 feed 视频占比打开并 dwell，不再硬跳过全部视频。
+     * 回滚：`XHS_MCP_AD_EXPLORE_ALLOW_VIDEO=false` → 退回非视频路径（与旧行为一致）。
+     */
+    explore: {
+      allowVideo: parseBoolean(process.env.XHS_MCP_AD_EXPLORE_ALLOW_VIDEO, true),
+    },
+    /**
+     * B7 alreadyDone 短会话：已赞/已藏等无需点击时，跳过加长 post-stay，改用短 dwell。
+     * 回滚：`XHS_MCP_AD_ALREADY_DONE_SHORT=false` → 与真实互动相同 post-stay。
+     */
+    alreadyDoneShort: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_ALREADY_DONE_SHORT, true),
+      /** alreadyDone 路径 post-stay 基准 ms（默认 ~400，远短于 interactSession.postStayMs） */
+      postStayMs: parseInteger(process.env.XHS_MCP_AD_ALREADY_DONE_POST_STAY_MS, 400),
+    },
+    /**
+     * B7 导航重试间隔：失败重载用重尾采样，避免 3–5s 均匀连刷同 URL。
+     * 回滚：`XHS_MCP_AD_NAV_RETRY_HEAVY_TAIL=false` → 均匀 [3000, 5000] ms。
+     */
+    navRetryHeavyTail: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_NAV_RETRY_HEAVY_TAIL, true),
+    },
   },
 
   /**
