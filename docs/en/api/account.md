@@ -169,7 +169,7 @@ Check if an account is currently logged in.
 
 ## xhs_delete_cookies
 
-Delete saved login cookies/session for an account.
+Log out by **archiving** the on-disk browser profile (not cookie-clear alone; C5). Re-login with `xhs_add_account`.
 
 ### Parameters
 
