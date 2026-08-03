@@ -17,6 +17,9 @@ import {
   humanScroll,
   wheelApproachElement,
   computeTypingPlan,
+  evalMainState,
+  waitForMainState,
+  waitForInitialState,
   type TypeLikeHumanOptions,
 } from '../../utils/index.js';
 import { config } from '../../../core/config.js';
@@ -252,10 +255,13 @@ export class ExploreService {
       await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
       await jitteredSleep(2000);
 
-      // 等待 __INITIAL_STATE__ 加载
-      await page.waitForFunction(() => (window as any).__INITIAL_STATE__?.feed?.feeds, {
-        timeout: 10000,
-      });
+      // 等待 __INITIAL_STATE__ 加载（C6 主世界）
+      await waitForMainState(
+        page,
+        () => !!(window as any).__INITIAL_STATE__?.feed?.feeds,
+        null,
+        { timeout: 10000 },
+      );
 
       // 主循环 — B4：打开率冷却/衰减（替代 skippedRounds 线性爬升）
       let openRateState = createOpenRateCooldownState();
@@ -694,7 +700,8 @@ export class ExploreService {
    */
   private async getFeeds(page: Page): Promise<FeedItem[]> {
     try {
-      const feedsJson = await page.evaluate(
+      const feedsJson = await evalMainState(
+        page,
         () => {
           const state = (window as any).__INITIAL_STATE__;
           if (state?.feed?.feeds) {
@@ -707,7 +714,6 @@ export class ExploreService {
           return '[]';
         },
         null,
-        false,
       );
       return JSON.parse(feedsJson);
     } catch (error) {
@@ -776,7 +782,8 @@ export class ExploreService {
    */
   private async getNoteDetailFromModal(page: Page, noteId: string): Promise<NoteDetail | null> {
     try {
-      const detailJson = await page.evaluate(
+      const detailJson = await evalMainState(
+        page,
         (id) => {
           const state = (window as any).__INITIAL_STATE__;
           const noteMap = state?.note?.noteDetailMap;
@@ -805,7 +812,6 @@ export class ExploreService {
           return null;
         },
         noteId,
-        false,
       );
 
       return detailJson ? JSON.parse(detailJson) : null;

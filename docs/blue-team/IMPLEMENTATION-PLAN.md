@@ -231,9 +231,10 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P2 |
 | **做什么** | `evalMainState` / `evalDom`；**另**：`waitForFunction` 无 world 开关 → 封装主世界等待或轮询+isolated evaluate；注释标准。 |
+| **触及** | [C6-EVAL-WORLD.md](./C6-EVAL-WORLD.md) · `utils/page-eval.ts` · content/search/explore/interact/context/login-session |
 
 ### C7 · 文档与安装对齐
 

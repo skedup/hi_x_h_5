@@ -4,7 +4,7 @@
  */
 
 import { BrowserContextManager } from '../context.js';
-import { sleep, jitteredSleep, rateLimitedSleep } from '../../utils/index.js';
+import { sleep, jitteredSleep, rateLimitedSleep, evalMainState } from '../../utils/index.js';
 import { REQUEST_INTERVAL } from '../constants.js';
 
 /**
@@ -167,8 +167,9 @@ export class NotificationService {
       await page.waitForLoadState('networkidle').catch(() => {});
       await rateLimitedSleep(REQUEST_INTERVAL);
 
-      // 从页面提取 __INITIAL_STATE__.notification
-      const notificationData = await page.evaluate(
+      // 从页面提取 __INITIAL_STATE__.notification（C6 主世界）
+      const notificationData = await evalMainState(
+        page,
         () => {
           const state = (window as any).__INITIAL_STATE__?.notification;
           if (!state) return null;
@@ -188,7 +189,6 @@ export class NotificationService {
           );
         },
         null,
-        false,
       );
 
       if (!notificationData) {

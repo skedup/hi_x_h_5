@@ -6,7 +6,7 @@
 
 import { Page } from 'patchright';
 import { XhsSearchItem, XhsSearchFilters } from '../../types.js';
-import { humanScroll, jitteredSleep, rateLimitedSleep, heavyTailDelay, heavyTailDelayBetween } from '../../utils/index.js';
+import { humanScroll, jitteredSleep, rateLimitedSleep, heavyTailDelay, heavyTailDelayBetween, evalMainState, waitForInitialState } from '../../utils/index.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS, SEARCH_DEFAULTS, SCROLL_CONFIG, DELAYS, REQUEST_INTERVAL, SEARCH_FILTER_MAP } from '../constants.js';
 
@@ -53,10 +53,8 @@ export class SearchService {
       // 等待页面稳定
       await page.waitForLoadState('networkidle').catch(() => {});
 
-      // 等待 __INITIAL_STATE__ 存在
-      await page.waitForFunction(() => (window as any).__INITIAL_STATE__ !== undefined, {
-        timeout: TIMEOUTS.PAGE_LOAD,
-      });
+      // 等待 __INITIAL_STATE__ 存在（C6 主世界）
+      await waitForInitialState(page, { timeout: TIMEOUTS.PAGE_LOAD });
 
       await rateLimitedSleep(REQUEST_INTERVAL);
 
@@ -71,7 +69,8 @@ export class SearchService {
 
       // 获取当前数据的辅助函数
       const getCurrentFeeds = async (): Promise<any[]> => {
-        const result = await page.evaluate(
+        const result = await evalMainState(
+          page,
           () => {
             const state = (window as any).__INITIAL_STATE__;
             if (state?.search?.feeds) {
@@ -84,7 +83,6 @@ export class SearchService {
             return '';
           },
           null,
-          false,
         );
         return result ? JSON.parse(result) : [];
       };
