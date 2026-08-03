@@ -5,6 +5,8 @@
  * `parseXsecMode` 单独测试，同时用真实 config 单例断言其当前生效值。
  * @module core/config.test
  */
+// 先加载 logger.js，规避 config.ts↔proxy.ts↔logger.ts 既有循环依赖在孤立测试入口下的 TDZ
+import './logger.js';
 import { describe, it, expect } from 'bun:test';
 import { parseXsecMode } from './config.js';
 import { config } from './config.js';

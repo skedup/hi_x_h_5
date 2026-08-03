@@ -5,6 +5,8 @@
  * 测试前后 reset() 隔离，避免跨 case 状态泄漏。
  * @module xhs/clients/services/explore.test
  */
+// 先加载 logger，规避孤立/组合测试入口下 config↔proxy↔logger 循环依赖 TDZ
+import '../../../core/logger.js';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { bindFeedXsecTokens, FeedItem } from './explore.js';
 import { getCooccurrenceGuard } from '../../../core/antidetect.js';
