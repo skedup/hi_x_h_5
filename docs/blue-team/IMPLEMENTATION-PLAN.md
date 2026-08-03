@@ -59,9 +59,10 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | ① `generateComment` 失败 → 无评论 / 调用方跳过；**禁止**「很棒的分享！」。② `selectLikeTarget` 失败 → `target: 'none'`。③ explore 评论 `dedupKey` 至少 `comment_text:${sha256OfText(content)}`（可双键含 noteId），与 `interaction.ts` **同一前缀**。 |
+| **触及** | `core/explore-ai.ts` · `xhs/clients/services/explore.ts` · `core/explore-ai.test.ts` · `core/antidetect.test.ts` |
 | **DoD** | Gemini mock 失败不增 `notesCommented`；同文案跨帖第二账号被拦（explore↔工具） |
 | **回滚** | 无——禁止恢复固定句 |
 
