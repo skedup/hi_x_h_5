@@ -12,6 +12,7 @@ import type { Page, ElementHandle, Locator, APIRequestContext } from 'patchright
 import { config, paths } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
 import { downloadFile } from '../../core/account-download.js';
+import { evalDom } from './page-eval.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -842,11 +843,15 @@ export async function humanScrollToBottom(
 
   for (let i = 0; i < maxScrolls; i++) {
     // Get current scroll position and page height
-    const { scrollTop, scrollHeight, clientHeight } = await page.evaluate(() => ({
-      scrollTop: window.scrollY,
-      scrollHeight: document.body.scrollHeight,
-      clientHeight: window.innerHeight,
-    }));
+    const { scrollTop, scrollHeight, clientHeight } = await evalDom(
+      page,
+      () => ({
+        scrollTop: window.scrollY,
+        scrollHeight: document.body.scrollHeight,
+        clientHeight: window.innerHeight,
+      }),
+      null,
+    );
 
     // Check if we've reached the bottom
     if (scrollTop + clientHeight >= scrollHeight - 100) {
@@ -1150,3 +1155,12 @@ export async function resolveImagePaths(
 
   return resolvedPaths;
 }
+
+export {
+  evalMainState,
+  evalDom,
+  waitForMainState,
+  waitForDom,
+  waitForInitialState,
+  type WaitForMainStateOptions,
+} from './page-eval.js';

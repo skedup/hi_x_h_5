@@ -7,7 +7,7 @@
 import { Browser, BrowserContext, Page } from 'patchright';
 import { existsSync, rmSync } from 'node:fs';
 import { LoginUserInfo, FullUserProfile } from '../xhs/types.js';
-import { sleep } from '../xhs/utils/index.js';
+import { sleep, evalMainState, waitForInitialState, waitForMainState } from '../xhs/utils/index.js';
 import { createLogger } from './logger.js';
 import { resolveLoginHeadless } from './config.js';
 import { getLoginProfileDir } from './profile.js';
@@ -223,7 +223,7 @@ export class LoginSessionManager {
     await sleep(1000);
 
     // 从页面状态提取 QR 码数据
-    const loginData = await page.evaluate(
+    const loginData = await evalMainState(page, 
       (selector: string) => {
         const state = (window as any).__INITIAL_STATE__;
         if (state?.login?.qrcodeInfo) {
@@ -233,9 +233,7 @@ export class LoginSessionManager {
         if (image?.src) return { imageUrl: image.src };
         return null;
       },
-      QR_CODE_SELECTOR,
-      false,
-    );
+      QR_CODE_SELECTOR);
 
     if (!loginData?.qrcode && !loginData?.imageUrl) {
       await browser.close();
@@ -384,11 +382,15 @@ export class LoginSessionManager {
   private async extractUserInfo(page: Page): Promise<LoginUserInfo | null> {
     try {
       // Wait for state to be available
-      await page
-        .waitForFunction(() => (window as any).__INITIAL_STATE__?.user?.userInfo !== undefined, { timeout: 10000 })
+      await waitForMainState(
+        page,
+        () => (window as any).__INITIAL_STATE__?.user?.userInfo !== undefined,
+        null,
+        { timeout: 10000 },
+      )
         .catch(() => {});
 
-      const result = await page.evaluate(
+      const result = await evalMainState(page, 
         () => {
           const state = (window as any).__INITIAL_STATE__;
           if (!state?.user?.userInfo) return null;
@@ -408,9 +410,7 @@ export class LoginSessionManager {
             avatarLarge: data.imageb || '',
           };
         },
-        null,
-        false,
-      );
+        null);
 
       return result;
     } catch (e) {
@@ -446,25 +446,23 @@ export class LoginSessionManager {
       await page.waitForLoadState('networkidle').catch(() => {});
 
       // 等待 __INITIAL_STATE__ 加载
-      await page.waitForFunction(() => (window as any).__INITIAL_STATE__ !== undefined, {
-        timeout: 30000,
-      });
+      await waitForInitialState(page, { timeout: 30000 });
 
       // 等待用户数据加载
-      await page
-        .waitForFunction(
-          () => {
-            const state = (window as any).__INITIAL_STATE__;
-            const userPageData = state?.user?.userPageData;
-            const basicInfo = userPageData?._rawValue?.basicInfo || userPageData?.basicInfo;
-            return basicInfo?.nickname;
-          },
-          { timeout: 10000 },
-        )
-        .catch(() => {});
+      await waitForMainState(
+        page,
+        () => {
+          const state = (window as any).__INITIAL_STATE__;
+          const userPageData = state?.user?.userPageData;
+          const basicInfo = userPageData?._rawValue?.basicInfo || userPageData?.basicInfo;
+          return basicInfo?.nickname;
+        },
+        null,
+        { timeout: 10000 },
+      ).catch(() => {});
 
       // 提取完整用户信息
-      const result = await page.evaluate(
+      const result = await evalMainState(page, 
         (uid: string) => {
           const state = (window as any).__INITIAL_STATE__;
           if (!state?.user) return null;
@@ -518,9 +516,7 @@ export class LoginSessionManager {
             banReason: banned?.reason || '',
           };
         },
-        userId,
-        false,
-      );
+        userId);
 
       if (result) {
         log.info('Extracted full user profile', {

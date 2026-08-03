@@ -6,7 +6,7 @@
 
 import { Page, Response } from 'patchright';
 import { PublishedNote } from '../../../tools/creator.js';
-import { sleep, jitteredSleep } from '../../utils/index.js';
+import { sleep, jitteredSleep, evalDom } from '../../utils/index.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS } from '../constants.js';
 
@@ -174,7 +174,7 @@ export class CreatorService {
    * 向下滚动页面
    */
   private async scrollDown(page: Page): Promise<void> {
-    await page.evaluate((distance) => {
+    await evalDom(page, (distance) => {
       // 尝试找到可滚动的容器
       const containers = [
         document.querySelector('.note-list'),

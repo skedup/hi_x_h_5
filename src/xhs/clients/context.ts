@@ -11,6 +11,7 @@ import { createLogger } from '../../core/logger.js';
 import { config, paths, assertDisplayAvailableForHeadful } from '../../core/config.js';
 import { parseProxyConfig, toPlaywrightProxy } from '../../core/proxy.js';
 import { archiveProfileDir } from '../../core/profile.js';
+import { evalMainState, waitForInitialState, waitForMainState } from '../utils/index.js';
 import { getBrowserArgs } from './constants.js';
 
 // Create logger for browser module
@@ -197,7 +198,8 @@ export class BrowserContextManager {
    */
   async extractUserInfo(page: Page): Promise<LoginUserInfo | null> {
     try {
-      const result = await page.evaluate(
+      const result = await evalMainState(
+        page,
         () => {
           const state = (window as any).__INITIAL_STATE__;
           if (!state?.user?.userInfo) return null;
@@ -219,7 +221,6 @@ export class BrowserContextManager {
           };
         },
         null,
-        false,
       );
 
       if (result) {
@@ -291,26 +292,25 @@ export class BrowserContextManager {
       await page.goto(url, { waitUntil: 'domcontentloaded' });
       await page.waitForLoadState('networkidle').catch(() => {});
 
-      // 等待 __INITIAL_STATE__ 加载
-      await page.waitForFunction(() => (window as any).__INITIAL_STATE__ !== undefined, {
-        timeout: 30000,
-      });
+      // 等待 __INITIAL_STATE__ 加载（C6 主世界）
+      await waitForInitialState(page, { timeout: 30000 });
 
       // 等待用户数据加载
-      await page
-        .waitForFunction(
-          () => {
-            const state = (window as any).__INITIAL_STATE__;
-            const userPageData = state?.user?.userPageData;
-            const basicInfo = userPageData?._rawValue?.basicInfo || userPageData?.basicInfo;
-            return basicInfo?.nickname;
-          },
-          { timeout: 10000 },
-        )
-        .catch(() => {});
+      await waitForMainState(
+        page,
+        () => {
+          const state = (window as any).__INITIAL_STATE__;
+          const userPageData = state?.user?.userPageData;
+          const basicInfo = userPageData?._rawValue?.basicInfo || userPageData?.basicInfo;
+          return basicInfo?.nickname;
+        },
+        null,
+        { timeout: 10000 },
+      ).catch(() => {});
 
       // 提取完整用户信息
-      const result = await page.evaluate(
+      const result = await evalMainState(
+        page,
         (uid: string) => {
           const state = (window as any).__INITIAL_STATE__;
           if (!state?.user) return null;
@@ -365,7 +365,6 @@ export class BrowserContextManager {
           };
         },
         userId,
-        false,
       );
 
       if (result) {

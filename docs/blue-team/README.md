@@ -14,7 +14,7 @@
 
 ## 一句话总判
 
-单会话底座（patchright + 真 Chrome + CDP Input 可信事件 + 独立 profile）能擦掉大量**经典自动化标志位**，但仍有 main-world `evaluate(false)` / 默认 `waitForFunction(main)`、以及行为层「直链 → 页内无阅读 → 单步点击 → 关页」等缺口。平台真正用来打穿农场的三类信号——**同机硬件指纹共现、任务式互动会话、多账号 IP/内容/同帖共现（含 dedup 键空间分裂）**——在默认配置下几乎裸奔。现有 `CooccurrenceGuard` / liveness / headless 写门禁是**运维自保**，不是设备/行为层的反检测。
+单会话底座（patchright + 真 Chrome + CDP Input 可信事件 + 独立 profile）能擦掉大量**经典自动化标志位**，但仍有行为层「直链 → 页内无阅读 → 单步点击 → 关页」等缺口（C6 已收敛 evaluate 世界封装）。平台真正用来打穿农场的三类信号——**同机硬件指纹共现、任务式互动会话、多账号 IP/内容/同帖共现（含 dedup 键空间分裂）**——在默认配置下几乎裸奔。现有 `CooccurrenceGuard` / liveness / headless 写门禁是**运维自保**，不是设备/行为层的反检测。
 
 ---
 

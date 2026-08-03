@@ -15,6 +15,9 @@ import {
   clickWithTrajectory,
   getLastTrajectoryMeta,
   computeTypingPlan,
+  evalMainState,
+  evalDom,
+  waitForDom,
   type TypeLikeHumanOptions,
 } from '../../utils/index.js';
 import {
@@ -163,7 +166,8 @@ export class InteractService {
       preDwellMs = reading.preDwellMs;
       readScrollCount = reading.readScrollCount;
 
-      const isLiked = await page.evaluate(
+      const isLiked = await evalMainState(
+        page,
         () => {
           const state = (window as any).__INITIAL_STATE__;
           const noteDetailMap = state?.note?.noteDetailMap;
@@ -174,7 +178,6 @@ export class InteractService {
           return false;
         },
         null,
-        false,
       );
 
       const shouldClick = (unlike && isLiked) || (!unlike && !isLiked);
@@ -290,7 +293,8 @@ export class InteractService {
       preDwellMs = reading.preDwellMs;
       readScrollCount = reading.readScrollCount;
 
-      const isCollected = await page.evaluate(
+      const isCollected = await evalMainState(
+        page,
         () => {
           const state = (window as any).__INITIAL_STATE__;
           const noteDetailMap = state?.note?.noteDetailMap;
@@ -301,7 +305,6 @@ export class InteractService {
           return false;
         },
         null,
-        false,
       );
 
       const shouldClick = (unfavorite && isCollected) || (!unfavorite && !isCollected);
@@ -447,17 +450,17 @@ export class InteractService {
       trajectorySteps = getLastTrajectoryMeta()?.steps ?? null;
       await jitteredSleep(1000);
 
-      const submitted = await page
-        .waitForFunction(
-          (selector) => {
-            const input = document.querySelector(selector);
-            if (!input) return false;
-            const value = input instanceof HTMLTextAreaElement ? input.value : input.textContent || '';
-            return value.trim().length === 0;
-          },
-          COMMENT_SELECTORS.commentInput,
-          { timeout: 3000 },
-        )
+      const submitted = await waitForDom(
+        page,
+        (selector) => {
+          const input = document.querySelector(selector);
+          if (!input) return false;
+          const value = input instanceof HTMLTextAreaElement ? input.value : input.textContent || '';
+          return value.trim().length === 0;
+        },
+        COMMENT_SELECTORS.commentInput,
+        { timeout: 3000 },
+      )
         .then(() => true)
         .catch(() => false);
 
@@ -582,16 +585,16 @@ export class InteractService {
       trajectorySteps = getLastTrajectoryMeta()?.steps ?? null;
       await jitteredSleep(2000);
 
-      const submitted = await page
-        .waitForFunction(
-          (selector) => {
-            const input = document.querySelector(selector);
-            if (!input) return false;
-            return (input.textContent || '').trim().length === 0;
-          },
-          'div.input-box div.content-edit p.content-input',
-          { timeout: 3000 },
-        )
+      const submitted = await waitForDom(
+        page,
+        (selector) => {
+          const input = document.querySelector(selector);
+          if (!input) return false;
+          return (input.textContent || '').trim().length === 0;
+        },
+        'div.input-box div.content-edit p.content-input',
+        { timeout: 3000 },
+      )
         .then(() => true)
         .catch(() => false);
 
@@ -641,12 +644,12 @@ export class InteractService {
       return el;
     }
 
-    await page.evaluate(() => {
+    await evalDom(page, () => {
       const commentsArea = document.querySelector('.comments-container, .comment-list, .note-comments');
       if (commentsArea) {
         commentsArea.scrollIntoView({ behavior: 'smooth' });
       }
-    });
+    }, null);
     await heavyTailDelay(1000, { minMs: 600, maxMs: 1400 });
 
     el = await page.$(selector);
@@ -686,9 +689,9 @@ export class InteractService {
         break;
       }
 
-      await page.evaluate(() => {
+      await evalDom(page, () => {
         window.scrollBy(0, window.innerHeight * 0.8);
-      });
+      }, null);
       await heavyTailDelay(800, { minMs: 500, maxMs: 1400 });
 
       el = await page.$(selector);

@@ -53,8 +53,8 @@
 | ID | 向量 | 证据 | 说明 |
 |----|------|------|------|
 | P1-1 | 代理未与时区/locale/geo 绑定 | `proxy: { server }` only（`context.ts:35`） | A1 先于 C3 上线会出现「异地 IP + 宿主机 Intl」——比无代理更像农场 |
-| P1-2 | 主世界 `evaluate(..., false)` 读 `__INITIAL_STATE__` | 多 service | 功能刚需；`waitForFunction` **无** `isolatedContext` API，服务端默认 `world=main`，所有状态轮询必然 main |
-| P1-3 | 部分 `evaluate`/`$$eval` 未显式传 world | creator / interact / utils | DOM 与状态脚本混用两套 world |
+| P1-2 | 主世界 `evaluate(..., false)` 读 `__INITIAL_STATE__` | 多 service | **mitigated（C6）**：`evalMainState` / `waitForMainState`；裸 `waitForFunction` 读状态已收敛 |
+| P1-3 | 部分 `evaluate`/`$$eval` 未显式传 world | creator / interact / utils | **mitigated（C6）**：DOM 路径走 `evalDom` / `waitForDom`；标准见 C6-EVAL-WORLD |
 | P1-4 | 发布配图 Node `fetch` 旁路 | `downloadImageFromUrl`（经 `downloadFile`） | **mitigated（C4）**：配图走账号 `APIRequestContext` + Referer/Sec-Fetch；Gemini 理解拉图仍为服务端侧 `fetch`（非浏览 egress） |
 | P1-5 | `deleteCookies` 只清 Cookie | `context.ts` / `archiveProfileDir` | **mitigated（C5）**：登出归档整个 profile；`clearCookies` 语义 deprecated |
 | P1-6 | DB `storageState` 与磁盘 profile 双源 | AccountPool 传 `state`，launch **不注入** | 真源是 persistent profile |
@@ -96,7 +96,7 @@
 ### P1
 
 5. 账号级 timezone/locale/geolocation + `grantPermissions`；校验 `navigator.languages` / Accept-Language。
-6. evaluate 封装 + `waitForFunction` 主世界等待策略成文。
+6. evaluate 封装 + `waitForFunction` 主世界等待策略成文 — **done（C6）**。
 7. `resolveImagePaths` 对齐 `downloadFile`（proxy + Referer + Sec-Fetch）— **done（C4）**。
 8. 登出 = 归档 profile（复用 `profile.ts` 模式）— **done（C5）**。
 
