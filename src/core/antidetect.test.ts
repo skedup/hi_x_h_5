@@ -53,6 +53,12 @@ function makeCfg(overrides: any = {}) {
       mode: 'off' as const,
       ...(overrides.proxyRequired || {}),
     },
+    heavyTail: {
+      enabled: true,
+      sigma: 0.45,
+      maxMultiplier: 8,
+      ...(overrides.heavyTail || {}),
+    },
   };
 }
 

@@ -106,9 +106,10 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | 新增 `heavyTailDelay`；**仅**用于行为等待（打字间隔、阅读停顿、滚动步间、Interact dwell）。`jitteredSleep` 保留给功能等待（发布轮询、上传）。`rateLimitedSleep` 仍 `≥ base`。DoD 附**调用点迁移清单**。 |
+| **触及** | `utils/index.ts` · `interact.ts` · `explore.ts` · [B1-CALL-SITES.md](./B1-CALL-SITES.md) |
 | **回滚** | `XHS_MCP_AD_HEAVY_TAIL=false` |
 
 ### B2 · 指针轨迹点击

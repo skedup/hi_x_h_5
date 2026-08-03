@@ -9,7 +9,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import type { Page } from 'patchright';
-import { paths } from '../../core/config.js';
+import { config, paths } from '../../core/config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,6 +53,76 @@ export async function jitteredSleep(base: number, ratio = 0.4): Promise<void> {
  */
 export async function rateLimitedSleep(base: number, ratio = 0.4): Promise<void> {
   await sleep(Math.round(base * (1 + Math.random() * ratio)));
+}
+
+/**
+ * 标准正态 N(0,1)（Box-Muller）。
+ */
+function randomNormal(): number {
+  let u = 0;
+  let v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+export interface HeavyTailDelayOptions {
+  /** 对数正态 σ，默认取 config.antiDetect.heavyTail.sigma */
+  sigma?: number;
+  /** 下限毫秒（含） */
+  minMs?: number;
+  /** 上限毫秒（含）；默认 base * maxMultiplier */
+  maxMs?: number;
+}
+
+/**
+ * 采样行为重尾延迟毫秒数：中位数约等于 `base` 的对数正态，右尾偶发更长停顿。
+ * `XHS_MCP_AD_HEAVY_TAIL=false` 时：有 min/max 则在该区间均匀；否则 [0.8base, 1.2base]。
+ * **仅**用于拟人节奏；功能等待用 `jitteredSleep`，限流用 `rateLimitedSleep`。
+ */
+export function sampleHeavyTailMs(base: number, options: HeavyTailDelayOptions = {}): number {
+  const ht = config.antiDetect.heavyTail;
+  const floor = Math.max(1, Math.round(options.minMs ?? 1));
+  const cap = Math.max(
+    floor,
+    Math.round(options.maxMs ?? Math.max(base, 1) * (ht?.maxMultiplier ?? 8)),
+  );
+  const b = Math.max(1, base);
+
+  if (!ht?.enabled) {
+    // 关闭时：若调用方给了 [minMs, maxMs] 则在该区间均匀采样（对齐迁移前分布）；
+    // 否则退回 base 的 ±20% 窄带。
+    if (options.minMs !== undefined && options.maxMs !== undefined) {
+      const lo = Math.max(1, Math.round(options.minMs));
+      const hi = Math.max(lo, Math.round(options.maxMs));
+      return Math.floor(lo + Math.random() * (hi - lo + 1));
+    }
+    const lo = Math.max(floor, Math.round(b * 0.8));
+    const hi = Math.min(cap, Math.max(lo, Math.round(b * 1.2)));
+    return Math.floor(lo + Math.random() * (hi - lo + 1));
+  }
+
+  const sigma = options.sigma ?? ht.sigma ?? 0.45;
+  const mu = Math.log(b);
+  const sample = Math.exp(mu + sigma * randomNormal());
+  return Math.max(floor, Math.min(cap, Math.round(sample)));
+}
+
+/**
+ * 行为重尾等待（B1）。见 `sampleHeavyTailMs`。
+ */
+export async function heavyTailDelay(base: number, options?: HeavyTailDelayOptions): Promise<void> {
+  await sleep(sampleHeavyTailMs(base, options));
+}
+
+/**
+ * 在 [minMs, maxMs] 内做重尾采样（几何均值为中位近似）。
+ */
+export async function heavyTailDelayBetween(minMs: number, maxMs: number): Promise<void> {
+  const lo = Math.max(1, Math.min(minMs, maxMs));
+  const hi = Math.max(lo, Math.max(minMs, maxMs));
+  const base = Math.sqrt(lo * hi);
+  await heavyTailDelay(base, { minMs: lo, maxMs: hi });
 }
 
 /**
@@ -288,7 +358,7 @@ export async function typeLikeHuman(
       throw new DOMException('typeLikeHuman timeout: maxDurationMs exceeded, input incomplete', 'AbortError');
     }
     await page.keyboard.type(chars[i]);
-    await sleep(randomBetween(minDelay, maxDelay));
+    await heavyTailDelayBetween(minDelay, maxDelay);
     i += 1;
 
     // 人类修订：回删若干字符后重输，制造删除/修订信号（可信事件，不引入 isTrusted=false）
@@ -297,11 +367,11 @@ export async function typeLikeHuman(
       const redo = chars.slice(i - back, i);
       for (let k = 0; k < back; k++) {
         await page.keyboard.press('Backspace');
-        await sleep(randomBetween(Math.max(10, minDelay / 2), maxDelay / 2));
+        await heavyTailDelayBetween(Math.max(10, minDelay / 2), maxDelay / 2);
       }
       for (const ch of redo) {
         await page.keyboard.type(ch);
-        await sleep(randomBetween(minDelay, maxDelay));
+        await heavyTailDelayBetween(minDelay, maxDelay);
       }
       revisions += 1;
       // 重新随机下一次修订间距
@@ -309,7 +379,7 @@ export async function typeLikeHuman(
     }
 
     if (Math.random() < pauseChance) {
-      await sleep(randomBetween(pauseMin, pauseMax));
+      await heavyTailDelayBetween(pauseMin, pauseMax);
     }
   }
 }
@@ -394,8 +464,8 @@ export async function humanScroll(page: Page, options: HumanScrollOptions = {}):
       await page.mouse.wheel(jitter, 0);
     }
 
-    // Short pause between steps (20-80ms)
-    await sleep(randomBetween(20, 80));
+    // Short pause between steps (20-80ms) — B1 行为重尾
+    await heavyTailDelayBetween(20, 80);
   }
 
   // Random mouse movement (simulates eyes following content)
@@ -406,9 +476,8 @@ export async function humanScroll(page: Page, options: HumanScrollOptions = {}):
     await page.mouse.move(x, y, { steps: Math.floor(randomBetween(5, 15)) });
   }
 
-  // Main delay (simulates reading content)
-  const readingDelay = randomBetween(minDelay, maxDelay);
-  await sleep(readingDelay);
+  // Main delay (simulates reading content) — B1 行为重尾
+  await heavyTailDelayBetween(minDelay, maxDelay);
 
   // Occasionally scroll back up (humans review content)
   if (Math.random() < scrollBackChance) {
@@ -417,11 +486,11 @@ export async function humanScroll(page: Page, options: HumanScrollOptions = {}):
 
     for (let i = 0; i < backSteps; i++) {
       await page.mouse.wheel(0, -backDistance / backSteps);
-      await sleep(randomBetween(20, 50));
+      await heavyTailDelayBetween(20, 50);
     }
 
     // Short pause after scrolling back
-    await sleep(randomBetween(200, 500));
+    await heavyTailDelayBetween(200, 500);
   }
 }
 

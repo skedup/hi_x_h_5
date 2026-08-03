@@ -234,6 +234,18 @@ export const config = {
       enabled: parseBoolean(process.env.XHS_MCP_AD_PERSIST, true),
       ttlMs: parseInteger(process.env.XHS_MCP_AD_PERSIST_TTL_MS, 30 * 24 * 60 * 60 * 1000),
     },
+    /**
+     * B1 行为重尾延迟：打字/阅读/滚动步间/Interact dwell 用对数正态，打破均匀时钟。
+     * 回滚：`XHS_MCP_AD_HEAVY_TAIL=false`（退回窄带均匀抖动）。
+     * 功能等待（发布轮询、上传）继续用 `jitteredSleep`；限流继续用 `rateLimitedSleep`。
+     */
+    heavyTail: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_HEAVY_TAIL, true),
+      /** 对数正态 σ；越大右尾越重 */
+      sigma: parseFloat(process.env.XHS_MCP_AD_HEAVY_TAIL_SIGMA || '') || 0.45,
+      /** 相对 base 的硬上限倍数，防止极端长停 */
+      maxMultiplier: parseFloat(process.env.XHS_MCP_AD_HEAVY_TAIL_MAX_MULT || '') || 8,
+    },
   },
 
   /**
