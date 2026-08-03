@@ -15,7 +15,7 @@
 // Re-export types and constants for backwards compatibility
 export type { BrowserClientOptions } from './context.js';
 export {
-  BROWSER_ARGS,
+  getBrowserArgs,
   TIMEOUTS,
   SEARCH_DEFAULTS,
   SCROLL_CONFIG,

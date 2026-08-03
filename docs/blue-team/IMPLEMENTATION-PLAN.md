@@ -185,7 +185,7 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | 默认移除 no-sandbox / deny-permission-prompts；删重复 AutomationControlled。**容器/CI DoD**：文档写明必须 `XHS_MCP_BROWSER_NO_SANDBOX=true` 否则启动失败属预期。 |
 | **回滚** | env 开 no-sandbox |
@@ -194,7 +194,7 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | login 忽略全局 headless；`viewport: null`。无 DISPLAY：Xvfb 或 `XHS_MCP_ALLOW_HEADLESS_LOGIN=true`（默认 false）。 |
 | **DoD** | `HEADLESS=true` 时 add_account 仍 headful（有图形环境）；无图形环境有文档路径 |
@@ -237,7 +237,7 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P2 |
 | **做什么** | 删 stealth.js；修正 **CLAUDE.md**（headless 默认、登录是否 headless、去掉不存在的 `stealth.js`）；README/环境变量表同步本 plan 全部开关（含 B7/C8）。 |
 | **DoD** | CLAUDE.md 与 `config.ts` 默认值一致；无虚假 stealth 描述 |
@@ -317,7 +317,7 @@ C4 · C5 · C6 · C7 相对独立
 - [ ] 登录强制 headful（有图形时）；容器 no-sandbox 有文档
 - [ ] A1+C3 时区/languages 自洽；配图 Referer/Sec-Fetch 对齐
 - [ ] 代理下 WebRTC ICE 无宿主泄漏（或 `wontfix` 书面）
-- [ ] CLAUDE.md 与 config 默认一致、无 stealth.js 虚述
+- [x] CLAUDE.md 与 config 默认一致、无 stealth.js 虚述
 - [ ] 01/02/03 对应 P0 标 mitigated
 
 ---

@@ -95,8 +95,7 @@ src/
     │       ├── notification.ts # NotificationService - 通知获取
     │       └── explore.ts    # ExploreService - 自动浏览
     └── utils/
-        ├── index.ts          # Utilities (sleep, humanScroll, generateWebId)
-        └── stealth.js        # Browser automation script
+        └── index.ts          # Utilities (sleep, humanScroll, generateWebId)
 ```
 
 ## Available MCP Tools
@@ -237,17 +236,39 @@ All configuration can be controlled via environment variables:
 | `XHS_MCP_PORT` | `18060` | HTTP server port |
 | `XHS_MCP_DATA_DIR` | `~/.xhs-mcp` | Data directory path |
 | `XHS_MCP_LOG_LEVEL` | `debug` | Log level: debug, info, warn, error |
-| `XHS_MCP_HEADLESS` | `true` | 浏览器无头模式，设为 `false` 显示浏览器窗口 |
+| `XHS_MCP_HEADLESS` | `false` | 浏览器无头模式；默认有头。写操作在 `XHS_MCP_AD_HEADLESS_WRITE_GATE=true`（默认）且 headless 时被拒绝；登录见 `XHS_MCP_ALLOW_HEADLESS_LOGIN` |
+| `XHS_MCP_ALLOW_HEADLESS_LOGIN` | `false` | C2 登录 headless 逃生口；`false` 时 add_account 强制 headful + viewport:null；见 `docs/blue-team/C2-LOGIN-HEADFUL.md` |
+| `XHS_MCP_BROWSER_NO_SANDBOX` | `false` | 容器/CI 回滚：追加 `--no-sandbox`；见 `docs/blue-team/C1-BROWSER-ARGS.md` |
+| `XHS_MCP_LEGACY_PROFILE_ACCOUNT_ID` | - | 首次接管旧 `browser-profile` 时显式确认其所属账号 ID |
 | `XHS_MCP_KEEP_OPEN` | `false` | 操作完成后保持浏览器打开，用于调试 |
 | `XHS_MCP_REQUEST_INTERVAL` | `2000` | Request interval in ms (rate limiting) |
 | `XHS_MCP_TIMEOUT_PAGE_LOAD` | `30000` | Page load timeout in ms |
 | `XHS_MCP_TIMEOUT_VIDEO_UPLOAD` | `300000` | Video upload timeout in ms (5 min) |
+| `XHS_MCP_AD_COOCCURRENCE` | `true` | C2.1 多账号写串行 + 账号间冷却；`false` 退回并行 |
+| `XHS_MCP_AD_XSEC` | `true` | C2.2 xsecToken 跨账号复用绑定 |
+| `XHS_MCP_AD_XSEC_MODE` | `block` | xsec 绑定模式：`block`/`warn` |
+| `XHS_MCP_AD_QUOTA` | `true` | C2.3 中央限额/熔断 |
+| `XHS_MCP_AD_QUOTA_HOURLY` | `60` | 每账号每小时动作预算 |
+| `XHS_MCP_AD_QUOTA_DAILY` | `300` | 每账号每日动作预算 |
+| `XHS_MCP_AD_QUOTA_COOLDOWN` | `5000` | 单账号动作后最小冷却 ms |
+| `XHS_MCP_AD_QUOTA_TRIP` | `3` | 连续失败熔断阈值 |
+| `XHS_MCP_AD_DEDUP` | `true` | C2.4 跨账号 content/media 去重 |
+| `XHS_MCP_AD_LIVENESS` | `true` | 息屏/无人值守写门禁；`false` 关闭 |
+| `XHS_MCP_AD_LIVENESS_POLL` | `15000` | 显示器 asleep 轮询间隔 ms（darwin） |
+| `XHS_MCP_AD_LIVENESS_IDLE` | `0` | 无人确认超时 ms；`0` 关闭 |
+| `XHS_MCP_AD_HEADLESS_WRITE_GATE` | `true` | B1 写操作拒绝 headless；`false` 关闭 |
 | `XHS_MCP_AD_PROXY_REQUIRED` | `block` | 多账号写出口门禁：`block`/`warn`/`off`；见 `docs/blue-team/A1-PROXY-RUNBOOK.md` |
 | `XHS_MCP_AD_PERSIST` | `true` | A5 共现守卫 committed 落库；`false` 仅内存 |
 | `XHS_MCP_AD_PERSIST_TTL_MS` | `2592000000` | 持久化行 TTL（默认 30 天） |
 | `XHS_MCP_AD_HEAVY_TAIL` | `true` | B1 行为重尾延迟；`false` 退回窄带均匀；见 `docs/blue-team/B1-CALL-SITES.md` |
+| `XHS_MCP_AD_HEAVY_TAIL_SIGMA` | `0.45` | B1 对数正态 σ |
+| `XHS_MCP_AD_HEAVY_TAIL_MAX_MULT` | `8` | B1 相对 base 的硬上限倍数 |
 | `XHS_MCP_AD_TRAJECTORY` | `true` | B2 指针轨迹点击；`false` 退回直点 |
+| `XHS_MCP_AD_TRAJECTORY_MIN_STEPS` | `5` | B2 轨迹步数下限 |
 | `XHS_MCP_AD_INTERACT_SESSION` | `true` | B3 Interact 会话化；`false` 跳过入页阅读/滚动与加长后停留；见 `docs/blue-team/B3-CALL-SITES.md` |
+| `XHS_MCP_AD_INTERACT_PRE_DWELL_MS` | `1500` | B3 入页阅读 dwell 基准 ms |
+| `XHS_MCP_AD_INTERACT_POST_STAY_MS` | `1200` | B3 动作后停留基准 ms |
+| `XHS_MCP_AD_INTERACT_MIN_SCROLLS` | `1` | B3 最少阅读滚动次数 |
 | `XHS_MCP_AD_EXPLORE_ALLOW_VIDEO` | `true` | B4 Explore 视频接触；`false` 硬跳过视频（旧行为）；见 `docs/blue-team/B4-CALL-SITES.md` |
 | `XHS_MCP_AD_NAV_RETRY_HEAVY_TAIL` | `true` | B7 导航失败重试用重尾间隔；`false` 退回均匀 3–5s；见 `docs/blue-team/B7-CALL-SITES.md` |
 | `XHS_MCP_AD_ALREADY_DONE_SHORT` | `true` | B7 已赞/已藏等 alreadyDone 路径用短 post-stay；`false` 与真实互动相同；见 `docs/blue-team/B7-CALL-SITES.md` |
@@ -363,9 +384,9 @@ Key tables (通过 Repository 类访问):
 - Use absolute imports with `.js` extension (e.g., `'./xhs/index.js'`)
 - Handle Vue reactive objects (`_rawValue`, `_value`, `.value`)
 - Respect rate limits - configurable via `XHS_MCP_REQUEST_INTERVAL` (default 2s)
-- Publishing operations may require visible browser (`XHS_MCP_HEADLESS=false`)
+- Default browser mode is headful (`XHS_MCP_HEADLESS` unset → `false`); write operations rejected when headless + `XHS_MCP_AD_HEADLESS_WRITE_GATE=true` (default)
 - All database operations are synchronous (better-sqlite3)
-- Login runs in headless mode by default (controllable via `XHS_MCP_HEADLESS`)
+- Login is **headful by default** (ignores `XHS_MCP_HEADLESS` unless `XHS_MCP_ALLOW_HEADLESS_LOGIN=true`); see `docs/blue-team/C2-LOGIN-HEADFUL.md`
 - Use `createLogger('module-name')` for logging instead of `console.error/log`
 - Extract magic numbers to constant objects with Chinese comments
 - All code comments should be in Chinese for consistency

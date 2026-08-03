@@ -154,7 +154,7 @@ Customize server behavior via environment variables:
 | `XHS_MCP_PORT` | `18060` | HTTP server port |
 | `XHS_MCP_DATA_DIR` | `~/.xhs-mcp` | Data directory path |
 | `XHS_MCP_LOG_LEVEL` | `debug` | Log level (debug/info/warn/error) |
-| `XHS_MCP_HEADLESS` | `true` | Browser headless mode, set `false` for debugging |
+| `XHS_MCP_HEADLESS` | `false` | Browser headless mode (default headful); writes rejected when headlessWriteGate is on and this is `true` |
 | `XHS_MCP_REQUEST_INTERVAL` | `2000` | Request interval in ms (rate limiting) |
 | `XHS_MCP_TIMEOUT_PAGE_LOAD` | `30000` | Page load timeout in ms |
 | `XHS_MCP_TIMEOUT_VIDEO_UPLOAD` | `300000` | Video upload timeout in ms |

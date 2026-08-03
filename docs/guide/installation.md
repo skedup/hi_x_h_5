@@ -154,7 +154,7 @@ npx @sillyl12324/xhs-mcp@latest --http --port 8080  # 自定义端口
 | `XHS_MCP_PORT` | `18060` | HTTP 服务端口 |
 | `XHS_MCP_DATA_DIR` | `~/.xhs-mcp` | 数据目录路径 |
 | `XHS_MCP_LOG_LEVEL` | `debug` | 日志级别 (debug/info/warn/error) |
-| `XHS_MCP_HEADLESS` | `true` | 浏览器无头模式，调试时设为 `false` |
+| `XHS_MCP_HEADLESS` | `false` | 浏览器无头模式（默认有头）；写操作在 headlessWriteGate 开启且为 true 时被拒绝 |
 | `XHS_MCP_REQUEST_INTERVAL` | `2000` | 请求间隔(毫秒)，用于速率限制 |
 | `XHS_MCP_TIMEOUT_PAGE_LOAD` | `30000` | 页面加载超时(毫秒) |
 | `XHS_MCP_TIMEOUT_VIDEO_UPLOAD` | `300000` | 视频上传超时(毫秒) |

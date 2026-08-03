@@ -8,12 +8,18 @@ import { chromium, Browser, BrowserContext, Page } from 'patchright';
 import type { APIRequestContext } from 'patchright';
 import { LoginUserInfo, FullUserProfile } from '../types.js';
 import { createLogger } from '../../core/logger.js';
-import { config, paths } from '../../core/config.js';
+import { config, paths, assertDisplayAvailableForHeadful } from '../../core/config.js';
 import { parseProxyConfig, toPlaywrightProxy } from '../../core/proxy.js';
-import { BROWSER_ARGS } from './constants.js';
+import { getBrowserArgs } from './constants.js';
 
 // Create logger for browser module
 export const log = createLogger('browser');
+
+/** launchProfileContext 可选参数（C2 登录强制 headful 等） */
+export interface LaunchProfileContextOptions {
+  /** 强制 headful，忽略 headless 参数（登录路径用） */
+  forceHeadful?: boolean;
+}
 
 /**
  * Launch a persistent Chrome profile context rooted at the given directory.
@@ -26,18 +32,24 @@ export async function launchProfileContext(
   profileDir: string,
   headless = config.browser.headless,
   proxy?: string,
+  options?: LaunchProfileContextOptions,
 ): Promise<{ browser: Browser; context: BrowserContext }> {
+  const effectiveHeadless = options?.forceHeadful ? false : headless;
+  if (!effectiveHeadless) {
+    assertDisplayAvailableForHeadful();
+  }
+
   const parsedProxy = parseProxyConfig(proxy);
   if (proxy?.trim() && !parsedProxy) {
     log.warn('账号 proxy 无法解析，将不使用代理启动', { proxyPreview: proxy.slice(0, 32) });
   }
   const context = await chromium.launchPersistentContext(profileDir, {
-    headless,
+    headless: effectiveHeadless,
     channel: 'chrome',
-    args: BROWSER_ARGS,
+    args: getBrowserArgs(),
     // B1（05 R3）：headful 时 viewport 置 null，消除 screen==viewport 的组合异常指纹；
     // headless（自动化测试）保留固定 viewport。
-    viewport: headless ? { width: 1920, height: 1080 } : null,
+    viewport: effectiveHeadless ? { width: 1920, height: 1080 } : null,
     ...(parsedProxy ? { proxy: toPlaywrightProxy(parsedProxy) } : {}),
   });
   const browser = context.browser();
