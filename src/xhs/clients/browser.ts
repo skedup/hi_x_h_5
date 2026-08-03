@@ -214,29 +214,50 @@ export class BrowserClient {
   /**
    * Like or unlike a note
    */
-  async likeFeed(noteId: string, xsecToken: string, unlike?: boolean): Promise<InteractionResult> {
-    return this.interactService.likeFeed(noteId, xsecToken, unlike);
+  async likeFeed(
+    noteId: string,
+    xsecToken: string,
+    unlike?: boolean,
+    sessionOpts?: import('../utils/interact-session.js').InteractSessionOpts,
+  ): Promise<InteractionResult> {
+    return this.interactService.likeFeed(noteId, xsecToken, unlike, sessionOpts);
   }
 
   /**
    * Favorite (collect) or unfavorite a note
    */
-  async favoriteFeed(noteId: string, xsecToken: string, unfavorite?: boolean): Promise<InteractionResult> {
-    return this.interactService.favoriteFeed(noteId, xsecToken, unfavorite);
+  async favoriteFeed(
+    noteId: string,
+    xsecToken: string,
+    unfavorite?: boolean,
+    sessionOpts?: import('../utils/interact-session.js').InteractSessionOpts,
+  ): Promise<InteractionResult> {
+    return this.interactService.favoriteFeed(noteId, xsecToken, unfavorite, sessionOpts);
   }
 
   /**
    * Post a comment on a note
    */
-  async postComment(noteId: string, xsecToken: string, content: string): Promise<CommentResult> {
-    return this.interactService.postComment(noteId, xsecToken, content);
+  async postComment(
+    noteId: string,
+    xsecToken: string,
+    content: string,
+    sessionOpts?: import('../utils/interact-session.js').InteractSessionOpts,
+  ): Promise<CommentResult> {
+    return this.interactService.postComment(noteId, xsecToken, content, sessionOpts);
   }
 
   /**
    * Reply to a comment on a note
    */
-  async replyComment(noteId: string, xsecToken: string, commentId: string, content: string): Promise<CommentResult> {
-    return this.interactService.replyComment(noteId, xsecToken, commentId, content);
+  async replyComment(
+    noteId: string,
+    xsecToken: string,
+    commentId: string,
+    content: string,
+    sessionOpts?: import('../utils/interact-session.js').InteractSessionOpts,
+  ): Promise<CommentResult> {
+    return this.interactService.replyComment(noteId, xsecToken, commentId, content, sessionOpts);
   }
 
   /**
@@ -247,8 +268,19 @@ export class BrowserClient {
     xsecToken: string,
     commentId: string,
     unlike?: boolean,
+    sessionOpts?: import('../utils/interact-session.js').InteractSessionOpts,
   ): Promise<InteractionResult> {
-    return this.interactService.likeComment(noteId, xsecToken, commentId, unlike);
+    return this.interactService.likeComment(noteId, xsecToken, commentId, unlike, sessionOpts);
+  }
+
+  /** B3：关闭 keepPage 保留的 Interact 页；批处理结束时调用 */
+  async releaseKeptInteractPages(): Promise<number> {
+    return this.interactService.releaseKeptPages();
+  }
+
+  /** B3：当前保留未关的 Interact 页数量 */
+  getKeptInteractPageCount(): number {
+    return this.interactService.getKeptPageCount();
   }
 
   // ============ Creator Methods ============

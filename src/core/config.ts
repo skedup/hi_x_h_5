@@ -255,6 +255,19 @@ export const config = {
       /** DoD：启用时轨迹步数下限（建议 ≥5） */
       minSteps: parseInteger(process.env.XHS_MCP_AD_TRAJECTORY_MIN_STEPS, 5),
     },
+    /**
+     * B3 Interact 会话化：goto 后重尾 dwell → ≥1 阅读 scroll → 轨迹 click → 动作后停留。
+     * 回滚：`XHS_MCP_AD_INTERACT_SESSION=false` → 跳过入页阅读/滚动与加长后停留（仍保留 B1/B2）。
+     */
+    interactSession: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_INTERACT_SESSION, true),
+      /** 入页后、动作前阅读 dwell 基准 ms */
+      preDwellMs: parseInteger(process.env.XHS_MCP_AD_INTERACT_PRE_DWELL_MS, 1500),
+      /** 动作后停留基准 ms（DoD 可观测 ≥ 该配置的合理采样下限） */
+      postStayMs: parseInteger(process.env.XHS_MCP_AD_INTERACT_POST_STAY_MS, 1200),
+      /** 最少阅读滚动次数（humanScroll / wheel） */
+      minReadScrolls: parseInteger(process.env.XHS_MCP_AD_INTERACT_MIN_SCROLLS, 1),
+    },
   },
 
   /**

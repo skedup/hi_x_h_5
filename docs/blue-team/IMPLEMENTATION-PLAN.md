@@ -125,11 +125,13 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | 模板：goto → 重尾 dwell → ≥1 阅读 scroll/wheel → 轨迹 click → 动作后停留 → close。可选 `keepPage`。**保留直链**；有机 feed 点入 → Wave D。 |
 | **DoD（替换旧「&lt;1s」）** | 单次 like 默认可观测：重尾 dwell、≥1 次阅读滚动、轨迹 `steps≥N`、动作后停留 ≥ Y；**禁止**仅用「goto 后 &lt;1s 关页」验收（现状已因 REQUEST_INTERVAL 满足该假条件）。 |
 | **依赖** | 建议 B1+B2 先合；若 PR 合并 B2+B3，须在 PR 内自带最小重尾 dwell |
+| **回滚** | `XHS_MCP_AD_INTERACT_SESSION=false` |
+| **触及** | [B3-CALL-SITES.md](./B3-CALL-SITES.md) |
 
 ### B4 · Explore 滚动 preset + 视频 + revise
 
