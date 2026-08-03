@@ -6,6 +6,7 @@
  * - C2.2 xsecToken 绑定（禁止跨账号复用同一 token，block/warn 两模式）
  * - C2.3 中央限额/熔断（每账号小时/日预算、动作后冷却、连续失败/验证码熔断进入人工）
  * - C2.4 跨账号 content/media 去重（相同评论正文 / 相同媒体哈希硬拦截）
+ * - A5 committed 状态 SQLite 持久化（XHS_MCP_AD_PERSIST；token 存哈希）
  *
  * 调用点统一为 core/multi-account.ts 的 executeWithAccount / executeWithMultipleAccounts，
  * 因此本模块是写行为的唯一共现控制汇聚点。
@@ -18,6 +19,29 @@ import { createLogger } from './logger.js';
 import { config } from './config.js';
 
 const log = createLogger('antidetect');
+
+/**
+ * A5 持久化后端（由 AntidetectPersistRepository 实现）。
+ * Guard 不直接依赖 better-sqlite3，便于单测注入内存假实现。
+ */
+export interface AdPersistStore {
+  upsertDedup(dedupKey: string, accountId: string, createdAt: number, expiresAt: number): void;
+  upsertToken(tokenHash: string, accountId: string, createdAt: number, expiresAt: number): void;
+  loadActiveDedups(nowMs: number): Array<{
+    dedup_key: string;
+    account_id: string;
+    created_at: number;
+    expires_at: number;
+  }>;
+  loadActiveTokens(nowMs: number): Array<{
+    token_hash: string;
+    account_id: string;
+    created_at: number;
+    expires_at: number;
+  }>;
+  deleteExpired(nowMs: number): number;
+  clearAll(): void;
+}
 
 /**
  * 在 [min, max) 内取随机整数（含 min，不含 max）。
@@ -122,8 +146,74 @@ export class CooccurrenceGuard {
   private tokenSucceeded = new Set<string>();
   /** 蓝军 #4：检查/预占的全局 policy 互斥锁 */
   private policyMutex = new AsyncMutex();
+  /** A5：可选持久化后端；未挂载或 persist.enabled=false 时仅内存 */
+  private persistStore: AdPersistStore | null = null;
 
   constructor(private cfg = config.antiDetect) {}
+
+  /** A5：是否启用 committed 落库 */
+  private isPersistEnabled(): boolean {
+    return !!this.cfg.persist?.enabled && !!this.persistStore;
+  }
+
+  /** xsecToken 统一用 SHA-256 作为内存/库键，避免明文落库与重启不一致 */
+  private tokenKey(token: string): string {
+    return sha256OfText(token);
+  }
+
+  private expiresAtFromNow(now = Date.now()): number {
+    const ttl = this.cfg.persist?.ttlMs ?? 30 * 24 * 60 * 60 * 1000;
+    return now + ttl;
+  }
+
+  /**
+   * A5：挂载持久化后端并加载未过期 committed 行（启动时由 initDatabase 调用）。
+   * 可重复调用；会先 GC 过期行再灌入内存（不清空已有 in-flight）。
+   */
+  attachPersistence(store: AdPersistStore): void {
+    this.persistStore = store;
+    if (!this.cfg.persist?.enabled) {
+      log.info('A5 守卫持久化已挂载但 config.persist.enabled=false，跳过加载');
+      return;
+    }
+    this.loadPersistent();
+  }
+
+  /** A5：从 store 加载 committed；测试可在 attach 后再次调用 */
+  loadPersistent(): void {
+    if (!this.persistStore || !this.cfg.persist?.enabled) return;
+    const now = Date.now();
+    const purged = this.persistStore.deleteExpired(now);
+    if (purged > 0) {
+      log.info('A5 GC 过期守卫行', { purged });
+    }
+    for (const row of this.persistStore.loadActiveDedups(now)) {
+      this.dedupCommitted.add(row.dedup_key);
+      this.dedupOwner.set(row.dedup_key, row.account_id);
+    }
+    for (const row of this.persistStore.loadActiveTokens(now)) {
+      this.tokenCommitted.add(row.token_hash);
+      this.tokenOwner.set(row.token_hash, row.account_id);
+    }
+    log.info('A5 已加载守卫持久化状态', {
+      dedup: this.dedupCommitted.size,
+      tokens: this.tokenCommitted.size,
+    });
+  }
+
+  private persistDedup(key: string, accountId: string): void {
+    if (!this.isPersistEnabled() || !this.persistStore) return;
+    const now = Date.now();
+    this.persistStore.deleteExpired(now);
+    this.persistStore.upsertDedup(key, accountId, now, this.expiresAtFromNow(now));
+  }
+
+  private persistTokenHash(tokenHash: string, accountId: string): void {
+    if (!this.isPersistEnabled() || !this.persistStore) return;
+    const now = Date.now();
+    this.persistStore.deleteExpired(now);
+    this.persistStore.upsertToken(tokenHash, accountId, now, this.expiresAtFromNow(now));
+  }
 
   /** C2.1 是否启用共现抑制（串行） */
   isCooccurrenceEnabled(): boolean {
@@ -186,7 +276,7 @@ export class CooccurrenceGuard {
         }
       }
 
-      // C2.2 xsecToken 绑定：跨账号复用处理
+      // C2.2 xsecToken 绑定：跨账号复用处理（内存键为 token 哈希，A5）
       if (this.cfg.xsecTokenBinding.enabled && input.xsecToken) {
         const owner = this.tokenOwnerOf(input.xsecToken);
         if (owner && owner !== input.accountId) {
@@ -218,23 +308,26 @@ export class CooccurrenceGuard {
           this.dedupInFlight.set(input.dedupKey, set);
           this.dedupOwner.set(input.dedupKey, input.accountId);
         }
-        // 同账号并发复用：把本次 reservationId 加入共享占用集合（引用计数）
+        // 同账号并发复用：把本次 reservationId 加入共享占用集合（引用计数，R4）
         set.add(resvId);
         reservedDedup = input.dedupKey;
       }
-      if (this.cfg.xsecTokenBinding.enabled && input.xsecToken && !this.tokenCommitted.has(input.xsecToken)) {
-        const owner = this.tokenOwnerOf(input.xsecToken);
-        // 未绑定 token 由本账号首次占用；同账号并发复用加入同一 reservation 集合。
-        // warn 模式下跨账号只放行业务，不加入原 owner 的集合，避免篡改来源归属。
-        if (!owner || owner === input.accountId) {
-          let set = this.tokenInFlight.get(input.xsecToken);
-          if (!set) {
-            set = new Set<string>();
-            this.tokenInFlight.set(input.xsecToken, set);
-            this.tokenOwner.set(input.xsecToken, input.accountId);
+      if (this.cfg.xsecTokenBinding.enabled && input.xsecToken) {
+        const tKey = this.tokenKey(input.xsecToken);
+        if (!this.tokenCommitted.has(tKey)) {
+          const owner = this.tokenOwnerOf(input.xsecToken);
+          // 未绑定 token 由本账号首次占用；同账号并发复用加入同一 reservation 集合。
+          // warn 模式下跨账号只放行业务，不加入原 owner 的集合，避免篡改来源归属。
+          if (!owner || owner === input.accountId) {
+            let set = this.tokenInFlight.get(tKey);
+            if (!set) {
+              set = new Set<string>();
+              this.tokenInFlight.set(tKey, set);
+              this.tokenOwner.set(tKey, input.accountId);
+            }
+            set.add(resvId);
+            reservedToken = input.xsecToken; // reservation 仍带明文，settle 时再 hash
           }
-          set.add(resvId);
-          reservedToken = input.xsecToken;
         }
       }
 
@@ -343,9 +436,11 @@ export class CooccurrenceGuard {
    */
   bindXsecSource(xsecToken: string, accountId: string): void {
     if (!this.cfg.xsecTokenBinding.enabled || !xsecToken) return;
-    if (!this.tokenCommitted.has(xsecToken)) {
-      this.tokenCommitted.add(xsecToken);
-      this.tokenOwner.set(xsecToken, accountId);
+    const tKey = this.tokenKey(xsecToken);
+    if (!this.tokenCommitted.has(tKey)) {
+      this.tokenCommitted.add(tKey);
+      this.tokenOwner.set(tKey, accountId);
+      this.persistTokenHash(tKey, accountId);
     }
   }
 
@@ -375,13 +470,13 @@ export class CooccurrenceGuard {
     return { known: true, allow: true };
   }
 
-  /** 查询 token 当前所有者（committed 或 in-flight 占用均计入） */
+  /** 查询 token 当前所有者（committed 或 in-flight 占用均计入；键为哈希） */
   private tokenOwnerOf(token: string): string | undefined {
-    return this.tokenOwner.get(token);
+    return this.tokenOwner.get(this.tokenKey(token));
   }
 
   /**
-   * 测试/运维用：重置进程内守卫状态。
+   * 测试/运维用：重置进程内守卫状态（不清持久化库；测辅请用 clearPersistent）。
    */
   reset(): void {
     this.hourly.clear();
@@ -399,6 +494,15 @@ export class CooccurrenceGuard {
     this.tokenSucceeded.clear();
   }
 
+  /**
+   * A5 测辅：清空持久化表 + 内存状态（含 in-flight）。
+   * 未挂载 store 时等价于 reset()。
+   */
+  clearPersistent(): void {
+    this.persistStore?.clearAll();
+    this.reset();
+  }
+
   // ---- 内部 ----
 
   /**
@@ -414,26 +518,31 @@ export class CooccurrenceGuard {
     this.dedupInFlight.delete(key);
     if (this.dedupSucceeded.has(key)) {
       this.dedupCommitted.add(key);
+      const owner = this.dedupOwner.get(key);
+      if (owner) this.persistDedup(key, owner);
     } else {
       this.dedupOwner.delete(key);
     }
     this.dedupSucceeded.delete(key);
   }
 
-  /** xsecToken reservation 的收敛逻辑，与 dedup 保持相同的并发语义。 */
+  /** xsecToken reservation 的收敛逻辑；内存键为 token 哈希（A5）。 */
   private settleTokenReservation(token: string, id: string, succeeded: boolean): void {
-    const set = this.tokenInFlight.get(token);
+    const tKey = this.tokenKey(token);
+    const set = this.tokenInFlight.get(tKey);
     if (!set || !set.delete(id)) return;
-    if (succeeded) this.tokenSucceeded.add(token);
+    if (succeeded) this.tokenSucceeded.add(tKey);
     if (set.size > 0) return;
 
-    this.tokenInFlight.delete(token);
-    if (this.tokenSucceeded.has(token)) {
-      this.tokenCommitted.add(token);
+    this.tokenInFlight.delete(tKey);
+    if (this.tokenSucceeded.has(tKey)) {
+      this.tokenCommitted.add(tKey);
+      const owner = this.tokenOwner.get(tKey);
+      if (owner) this.persistTokenHash(tKey, owner);
     } else {
-      this.tokenOwner.delete(token);
+      this.tokenOwner.delete(tKey);
     }
-    this.tokenSucceeded.delete(token);
+    this.tokenSucceeded.delete(tKey);
   }
 
   private checkBudget(accountId: string): boolean {

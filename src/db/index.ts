@@ -21,6 +21,7 @@ import {
   ConfigRepository,
   MyNotesRepository,
   ExploreRepository,
+  AntidetectPersistRepository,
 } from './repos/index.js';
 
 // Re-export domain models
@@ -61,6 +62,8 @@ export class XhsDatabase {
   readonly config: ConfigRepository;
   readonly myNotes: MyNotesRepository;
   readonly explore: ExploreRepository;
+  /** A5：共现守卫 committed 状态持久化 */
+  readonly adPersist: AntidetectPersistRepository;
 
   /**
    * Create a new database instance.
@@ -91,6 +94,7 @@ export class XhsDatabase {
     this.config = new ConfigRepository(this.db);
     this.myNotes = new MyNotesRepository(this.db);
     this.explore = new ExploreRepository(this.db);
+    this.adPersist = new AntidetectPersistRepository(this.db);
   }
 
   /**
@@ -281,6 +285,9 @@ export async function initDatabase(): Promise<XhsDatabase> {
     await ensureDirectories();
     dbInstance = new XhsDatabase();
     await dbInstance.init();
+    // A5：启动时挂载守卫持久化并加载 committed 状态
+    const { getCooccurrenceGuard } = await import('../core/antidetect.js');
+    getCooccurrenceGuard().attachPersistence(dbInstance.adPersist);
   }
   return dbInstance;
 }
