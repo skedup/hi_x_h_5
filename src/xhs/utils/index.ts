@@ -8,11 +8,13 @@ import fs from 'fs-extra';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import type { Page } from 'patchright';
+import type { Page, ElementHandle, Locator } from 'patchright';
 import { config, paths } from '../../core/config.js';
+import { createLogger } from '../../core/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const log = createLogger('xhs-utils');
 
 /**
  * Sleep for a specified duration.
@@ -123,6 +125,198 @@ export async function heavyTailDelayBetween(minMs: number, maxMs: number): Promi
   const hi = Math.max(lo, Math.max(minMs, maxMs));
   const base = Math.sqrt(lo * hi);
   await heavyTailDelay(base, { minMs: lo, maxMs: hi });
+}
+
+/** B2：最近一次轨迹点击元数据（测辅 / DoD 可观测） */
+export interface TrajectoryClickMeta {
+  steps: number;
+  usedForce: boolean;
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+  disabled: boolean;
+}
+
+let lastTrajectoryMeta: TrajectoryClickMeta | null = null;
+
+/** 读取最近一次 `clickWithTrajectory` 元数据（测试用） */
+export function getLastTrajectoryMeta(): TrajectoryClickMeta | null {
+  return lastTrajectoryMeta;
+}
+
+export interface ClickWithTrajectoryOptions {
+  /** 轨迹步数；启用时强制 ≥ minSteps（默认 5） */
+  steps?: number;
+  /** 最小步数下限（默认 config / 5） */
+  minSteps?: number;
+  /** 到达后 hover 停顿基准 ms（默认 80，走重尾） */
+  hoverDwellMs?: number;
+  /**
+   * 仅当常规轨迹点击失败时允许 force 直点（会 warn）。
+   * 默认 false——禁止默认 force。
+   */
+  allowForceFallback?: boolean;
+  button?: 'left' | 'right' | 'middle';
+}
+
+function cubicBezier(
+  t: number,
+  p0: number,
+  p1: number,
+  p2: number,
+  p3: number,
+): number {
+  const u = 1 - t;
+  return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
+}
+
+/** 进程内记录上次鼠标位置，供下一次轨迹起点（无则用视口随机角落） */
+let lastMousePos: { x: number; y: number } | null = null;
+
+/** ElementHandle / Locator / 视口坐标 */
+export type ClickTarget = ElementHandle | Locator | { x: number; y: number };
+
+function isClickableTarget(
+  target: ClickTarget,
+): target is ElementHandle | Locator {
+  return typeof (target as ElementHandle | Locator).boundingBox === 'function';
+}
+
+async function resolveClickPoint(
+  target: ClickTarget,
+): Promise<{ x: number; y: number } | null> {
+  if (isClickableTarget(target)) {
+    const box = await target.boundingBox();
+    if (!box || box.width <= 0 || box.height <= 0) return null;
+    const ox = (Math.random() - 0.5) * box.width * 0.4;
+    const oy = (Math.random() - 0.5) * box.height * 0.4;
+    return {
+      x: box.x + box.width / 2 + ox,
+      y: box.y + box.height / 2 + oy,
+    };
+  }
+  return { x: target.x, y: target.y };
+}
+
+/**
+ * B2：多步 Bezier 指针轨迹 + hover dwell 后点击（Fitts 风格步数）。
+ * DoD：启用时 `steps ≥ minSteps`（默认 5），`getLastTrajectoryMeta()` 可观测。
+ * 默认禁 force；仅 `allowForceFallback` 失败时 force+warn。
+ * 回滚：`XHS_MCP_AD_TRAJECTORY=false` → 元素/坐标直点。
+ */
+export async function clickWithTrajectory(
+  page: Page,
+  target: ClickTarget,
+  options: ClickWithTrajectoryOptions = {},
+): Promise<TrajectoryClickMeta> {
+  const traj = config.antiDetect.trajectory;
+  const minSteps = Math.max(1, options.minSteps ?? traj?.minSteps ?? 5);
+  const button = options.button ?? 'left';
+  const point = await resolveClickPoint(target);
+
+  if (!traj?.enabled) {
+    if (point) {
+      await page.mouse.click(point.x, point.y, { button });
+      lastMousePos = point;
+    } else if (isClickableTarget(target)) {
+      await target.click({ button });
+    } else {
+      throw new Error('clickWithTrajectory: invalid target when trajectory disabled');
+    }
+    const meta: TrajectoryClickMeta = {
+      steps: 1,
+      usedForce: false,
+      from: lastMousePos ?? { x: 0, y: 0 },
+      to: point ?? { x: 0, y: 0 },
+      disabled: true,
+    };
+    lastTrajectoryMeta = meta;
+    return meta;
+  }
+
+  if (!point) {
+    if (options.allowForceFallback && isClickableTarget(target)) {
+      log.warn('B2 轨迹：无法取得 boundingBox，force fallback');
+      await target.click({ force: true, button });
+      const meta: TrajectoryClickMeta = {
+        steps: 0,
+        usedForce: true,
+        from: lastMousePos ?? { x: 0, y: 0 },
+        to: { x: 0, y: 0 },
+        disabled: false,
+      };
+      lastTrajectoryMeta = meta;
+      return meta;
+    }
+    throw new Error('clickWithTrajectory: element has no bounding box');
+  }
+
+  const viewport = page.viewportSize() ?? { width: 1280, height: 800 };
+  const from = lastMousePos ?? {
+    x: randomBetween(40, Math.max(80, viewport.width * 0.25)),
+    y: randomBetween(40, Math.max(80, viewport.height * 0.25)),
+  };
+
+  // Fitts：距离越大步数略增，但不少于 minSteps
+  const dist = Math.hypot(point.x - from.x, point.y - from.y);
+  const fittsSteps = Math.ceil(Math.log2(dist / 50 + 1) * 3);
+  const steps = Math.max(minSteps, options.steps ?? fittsSteps);
+
+  // 三次 Bezier 控制点（轻微弧线，避免直线插值指纹）
+  const cx1 = from.x + (point.x - from.x) * (0.25 + Math.random() * 0.2) + (Math.random() - 0.5) * dist * 0.25;
+  const cy1 = from.y + (point.y - from.y) * (0.1 + Math.random() * 0.2) + (Math.random() - 0.5) * dist * 0.3;
+  const cx2 = from.x + (point.x - from.x) * (0.55 + Math.random() * 0.25) + (Math.random() - 0.5) * dist * 0.2;
+  const cy2 = from.y + (point.y - from.y) * (0.6 + Math.random() * 0.25) + (Math.random() - 0.5) * dist * 0.25;
+
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const x = cubicBezier(t, from.x, cx1, cx2, point.x);
+    const y = cubicBezier(t, from.y, cy1, cy2, point.y);
+    await page.mouse.move(x, y);
+    if (i < steps) {
+      await heavyTailDelay(12, { minMs: 4, maxMs: 28 });
+    }
+  }
+
+  const hoverBase = options.hoverDwellMs ?? 80;
+  await heavyTailDelay(hoverBase, {
+    minMs: Math.max(20, Math.round(hoverBase * 0.5)),
+    maxMs: Math.round(hoverBase * 2.5),
+  });
+
+  try {
+    await page.mouse.down({ button });
+    await heavyTailDelay(40, { minMs: 15, maxMs: 90 });
+    await page.mouse.up({ button });
+  } catch (err) {
+    if (options.allowForceFallback && isClickableTarget(target)) {
+      log.warn('B2 轨迹 mouse 点击失败，force fallback', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      await target.click({ force: true, button });
+      const meta: TrajectoryClickMeta = {
+        steps,
+        usedForce: true,
+        from,
+        to: point,
+        disabled: false,
+      };
+      lastTrajectoryMeta = meta;
+      lastMousePos = point;
+      return meta;
+    }
+    throw err;
+  }
+
+  lastMousePos = point;
+  const meta: TrajectoryClickMeta = {
+    steps,
+    usedForce: false,
+    from,
+    to: point,
+    disabled: false,
+  };
+  lastTrajectoryMeta = meta;
+  return meta;
 }
 
 /**

@@ -5,7 +5,7 @@
  */
 
 import { InteractionResult, CommentResult } from '../../types.js';
-import { sleep, navigateWithRetry, typeLikeHuman, jitteredSleep, rateLimitedSleep, heavyTailDelay } from '../../utils/index.js';
+import { sleep, navigateWithRetry, typeLikeHuman, jitteredSleep, rateLimitedSleep, heavyTailDelay, clickWithTrajectory } from '../../utils/index.js';
 import { BrowserContextManager } from '../context.js';
 import { REQUEST_INTERVAL, INTERACTION_SELECTORS, COMMENT_SELECTORS } from '../constants.js';
 import { createLogger } from '../../../core/logger.js';
@@ -69,7 +69,7 @@ export class InteractService {
       if (shouldClick) {
         const likeBtn = await page.$(INTERACTION_SELECTORS.likeButton);
         if (likeBtn) {
-          await likeBtn.click();
+          await clickWithTrajectory(page, likeBtn);
           await heavyTailDelay(500, { minMs: 300, maxMs: 700 }); // B1：动作后 dwell
         } else {
           return {
@@ -149,7 +149,7 @@ export class InteractService {
       if (shouldClick) {
         const collectBtn = await page.$(INTERACTION_SELECTORS.collectButton);
         if (collectBtn) {
-          await collectBtn.click();
+          await clickWithTrajectory(page, collectBtn);
           await heavyTailDelay(500, { minMs: 300, maxMs: 700 }); // B1：动作后 dwell
         } else {
           return {
@@ -207,7 +207,7 @@ export class InteractService {
       // 点击评论输入框触发器
       const inputTrigger = await page.$(COMMENT_SELECTORS.commentInputTrigger);
       if (inputTrigger) {
-        await inputTrigger.click();
+        await clickWithTrajectory(page, inputTrigger);
         await heavyTailDelay(500, { minMs: 300, maxMs: 700 }); // B1：打开输入框后 dwell
       }
 
@@ -217,7 +217,7 @@ export class InteractService {
         return { success: false, error: 'Comment input not found' };
       }
 
-      await commentInput.click();
+      await clickWithTrajectory(page, commentInput);
       await typeLikeHuman(page, content);
       await heavyTailDelay(300, { minMs: 180, maxMs: 420 }); // B1：输入后短停
 
@@ -227,7 +227,7 @@ export class InteractService {
         return { success: false, error: 'Submit button not found' };
       }
 
-      await submitBtn.click();
+      await clickWithTrajectory(page, submitBtn);
       await jitteredSleep(1000); // 提交结果确认：功能等待
 
       const submitted = await page
@@ -303,7 +303,7 @@ export class InteractService {
         return { success: false, error: 'Reply button not found' };
       }
 
-      await replyBtn.click();
+      await clickWithTrajectory(page, replyBtn);
       await heavyTailDelay(1000, { minMs: 600, maxMs: 1400 }); // B1：点开回复后 dwell
 
       // 输入回复内容（使用与 reference project 相同的选择器）
@@ -312,7 +312,7 @@ export class InteractService {
         return { success: false, error: 'Reply input not found' };
       }
 
-      await commentInput.click();
+      await clickWithTrajectory(page, commentInput);
       await typeLikeHuman(page, content);
       await heavyTailDelay(500, { minMs: 300, maxMs: 700 }); // B1：输入后短停
 
@@ -322,7 +322,7 @@ export class InteractService {
         return { success: false, error: 'Submit button not found' };
       }
 
-      await submitBtn.click();
+      await clickWithTrajectory(page, submitBtn);
       await jitteredSleep(2000); // 等待 2 秒与 reference project 一致（功能确认）
 
       const submitted = await page
@@ -524,7 +524,7 @@ export class InteractService {
 
       if (shouldClick) {
         // 真实点击（CDP 鼠标事件，isTrusted=true，规避 dispatchEvent 的 isTrusted=false）
-        await likeBtn.click();
+        await clickWithTrajectory(page, likeBtn);
         await heavyTailDelay(500, { minMs: 300, maxMs: 700 }); // B1：动作后 dwell
       }
 
