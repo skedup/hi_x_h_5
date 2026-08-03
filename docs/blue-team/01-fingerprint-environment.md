@@ -1,7 +1,8 @@
 # 01 · 浏览器 / 设备指纹 / 环境 / CDP 面
 
 > 角度：平台如何判定「这不是一台正常真人用的 Chrome」。  
-> 审计日期：2026-08-03 · 源码实证 · 忽略既有 `docs/blue/`。
+> 审计日期：2026-08-03 · 源码实证 · 忽略既有 `docs/blue/`。  
+> Review： [指纹 review](1600ce01-1923-47b5-a075-6f4f0114d87c) `request-changes` → 本修订已吸收。
 
 ---
 
@@ -11,10 +12,13 @@
 |----|------|
 | 驱动 | `patchright`（非 playwright） |
 | 启动 | `chromium.launchPersistentContext` + `channel: 'chrome'` |
-| 隔离 | 每账号 `browser-profiles/{profileId}` |
+| 隔离 | 每账号 `browser-profiles/{profileId}`（Cookie/存储；**非**硬件指纹） |
 | 写门禁 | `headlessWriteGate` 默认拒绝 headless 写 |
+| headless 默认 | `config.browser.headless` **默认 `false`** |
 
 核心入口：`src/xhs/clients/context.ts` · `constants.ts` · `core/profile.ts` · `core/login-session.ts`。
+
+> **术语**：代码注释中的「设备指纹盐」指 profile 目录内持久化站点标识（Cookie/本地存储等），**不是** Canvas/WebGL 等硬件指纹隔离。勿据此认为同机多号已解关联。
 
 ---
 
@@ -24,53 +28,59 @@
 
 #### P0-1 同机多账号共享硬件指纹
 
-- **现象**：独立 profile 只隔离 Cookie / localStorage / IndexedDB / SW；Canvas、WebGL、AudioContext、字体列表、`hardwareConcurrency`、屏幕参数在同机全账号一致。
+- **现象**：独立 profile 只隔离 Cookie / localStorage / IndexedDB / SW；Canvas、WebGL、AudioContext、字体列表、`hardwareConcurrency`、屏幕/`devicePixelRatio`/`colorDepth`、`MediaDevices.enumerateDevices` 等在同机全账号一致。
 - **证据**：`launchPersistentContext` 选项仅有 `headless` / `channel` / `args` / `viewport` / `proxy`（`context.ts:28-36`）；全仓无 per-account `userAgent` / `timezoneId` / `locale` / `geolocation` / `deviceScaleFactor`。
-- **平台用法**：设备指纹簇 × 多 UID → 农场连通分量。
+- **平台用法**：设备指纹簇 × 多 UID → 农场连通分量。完整隔离需一容器/一云手机一账号——本 Wave C 只做环境自洽。
 
 #### P0-2 启动参数偏离真实桌面 Chrome
 
 - **证据**：`BROWSER_ARGS`（`constants.ts:10-26`）含 `--no-sandbox`、`--disable-setuid-sandbox`、`--disable-blink-features=AutomationControlled`、`--disable-infobars`、`--deny-permission-prompts` 等。
-- **风险**：command-line 指纹；权限一律拒绝使 Notification/geo 权限态异常。patchright 已处理 AutomationControlled，手工再塞增加差异面。
+- **风险**：command-line **真增量**是 no-sandbox / deny-permission-prompts / disable-infobars 等。`AutomationControlled` 与 patchright 默认**重复**（patchright 本就会加），手工再写通常被 Chrome 去重，**不会**比干净 patchright 多出新 flag——删除以免误解即可，勿写成「去掉后 webdriver 更好」。
+- `--deny-permission-prompts` 使 Notification/geo 权限态异常，并与后续 C3 `geolocation` 注入冲突（须配合 `grantPermissions` 且先去掉 deny）。
 
-#### P0-3 登录可走 headless + 固定 viewport
+#### P0-3 登录可走 headless + 固定 viewport（条件触发）
 
-- **证据**：`viewport: headless ? { width: 1920, height: 1080 } : null`（`context.ts:32-34`）；`LoginSessionManager.createSession` 直接用 `config.browser.headless`（`login-session.ts:171-175`）；headless 写门禁**不覆盖** login/read（`multi-account.ts:151-160`）。
-- **风险**：登录是设备建档窗口；`screen≈viewport=1920×1080` 是经典组合异常。
+- **证据**：`viewport: headless ? { width: 1920, height: 1080 } : null`（`context.ts:32-34`）；`LoginSessionManager.createSession` 透传 `config.browser.headless`（`login-session.ts`）；headless 写门禁**不覆盖** login/read。
+- **默认**：出厂 `XHS_MCP_HEADLESS` 未设时为 **false**（有头）。
+- **红线触发**：显式 `XHS_MCP_HEADLESS=true`（或调用传入 headless）时，登录建档走 headless + 固定 1920×1080 → `screen≈viewport` 经典异常。
+
+#### P0-4（增补）代理下 WebRTC / ICE 本地 IP 泄漏
+
+- 全仓无 WebRTC 抑制。A1 强制住宅代理后，若 STUN 仍暴露宿主/机房 IP，形成「出口 IP ≠ 真实网络」——比单纯缺 timezone 更致命。须在 Wave C / A1 联调中处理或文档接受风险。
 
 ### P1
 
 | ID | 向量 | 证据 | 说明 |
 |----|------|------|------|
-| P1-1 | 代理未与时区/locale/geo 绑定 | `proxy: { server }` only（`context.ts:35`） | IP 属地与 `Intl`/语言不一致 |
-| P1-2 | 主世界 `evaluate(..., false)` 大量读 `__INITIAL_STATE__` | content/search/explore/interact/login-session 等 | 功能刚需，但离开 patchright 默认 isolated 路径；`waitForFunction` 默认 main |
-| P1-3 | 部分 `evaluate`/`$$eval` 未显式传 world | creator / interact 找评论 / `humanScrollToBottom` 等 | DOM 与状态脚本混用两套 world，策略未统一 |
-| P1-4 | 发布配图 Node `fetch` 旁路 | `downloadImageFromUrl`（`utils/index.ts:620+`） | 浏览器 egress（含 proxy）与 Node TLS/IP 分裂；账号下载已走 `APIRequestContext`，发布路径未对齐 |
-| P1-5 | `deleteCookies` 只清 Cookie | `context.ts:193-207` | 不清 profile 持久化面；与真人清会话不符 |
-| P1-6 | DB `storageState` 与磁盘 profile 双源 | AccountPool 传 `state`，但 launch **不注入** | 真源是 persistent profile；门闩语义易漂移 |
+| P1-1 | 代理未与时区/locale/geo 绑定 | `proxy: { server }` only（`context.ts:35`） | A1 先于 C3 上线会出现「异地 IP + 宿主机 Intl」——比无代理更像农场 |
+| P1-2 | 主世界 `evaluate(..., false)` 读 `__INITIAL_STATE__` | 多 service | 功能刚需；`waitForFunction` **无** `isolatedContext` API，服务端默认 `world=main`，所有状态轮询必然 main |
+| P1-3 | 部分 `evaluate`/`$$eval` 未显式传 world | creator / interact / utils | DOM 与状态脚本混用两套 world |
+| P1-4 | 发布配图 Node `fetch` 旁路 | `downloadImageFromUrl`（`utils/index.ts`） | 不仅 IP/TLS 分裂：无 Cookie、无 Referer、无 `Sec-Fetch-*`；账号 `downloadFile` 已补这些头 |
+| P1-5 | `deleteCookies` 只清 Cookie | `context.ts:220-238`：`clearCookies` + close | profile 目录与 IndexedDB 等仍在；与真人清会话不符 |
+| P1-6 | DB `storageState` 与磁盘 profile 双源 | AccountPool 传 `state`，launch **不注入** | 真源是 persistent profile |
 
 ### P2
 
 | ID | 向量 | 说明 |
 |----|------|------|
-| P2-1 | 文档提 `stealth.js`，仓库中不存在 | 无 `addInitScript` 反而是好事；勿为「有 stealth」去注入 navigator |
-| P2-2 | postinstall 装 chromium，运行要系统 Chrome | 版本/路径漂移 |
-| P2-3 | 无 per-account 屏参差异化 | 同机 headful 多账号 screen 指纹几乎相同 |
-| P2-4 | QR 经 `api.qrserver.com` | 登录侧信道，非主指纹面 |
+| P2-1 | 文档提 `stealth.js`，仓库中不存在 | 无 `addInitScript` 反而是好事 |
+| P2-2 | postinstall 装 chromium，运行要系统 Chrome | 版本/路径漂移；`CLAUDE.md` 仍可能写错 headless 默认 |
+| P2-3 | 无 per-account 屏参 / 字体 / Audio 等差异化 | 同机共现边 |
+| P2-4 | QR 经 `api.qrserver.com` | 登录侧信道 |
 
 ---
 
 ## 3. 已做得好的点
 
-1. patchright + `channel: 'chrome'` + persistent context（官方推荐组合）。
-2. `profileId` 缺失 fail-closed，禁止回退共享目录。
-3. Headful 时 `viewport: null`，消除 `screen == viewport`。
+1. patchright + `channel: 'chrome'` + persistent context。
+2. `profileId` 缺失 fail-closed。
+3. Headful 时 `viewport: null`。
 4. 写操作 headless 门禁默认开。
-5. **不伪造 `webId`**，交由平台自然发放。
-6. 已剔除 `--disable-notifications`、后台 timer throttling 等自曝 args。
-7. 账号下载走 `context.request`（Cookie + proxy 同源）。
-8. 登录临时目录 → `finalizeLoginProfile` 转正，避免抢共享 profile。
-9. 交互倾向真实 CDP mouse/keyboard（`isTrusted=true`）。
+5. **不伪造 `webId`**。
+6. 已剔除 `--disable-notifications`、后台 timer throttling 等。
+7. 账号下载走 `context.request`（Cookie + proxy 同源）+ 部分 Sec-Fetch。
+8. 登录临时目录 → `finalizeLoginProfile` 转正。
+9. 交互走 CDP Input（`isTrusted=true`）；explore 仍有 `force: true`（行为面另册）。
 
 ---
 
@@ -78,34 +88,29 @@
 
 ### P0
 
-1. **收紧 `BROWSER_ARGS`**：默认去掉 `--no-sandbox` / `--disable-setuid-sandbox`（仅 CI env 打开）；评估去掉 `--deny-permission-prompts`；AutomationControlled 交给 patchright。
-2. **登录强制 headful**：建档阶段禁止固定 1920×1080。
-3. **同机共现工程约束**：并发账号上限；强制独立住宅代理；监控同 canvas/WebGL × 多 userId。
+1. 收紧 `BROWSER_ARGS`：默认去掉 no-sandbox / deny-permission-prompts；删重复的 AutomationControlled 行；容器用 env 开 no-sandbox。
+2. 登录强制 headful + `viewport: null`；无 DISPLAY 用 Xvfb 或 `ALLOW_HEADLESS_LOGIN`。
+3. WebRTC 抑制或代理环境下的泄漏自检；同机共现工程约束。
+4. **A1 与 C3 捆绑**：不得长期「有 proxy 无时区」。
 
 ### P1
 
-4. 账号级 `timezoneId` / `locale` / `geolocation` 与代理属地对齐并持久化到 DB。
-5. 统一 evaluate 策略：读 `__INITIAL_STATE__` → 明确 main；纯 DOM → utility；封装 `$$eval`/`waitForFunction`。
-6. `resolveImagePaths` 改走账号 `APIRequestContext`。
-7. 登出 = 归档/删除 profile，不只 `clearCookies`。
-8. 明确 storage 真源：以磁盘 profile 为准；DB state 仅审计快照。
-
-### P2
-
-9. postinstall 对齐 `patchright install chrome` 或文档锁定 Chrome 版本矩阵。
-10. 删除不存在的 stealth 描述；**禁止**随意 `addInitScript` 补丁 navigator。
+5. 账号级 timezone/locale/geolocation + `grantPermissions`；校验 `navigator.languages` / Accept-Language。
+6. evaluate 封装 + `waitForFunction` 主世界等待策略成文。
+7. `resolveImagePaths` 对齐 `downloadFile`（proxy + Referer + Sec-Fetch）。
+8. 登出 = 归档 profile（复用 `profile.ts` 模式）。
 
 ---
 
 ## 5. 检测用例清单（自检）
 
-- [ ] 同机双账号、无代理，对比 Canvas/WebGL hash 是否相同
-- [ ] Headless 登录是否仍可走通
-- [ ] Headless 时 viewport 是否固定 1920×1080
-- [ ] 异地代理下 `Intl` 时区是否仍为宿主机
-- [ ] 发布 HTTP 配图时 Node 出口 IP 是否与浏览器一致
-- [ ] `deleteCookies` 后 profile 内 localStorage/IndexedDB 是否仍在
-- [ ] `Notification` / 权限 API 在默认 args 下是否异常
+- [ ] 同机双账号对比 Canvas/WebGL hash
+- [ ] `HEADLESS=true` 时登录 viewport 是否 1920×1080
+- [ ] 异地代理下 `Intl` / `navigator.languages` 是否仍为宿主机
+- [ ] 代理下 WebRTC 候选地址是否暴露宿主 IP
+- [ ] 发布配图请求是否带与浏览一致的 Referer/Sec-Fetch/Cookie 通道
+- [ ] `deleteCookies` 后 profile 内 IndexedDB 是否仍在
+- [ ] 去掉 deny 并 grant geolocation 后 `permissions.query` 是否一致
 
 ---
 
@@ -113,5 +118,5 @@
 
 | 项 | 状态 |
 |----|------|
-| 审计 | open |
+| 审计 | open（review 修订已合入文档） |
 | Wave C 整改 | pending |
