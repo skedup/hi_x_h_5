@@ -24,7 +24,20 @@ const WAIT_DEFAULTS = {
   POLL_MS: 100,
 } as const;
 
+/** 页面/上下文/浏览器已关闭等不可恢复错误 —— 应立即抛出，勿吞掉后空转至超时 */
+const FATAL_EVAL_ERROR_RE =
+  /target closed|has been closed|browser.*closed|context.*closed|page\.?.*closed|session closed|connection closed/i;
+
 type PageFn<Arg, R> = (arg: Arg) => R | Promise<R>;
+
+/**
+ * evaluate 失败是否应立即中止等待（而非当作导航抖动继续轮询）。
+ * @internal 导出供单测
+ */
+export function isFatalPageEvalError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return FATAL_EVAL_ERROR_RE.test(msg);
+}
 
 /**
  * 主世界 evaluate：仅用于读页面 JS 状态（如 `__INITIAL_STATE__`）。
@@ -65,6 +78,30 @@ export interface WaitForMainStateOptions {
   pollingIntervalMs?: number;
 }
 
+async function pollUntilTruthy<Arg>(
+  label: string,
+  evaluateOnce: (arg: Arg) => Promise<unknown>,
+  arg: Arg,
+  options: WaitForMainStateOptions,
+): Promise<void> {
+  const timeout = options.timeout ?? WAIT_DEFAULTS.TIMEOUT_MS;
+  const interval = options.pollingIntervalMs ?? WAIT_DEFAULTS.POLL_MS;
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    try {
+      const value = await evaluateOnce(arg);
+      if (value) return;
+    } catch (error) {
+      // 导航中途 context destroyed 等可恢复；closed 类错误立即抛出，避免空转掩盖根因
+      if (isFatalPageEvalError(error)) throw error;
+    }
+    await sleep(interval);
+  }
+
+  throw new Error(`${label} timed out after ${timeout}ms`);
+}
+
 /**
  * 等待主世界条件成立。
  *
@@ -79,21 +116,12 @@ export async function waitForMainState<Arg>(
   arg: Arg,
   options: WaitForMainStateOptions = {},
 ): Promise<void> {
-  const timeout = options.timeout ?? WAIT_DEFAULTS.TIMEOUT_MS;
-  const interval = options.pollingIntervalMs ?? WAIT_DEFAULTS.POLL_MS;
-  const start = Date.now();
-
-  while (Date.now() - start < timeout) {
-    try {
-      const value = await evalMainState(page, pageFunction, arg);
-      if (value) return;
-    } catch {
-      // 导航中途 evaluate 可能短暂失败，继续轮询直至超时
-    }
-    await sleep(interval);
-  }
-
-  throw new Error(`waitForMainState timed out after ${timeout}ms`);
+  await pollUntilTruthy(
+    'waitForMainState',
+    (a) => evalMainState(page, pageFunction, a),
+    arg,
+    options,
+  );
 }
 
 /**
@@ -106,21 +134,7 @@ export async function waitForDom<Arg>(
   arg: Arg,
   options: WaitForMainStateOptions = {},
 ): Promise<void> {
-  const timeout = options.timeout ?? WAIT_DEFAULTS.TIMEOUT_MS;
-  const interval = options.pollingIntervalMs ?? WAIT_DEFAULTS.POLL_MS;
-  const start = Date.now();
-
-  while (Date.now() - start < timeout) {
-    try {
-      const value = await evalDom(page, pageFunction, arg);
-      if (value) return;
-    } catch {
-      // 忽略短暂失败
-    }
-    await sleep(interval);
-  }
-
-  throw new Error(`waitForDom timed out after ${timeout}ms`);
+  await pollUntilTruthy('waitForDom', (a) => evalDom(page, pageFunction, a), arg, options);
 }
 
 /**

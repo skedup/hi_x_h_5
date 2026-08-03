@@ -17,6 +17,8 @@
 
 **禁止**：业务路径裸 `page.waitForFunction` 读状态；读状态时遗漏 `false`（落入隔离世界拿不到 Vue state）。
 
+轮询等待：导航抖动（如 context destroyed）可继续；`Target closed` / page·context·browser 已关闭等致命错误**立即抛出**，避免空转至超时掩盖根因。
+
 模块：`src/xhs/utils/page-eval.ts`（`utils/index.ts` 再导出）。
 
 ## 迁移

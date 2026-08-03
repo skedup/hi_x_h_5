@@ -1162,5 +1162,6 @@ export {
   waitForMainState,
   waitForDom,
   waitForInitialState,
+  isFatalPageEvalError,
   type WaitForMainStateOptions,
 } from './page-eval.js';
