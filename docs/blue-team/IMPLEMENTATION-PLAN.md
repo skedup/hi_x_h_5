@@ -27,10 +27,10 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | ① proxy 支持 `{ server, username?, password? }`（DB JSON 或规范化 URL）。② **`accounts.length>1` 或 `all`**：每账号非空且规范化 `server`（host:port）互异，否则 skip/`proxy_required` 或 `proxy_shared`。③ **单账号写**：默认允许无 proxy（威胁模型：单号同机风险低于多号共现）；文档标明。④ env：`XHS_MCP_AD_PROXY_REQUIRED` — 多账号批次默认强制；提供迁移期 `warn`（只日志不拦）→ 再切 `block`。⑤ **不做 /24 匹配**（无出口 IP 解析）；若未来要做则单列 P1+DoD。⑥ 与 C3 联调列入出口验收。 |
-| **触及** | `config.ts` · `multi-account.ts` · schema/migration · `accounts.ts` · `context.ts` · `tools/account.ts` |
+| **触及** | `config.ts` · `multi-account.ts` · `proxy.ts` · `context.ts` · `tools/account.ts` · [A1-PROXY-RUNBOOK.md](./A1-PROXY-RUNBOOK.md) |
 | **DoD** | 双账号无 proxy / 同 server → 被拦；认证 proxy 传入 launch；单测覆盖；存量账号审计脚本或文档 runbook |
 | **回滚** | `warn` 模式或 `false` |
 

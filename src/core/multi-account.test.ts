@@ -144,6 +144,7 @@ describe('蓝军 #4/#5 并发原子预占与业务失败熔断', () => {
     cfg.antiDetect.cooccurrence.enabled = false;
     cfg.antiDetect.quota.enabled = true;
     cfg.antiDetect.quota.perAccountDaily = 100;
+    cfg.antiDetect.proxyRequired.mode = 'off'; // 本套聚焦配额/熔断，关闭 A1 门禁
     cfg.browser.headless = false;
   });
   beforeEach(() => {
@@ -242,5 +243,119 @@ describe('蓝军 #4/#5 并发原子预占与业务失败熔断', () => {
       capability: 'write',
     });
     expect(r2.success).toBe(true);
+  });
+});
+
+describe('A1 多账号写代理门禁', () => {
+  beforeAll(() => {
+    cfg.antiDetect.liveness.enabled = false;
+    cfg.antiDetect.headlessWriteGate.enabled = false;
+    cfg.antiDetect.quota.enabled = false;
+    cfg.antiDetect.cooccurrence.enabled = false;
+    cfg.browser.headless = false;
+  });
+  beforeEach(() => {
+    cfg.antiDetect.proxyRequired.mode = 'block';
+    getCooccurrenceGuard().reset();
+  });
+
+  function poolWith(accts: Array<{ id: string; name: string; status: string; proxy?: string | null }>) {
+    const pool: any = {
+      getAccount: (key: string) =>
+        accts.find((a) => a.name === key || a.id === key) ?? null,
+      acquireLock: async () => () => {},
+      getClient: async () => ({ fake: true }),
+      touchAccount: () => {},
+      listAccounts: () => accts,
+    };
+    const db: any = { operations: { log: () => {} } };
+    return { pool: pool as unknown as AccountPool, db: db as unknown as XhsDatabase };
+  }
+
+  it('双账号无 proxy → proxy_required skip', async () => {
+    const accts = [
+      { id: '1', name: 'a', status: 'active', proxy: null },
+      { id: '2', name: 'b', status: 'active', proxy: null },
+    ];
+    const { pool, db } = poolWith(accts);
+    let ran = 0;
+    const results = await executeWithMultipleAccounts(
+      pool,
+      db,
+      { accounts: ['a', 'b'] },
+      'like',
+      async () => {
+        ran += 1;
+        return 'ok';
+      },
+      { capability: 'write', sequential: true },
+    );
+    expect(ran).toBe(0);
+    expect(results.every((r) => r.skipped && r.error === 'proxy_required')).toBe(true);
+  });
+
+  it('同 server → 后者 proxy_shared', async () => {
+    const accts = [
+      { id: '1', name: 'a', status: 'active', proxy: 'http://p:8080' },
+      { id: '2', name: 'b', status: 'active', proxy: 'http://user:pass@p:8080' },
+    ];
+    const { pool, db } = poolWith(accts);
+    const results = await executeWithMultipleAccounts(
+      pool,
+      db,
+      { accounts: ['a', 'b'] },
+      'like',
+      async () => 'ok',
+      { capability: 'write', sequential: true },
+    );
+    expect(results.find((r) => r.account === 'a')!.success).toBe(true);
+    expect(results.find((r) => r.account === 'b')!.error).toBe('proxy_shared');
+  });
+
+  it('互异 proxy 放行；单账号无 proxy 放行', async () => {
+    const duo = [
+      { id: '1', name: 'a', status: 'active', proxy: 'http://p1:1' },
+      { id: '2', name: 'b', status: 'active', proxy: 'http://p2:2' },
+    ];
+    const { pool, db } = poolWith(duo);
+    const multi = await executeWithMultipleAccounts(
+      pool,
+      db,
+      { accounts: ['a', 'b'] },
+      'like',
+      async () => 'ok',
+      { capability: 'write', sequential: true },
+    );
+    expect(multi.every((r) => r.success)).toBe(true);
+
+    const solo = [{ id: 's', name: 'solo', status: 'active', proxy: null }];
+    const soloCtx = poolWith(solo);
+    const one = await executeWithMultipleAccounts(
+      soloCtx.pool,
+      soloCtx.db,
+      { accounts: ['solo'] },
+      'like',
+      async () => 'ok',
+      { capability: 'write' },
+    );
+    expect(one[0].success).toBe(true);
+  });
+
+  it('warn 模式缺 proxy 仍执行', async () => {
+    cfg.antiDetect.proxyRequired.mode = 'warn';
+    const accts = [
+      { id: '1', name: 'a', status: 'active', proxy: null },
+      { id: '2', name: 'b', status: 'active', proxy: null },
+    ];
+    const { pool, db } = poolWith(accts);
+    const results = await executeWithMultipleAccounts(
+      pool,
+      db,
+      { accounts: ['a', 'b'] },
+      'like',
+      async () => 'ok',
+      { capability: 'write', sequential: true },
+    );
+    expect(results.every((r) => r.success)).toBe(true);
   });
 });

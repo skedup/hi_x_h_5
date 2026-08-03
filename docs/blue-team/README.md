@@ -77,7 +77,8 @@
 
 按波次落地的可执行 backlog（含 DoD、触及文件、回滚开关、PR 切片）见：
 
-→ **[IMPLEMENTATION-PLAN.md](./IMPLEMENTATION-PLAN.md)**
+→ **[IMPLEMENTATION-PLAN.md](./IMPLEMENTATION-PLAN.md)**  
+→ A1 迁移：[A1-PROXY-RUNBOOK.md](./A1-PROXY-RUNBOOK.md)
 
 顺序：**Wave A（关联/出口）→ Wave B（行为）→ Wave C（指纹/环境）**；A1 与 C3 捆绑约束见上。未完成 A1–A5（含键空间统一）前不要扩大 `accounts:all` 写流量。
 
