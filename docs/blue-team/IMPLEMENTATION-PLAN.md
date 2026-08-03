@@ -38,7 +38,7 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | ① 工具：`like:note:${noteId}` · `fav:note:${noteId}` · `like_c:${noteId}:${commentId}`。② **同步改 explore.ts**：弃用或别名映射 `explore:like:` → 同一前缀，使工具赞与 explore 赞互斥。③ unlike/unfavorite 与 like **共用**目标键（防踩踏）。④ 跨路径单测必过。 |
 | **触及** | `tools/interaction.ts` · `explore.ts` · 测试 |
@@ -80,7 +80,7 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P1 |
 | **依据** | 03 整改「单次调用同 note」——非 P1-6 波次 |
 | **做什么** | `accountNames.length>1` 且互动类带同一 `noteId` → 整批拒绝。 |

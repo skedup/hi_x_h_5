@@ -380,10 +380,12 @@ export class ExploreService {
 
                   if (likeTarget.target === 'post') {
                     // R2-3：内部写操作经共现守卫（配额/去重/xsec/熔断），逐动作策略
+                    // A2：键空间与 tools/interaction.ts 的 xhs_like_feed 统一（like:note:${noteId}），
+                    // 使工具赞与 explore 赞跨路径互斥
                     const resv = await guard.beforeAction({
                       accountId,
                       action: 'like',
-                      dedupKey: `explore:like:${selectedFeed.id}`,
+                      dedupKey: `like:note:${selectedFeed.id}`,
                       xsecToken: selectedFeed.xsecToken,
                     });
                     if (!resv.allow) {
@@ -413,7 +415,7 @@ export class ExploreService {
                           accountId,
                           action: 'like',
                           success: liked,
-                          dedupKey: `explore:like:${selectedFeed.id}`,
+                          dedupKey: `like:note:${selectedFeed.id}`,
                           xsecToken: selectedFeed.xsecToken,
                           reservation: resv.reservation,
                         });
@@ -422,10 +424,11 @@ export class ExploreService {
                   } else if (likeTarget.target.startsWith('comment:')) {
                     // 点赞评论
                     const commentId = likeTarget.target.replace('comment:', '');
+                    // A2：键空间与 tools/interaction.ts 的 xhs_like_comment 统一（like_c:${noteId}:${commentId}）
                     const resv = await guard.beforeAction({
                       accountId,
                       action: 'like_comment',
-                      dedupKey: `explore:like_comment:${selectedFeed.id}:${commentId}`,
+                      dedupKey: `like_c:${selectedFeed.id}:${commentId}`,
                       xsecToken: selectedFeed.xsecToken,
                     });
                     if (!resv.allow) {
@@ -454,7 +457,7 @@ export class ExploreService {
                           accountId,
                           action: 'like_comment',
                           success: liked,
-                          dedupKey: `explore:like_comment:${selectedFeed.id}:${commentId}`,
+                          dedupKey: `like_c:${selectedFeed.id}:${commentId}`,
                           xsecToken: selectedFeed.xsecToken,
                           reservation: resv.reservation,
                         });
