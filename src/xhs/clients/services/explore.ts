@@ -6,7 +6,19 @@
 
 import { Page } from 'patchright';
 import { BrowserContextManager, log } from '../context.js';
-import { sleep, typeLikeHuman, jitteredSleep, heavyTailDelay, sampleHeavyTailMs, clickWithTrajectory, humanScroll, wheelApproachElement, computeTypingPlan, type TypeLikeHumanOptions } from '../../utils/index.js';
+import {
+  sleep,
+  typeLikeHuman,
+  jitteredSleep,
+  rateLimitedSleep,
+  heavyTailDelay,
+  sampleHeavyTailMs,
+  clickWithTrajectory,
+  humanScroll,
+  wheelApproachElement,
+  computeTypingPlan,
+  type TypeLikeHumanOptions,
+} from '../../utils/index.js';
 import { config } from '../../../core/config.js';
 import { getDatabase, ExploreSessionResult } from '../../../db/index.js';
 import {
@@ -18,7 +30,7 @@ import {
 } from '../../../core/explore-ai.js';
 import { getCooccurrenceGuard, sha256OfText } from '../../../core/antidetect.js';
 import { isWriteAllowed, getLiveness } from '../../../core/liveness.js';
-import { EXPLORE_SELECTORS, SCROLL_CONFIG_EXPLORE } from '../constants.js';
+import { EXPLORE_SELECTORS, SCROLL_CONFIG_EXPLORE, REQUEST_INTERVAL } from '../constants.js';
 import {
   computeEffectiveOpenRate,
   computeFeedVideoRatio,
@@ -830,7 +842,7 @@ export class ExploreService {
 
       // 点赞
       await clickWithTrajectory(page, likeBtn);
-      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
+      await rateLimitedSleep(REQUEST_INTERVAL);
       return true;
     } catch (error) {
       log.warn('Failed to like in modal', { error });
@@ -873,7 +885,7 @@ export class ExploreService {
 
       // 点赞
       await clickWithTrajectory(page, likeBtn);
-      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
+      await rateLimitedSleep(REQUEST_INTERVAL);
       log.debug('Liked comment', { commentId });
       return true;
     } catch (error) {
@@ -917,7 +929,7 @@ export class ExploreService {
       }
 
       await clickWithTrajectory(page, submitBtn);
-      await jitteredSleep(2000);
+      await rateLimitedSleep(REQUEST_INTERVAL);
       return true;
     } catch (error) {
       log.warn('Failed to comment in modal', { error });

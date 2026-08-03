@@ -155,10 +155,11 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P1 |
 | **做什么** | reply/likeComment → `rateLimitedSleep`；搜索 DELAYS 重尾；**`findCommentElement` 固定 800ms**；**explore modal 写间隔**加 rate limit；Interact 评论/回复 revise（呼应 P1-4）。 |
 | **DoD** | 生产路径无「唯一节拍」300/500/800 |
+| **触及** | `interact.ts` · `search.ts` · `explore.ts` · [B6-CALL-SITES.md](./B6-CALL-SITES.md) |
 
 ### B7 · 导航重试与 alreadyDone 短会话
 
