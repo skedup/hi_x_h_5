@@ -547,16 +547,51 @@ export interface TypeLikeHumanOptions {
    * 调用方须在 finally 中释放页面操作与账户锁。
    */
   signal?: AbortSignal;
+  /**
+   * B5：覆盖全局 `config.antiDetect.typing.mode`。
+   * `ime` 当前 wontfix，降级为 direct（见 docs/blue-team/B5-IME.md）。
+   */
+  mode?: 'direct' | 'ime';
+}
+
+/** B5：进程内仅 warn 一次，避免每条评论刷屏 */
+let imeWontfixWarned = false;
+
+/**
+ * 解析有效键入模式（选项覆盖 config）。
+ * `ime` → 返回 `direct` 并可选 warn（composition 为 wontfix）。
+ */
+export function resolveTypingMode(
+  override?: 'direct' | 'ime',
+  warn = true,
+): 'direct' {
+  const requested = override ?? config.antiDetect.typing?.mode ?? 'direct';
+  if (requested === 'ime') {
+    if (warn && !imeWontfixWarned) {
+      imeWontfixWarned = true;
+      log.warn(
+        'B5 IME composition 为 wontfix：可信 CDP Input 无法模拟真实中文 IME composition 事件流，已降级为 direct（码点 keyboard.type + revise）',
+        { requested, see: 'docs/blue-team/B5-IME.md' },
+      );
+    }
+  }
+  return 'direct';
+}
+
+/** 测试辅助：重置 IME wontfix warn 闸门 */
+export function resetImeWontfixWarnGate(): void {
+  imeWontfixWarned = false;
 }
 
 /**
- * 拟人化逐字输入（A2）：
+ * 拟人化逐字输入（A2 / B5）：
  * - 每个字符之间加入可变延迟与偶发长停顿，消除无 delay keyboard.type 的
  *   亚毫秒输入突发（蓝军报告 04 §3.2/§3.3），单字符间隔 CV > 0。
  * - 按码点切分（Array.from），正确处理代理对/emoji。
  * - 偶发"删除/修订"：回删若干字符后重输（可信 Backspace），满足 A2 DoD
- *   的"存在删除/修订"；中文路径无 composition 事件属平台已知限制，经可信
- *   通道无法模拟 IME composition，故 DoD 收缩为可测量的"删除/修订 + 间隔方差"。
+ *   的"存在删除/修订"。
+ * - B5：`typing.mode=ime` 为书面 wontfix——经可信通道无法模拟 IME composition，
+ *   运行时降级 `direct`；DoD 收缩为可测量的"删除/修订 + 间隔方差"。见 B5-IME.md。
  * - 支持取消（AbortSignal）与软上限（maxDurationMs），避免长文阻塞账户锁。
  * 全程走真实键盘通道（isTrusted=true 的可信事件），仅把节奏拟人化。
  */
@@ -565,6 +600,9 @@ export async function typeLikeHuman(
   text: string,
   options?: TypeLikeHumanOptions,
 ): Promise<void> {
+  // B5：解析模式（ime → direct + 一次性 warn）
+  resolveTypingMode(options?.mode);
+
   const minDelay = options?.minDelay ?? 45;
   const maxDelay = options?.maxDelay ?? 170;
   const pauseChance = options?.pauseChance ?? 0.05;

@@ -147,9 +147,11 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 策略 / P1 实现 |
 | **做什么** | Phase1：`typing.mode` + 文档风险。Phase2：composition PoC 或 `wontfix`。 |
+| **结论** | Phase2 = **wontfix**（可信 CDP 无法模拟真实中文 IME composition）；`ime` 模式降级 `direct` + warn。见 [B5-IME.md](./B5-IME.md) |
+| **回滚** | 默认 `direct`；`XHS_MCP_AD_TYPING_MODE=ime` 仅 warn 不改路径 |
 
 ### B6 · 限流与固定节拍清扫
 

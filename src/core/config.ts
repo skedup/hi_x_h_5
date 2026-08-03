@@ -43,6 +43,17 @@ export function parseXsecMode(value: string | undefined, defaultValue: 'block' |
   return defaultValue;
 }
 
+/** B5：键入模式。`direct`=码点 keyboard.type；`ime`=请求 composition（当前 wontfix，降级 direct） */
+export type TypingMode = 'direct' | 'ime';
+
+export function parseTypingMode(value: string | undefined, defaultValue: TypingMode = 'direct'): TypingMode {
+  if (value === undefined) return defaultValue;
+  const v = value.toLowerCase().trim();
+  if (v === 'direct' || v === 'codepoint' || v === 'keyboard') return 'direct';
+  if (v === 'ime' || v === 'composition') return 'ime';
+  return defaultValue;
+}
+
 /**
  * 解析日志级别
  */
@@ -290,6 +301,16 @@ export const config = {
      */
     navRetryHeavyTail: {
       enabled: parseBoolean(process.env.XHS_MCP_AD_NAV_RETRY_HEAVY_TAIL, true),
+    },
+    /**
+     * B5 键入 / IME 策略。
+     * - `direct`（默认）：按码点 `keyboard.type` + revise/间隔方差（可信 CDP Input）
+     * - `ime`：请求真实 composition；**当前 wontfix**，运行时降级为 `direct` 并 warn 一次
+     * 环境变量：`XHS_MCP_AD_TYPING_MODE=direct|ime`
+     * 详见 `docs/blue-team/B5-IME.md`
+     */
+    typing: {
+      mode: parseTypingMode(process.env.XHS_MCP_AD_TYPING_MODE, 'direct'),
     },
   },
 
