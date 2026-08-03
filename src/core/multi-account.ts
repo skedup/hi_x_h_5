@@ -13,6 +13,7 @@ import { sleep } from '../xhs/utils/index.js';
 import { getCooccurrenceGuard } from './antidetect.js';
 import { isWriteAllowed } from './liveness.js';
 import { config } from './config.js';
+import { evaluateMultiAccountProxyGate } from './proxy.js';
 import type { ToolCapability } from './audit.js';
 
 const log = createLogger('multi-account');
@@ -359,6 +360,32 @@ export async function executeWithMultipleAccounts<T>(
     ];
   }
 
+  const cap: ToolCapability = options?.capability ?? 'write';
+  // A1：多账号写批次出口硬约束（单账号写不强制；read/control 不检查）
+  const proxySkipByName = new Map<string, string>();
+  if (cap === 'write' && accountNames.length > 1) {
+    const batchAccounts = accountNames.map((name) => {
+      const acc = pool.getAccount(name);
+      return { name: acc?.name ?? name, proxy: acc?.proxy };
+    });
+    const { skips, warnings } = evaluateMultiAccountProxyGate(
+      batchAccounts,
+      config.antiDetect.proxyRequired.mode,
+    );
+    if (warnings.length > 0) {
+      log.warn('多账号写代理门禁告警（warn 模式放行）', { warnings, action });
+    }
+    for (const s of skips) {
+      proxySkipByName.set(s.account, s.reason);
+      // 亦按调用方传入的名称索引，避免 name/id 混用漏拦
+      const resolved = pool.getAccount(s.account);
+      if (resolved) {
+        proxySkipByName.set(resolved.name, s.reason);
+        proxySkipByName.set(resolved.id, s.reason);
+      }
+    }
+  }
+
   // 执行操作
   const guard = getCooccurrenceGuard();
   // C2.1 默认开启共现抑制即改为串行；显式 sequential=false 且未启用共现时才并行
@@ -369,6 +396,20 @@ export async function executeWithMultipleAccounts<T>(
     const results: OperationResult<T>[] = [];
     for (let i = 0; i < accountNames.length; i++) {
       const accountName = accountNames[i];
+      const proxyReason = proxySkipByName.get(accountName) ?? (() => {
+        const acc = pool.getAccount(accountName);
+        return acc ? proxySkipByName.get(acc.name) ?? proxySkipByName.get(acc.id) : undefined;
+      })();
+      if (proxyReason) {
+        results.push({
+          account: pool.getAccount(accountName)?.name ?? accountName,
+          success: false,
+          skipped: true,
+          error: proxyReason,
+          durationMs: 0,
+        });
+        continue;
+      }
       const result = await executeWithAccount(pool, db, accountName, action, operation, options);
       results.push(result);
 
@@ -400,9 +441,22 @@ export async function executeWithMultipleAccounts<T>(
     return results;
   } else {
     // 并行执行：同时在所有账户上执行
-    const promises = accountNames.map((accountName) =>
-      executeWithAccount(pool, db, accountName, action, operation, options),
-    );
+    const promises = accountNames.map(async (accountName) => {
+      const proxyReason = proxySkipByName.get(accountName) ?? (() => {
+        const acc = pool.getAccount(accountName);
+        return acc ? proxySkipByName.get(acc.name) ?? proxySkipByName.get(acc.id) : undefined;
+      })();
+      if (proxyReason) {
+        return {
+          account: pool.getAccount(accountName)?.name ?? accountName,
+          success: false,
+          skipped: true,
+          error: proxyReason,
+          durationMs: 0,
+        } satisfies OperationResult<T>;
+      }
+      return executeWithAccount(pool, db, accountName, action, operation, options);
+    });
     return Promise.all(promises);
   }
 }

@@ -6,6 +6,7 @@
 
 import path from 'path';
 import os from 'os';
+import { parseProxyRequiredMode } from './proxy.js';
 
 /**
  * 日志级别枚举
@@ -199,6 +200,17 @@ export const config = {
     headlessWriteGate: {
       /** 总开关；开启后 config.browser.headless=true 时所有写操作被拒绝（默认开） */
       enabled: parseBoolean(process.env.XHS_MCP_AD_HEADLESS_WRITE_GATE, true),
+    },
+    /**
+     * A1 多账号写出口硬约束（蓝军 plan）。
+     * - block（默认）：多账号写批次每账号须有 proxy，且 serverKey（host:port）互异，否则 skip
+     * - warn：仅告警放行（迁移期）
+     * - off：关闭检查
+     * 单账号写默认不强制（威胁模型：单号同机风险低于多号共现）。
+     * 环境变量：XHS_MCP_AD_PROXY_REQUIRED=block|warn|off|true|false
+     */
+    proxyRequired: {
+      mode: parseProxyRequiredMode(process.env.XHS_MCP_AD_PROXY_REQUIRED),
     },
   },
 

@@ -242,6 +242,7 @@ All configuration can be controlled via environment variables:
 | `XHS_MCP_REQUEST_INTERVAL` | `2000` | Request interval in ms (rate limiting) |
 | `XHS_MCP_TIMEOUT_PAGE_LOAD` | `30000` | Page load timeout in ms |
 | `XHS_MCP_TIMEOUT_VIDEO_UPLOAD` | `300000` | Video upload timeout in ms (5 min) |
+| `XHS_MCP_AD_PROXY_REQUIRED` | `block` | 多账号写出口门禁：`block`/`warn`/`off`；见 `docs/blue-team/A1-PROXY-RUNBOOK.md` |
 | `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com` | Gemini API base URL |
 | `GEMINI_API_KEY` | - | Gemini API key (for future AI features) |
 | `GEMINI_IMAGE_GENERATE_MODEL` | `gemini-3-pro-image` | Gemini image generation model |

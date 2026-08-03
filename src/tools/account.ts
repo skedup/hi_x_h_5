@@ -11,6 +11,7 @@ import { generateProfileId } from '../core/profile.js';
 import { XhsDatabase } from '../db/index.js';
 import { getLoginSessionManager, LoginSession } from '../core/login-session.js';
 import { getPrompt, setPrompt, PromptType, deleteAccountPrompts } from '../core/prompt-manager.js';
+import { validateProxyInput } from '../core/proxy.js';
 
 /**
  * Account management tool definitions for MCP.
@@ -46,7 +47,8 @@ Flow:
         },
         proxy: {
           type: 'string',
-          description: 'Optional proxy server URL (e.g., "http://proxy:8080")',
+          description:
+            'Optional proxy: http://host:port, http://user:pass@host:port, or JSON {"server":"http://host:port","username":"...","password":"..."}. Multi-account writes require distinct proxies (XHS_MCP_AD_PROXY_REQUIRED).',
         },
       },
       required: [],
@@ -126,7 +128,8 @@ Verification code expires in 1 minute.`,
         },
         proxy: {
           type: 'string',
-          description: 'New proxy server URL (empty string to remove)',
+          description:
+            'New proxy (empty string to remove). Formats: http://host:port, http://user:pass@host:port, or JSON with server/username/password. Multi-account writes require distinct host:port per account.',
         },
         status: {
           type: 'string',
@@ -307,6 +310,16 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
           proxy: z.string().optional(),
         })
         .parse(args);
+
+      if (params.proxy !== undefined) {
+        const proxyCheck = validateProxyInput(params.proxy);
+        if (!proxyCheck.ok) {
+          return {
+            content: [{ type: 'text', text: proxyCheck.error }],
+            isError: true,
+          };
+        }
+      }
 
       try {
         // Check if this is a re-login for existing account
@@ -701,6 +714,16 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
           ],
           isError: true,
         };
+      }
+
+      if (params.proxy !== undefined) {
+        const proxyCheck = validateProxyInput(params.proxy);
+        if (!proxyCheck.ok) {
+          return {
+            content: [{ type: 'text', text: proxyCheck.error }],
+            isError: true,
+          };
+        }
       }
 
       const updates: {

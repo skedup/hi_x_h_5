@@ -9,6 +9,7 @@ import type { APIRequestContext } from 'patchright';
 import { LoginUserInfo, FullUserProfile } from '../types.js';
 import { createLogger } from '../../core/logger.js';
 import { config, paths } from '../../core/config.js';
+import { parseProxyConfig, toPlaywrightProxy } from '../../core/proxy.js';
 import { BROWSER_ARGS } from './constants.js';
 
 // Create logger for browser module
@@ -19,12 +20,17 @@ export const log = createLogger('browser');
  * 每个账号应使用独立的 profileDir（基于内部随机 profile_id），以隔离
  * Cookie / localStorage / IndexedDB / ServiceWorker / 设备指纹盐。
  * @param profileDir 持久化 user-data-dir 路径
+ * @param proxy 账号 proxy 字符串（URL 或 JSON，见 core/proxy.ts）；支持认证
  */
 export async function launchProfileContext(
   profileDir: string,
   headless = config.browser.headless,
   proxy?: string,
 ): Promise<{ browser: Browser; context: BrowserContext }> {
+  const parsedProxy = parseProxyConfig(proxy);
+  if (proxy?.trim() && !parsedProxy) {
+    log.warn('账号 proxy 无法解析，将不使用代理启动', { proxyPreview: proxy.slice(0, 32) });
+  }
   const context = await chromium.launchPersistentContext(profileDir, {
     headless,
     channel: 'chrome',
@@ -32,7 +38,7 @@ export async function launchProfileContext(
     // B1（05 R3）：headful 时 viewport 置 null，消除 screen==viewport 的组合异常指纹；
     // headless（自动化测试）保留固定 viewport。
     viewport: headless ? { width: 1920, height: 1080 } : null,
-    ...(proxy ? { proxy: { server: proxy } } : {}),
+    ...(parsedProxy ? { proxy: toPlaywrightProxy(parsedProxy) } : {}),
   });
   const browser = context.browser();
   if (!browser) {
