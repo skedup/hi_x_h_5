@@ -247,6 +247,7 @@ All configuration can be controlled via environment variables:
 | `XHS_MCP_AD_PERSIST_TTL_MS` | `2592000000` | 持久化行 TTL（默认 30 天） |
 | `XHS_MCP_AD_HEAVY_TAIL` | `true` | B1 行为重尾延迟；`false` 退回窄带均匀；见 `docs/blue-team/B1-CALL-SITES.md` |
 | `XHS_MCP_AD_TRAJECTORY` | `true` | B2 指针轨迹点击；`false` 退回直点 |
+| `XHS_MCP_AD_INTERACT_SESSION` | `true` | B3 Interact 会话化；`false` 跳过入页阅读/滚动与加长后停留；见 `docs/blue-team/B3-CALL-SITES.md` |
 | `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com` | Gemini API base URL |
 | `GEMINI_API_KEY` | - | Gemini API key (for future AI features) |
 | `GEMINI_IMAGE_GENERATE_MODEL` | `gemini-3-pro-image` | Gemini image generation model |
