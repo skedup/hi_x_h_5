@@ -46,7 +46,7 @@
 | `xhs_set_account_config` | 修改账号配置（名称、代理、状态） |
 | `xhs_get_account_prompt` | 获取账号 Prompt（人设/选择/评论） |
 | `xhs_set_account_prompt` | 更新账号 Prompt |
-| `xhs_delete_cookies` | 清除账号会话 |
+| `xhs_delete_cookies` | 登出并归档账号 profile（C5） |
 
 ### 内容查询
 

@@ -1,6 +1,8 @@
 # xhs_delete_cookies
 
-Delete account session cookies.
+Log out an account by **archiving** the on-disk browser profile (cookies, localStorage, IndexedDB, etc.) — not cookie-clear alone.
+
+> Tool name kept for compatibility; since C5 the semantics are profile archive, not “clear cookies only”.
 
 ## Parameters
 
@@ -10,11 +12,7 @@ Delete account session cookies.
 
 ## Response
 
-```json
-{
-  "success": true
-}
-```
+Text indicating whether the profile was archived. Re-login with `xhs_add_account`.
 
 ## Example
 
@@ -24,6 +22,5 @@ xhs_delete_cookies({ account: "main" })
 
 ## Use Cases
 
-- Logout account
+- Log out (clear local session persistence)
 - Session error, need re-login
-- Clean account data

@@ -10,6 +10,7 @@ import { AccountPool } from '../core/account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { executeWithMultipleAccounts, MultiAccountParams, resolveAccount } from '../core/multi-account.js';
 import { sha256OfText } from '../core/antidetect.js';
+import { archiveProfileDir } from '../core/profile.js';
 
 /**
  * Interaction tool definitions for MCP.
@@ -183,13 +184,14 @@ export const interactionTools: Tool[] = [
   },
   {
     name: 'xhs_delete_cookies',
-    description: 'Delete saved login cookies/session for an account. Use this to log out or re-authenticate.',
+    description:
+      'Log out an account by archiving its browser profile (cookies, localStorage, IndexedDB). Deprecated name: does not only clear cookies. Re-login with xhs_add_account after.',
     inputSchema: {
       type: 'object',
       properties: {
         account: {
           type: 'string',
-          description: 'Account name or ID to delete cookies for',
+          description: 'Account name or ID to log out',
         },
       },
     },
@@ -506,20 +508,18 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
         };
       }
 
-      // Clear state in database
+      // C5：先关浏览器再归档 profile（勿只 clearCookies）；不清空 profileId，下次登录可转正到同目录
       db.accounts.updateState(account.id, null);
-
-      // Close the client to clear browser state
-      const client = await pool.getClient(account.id);
-      if (client) {
-        await client.deleteCookies();
-      }
+      await pool.removeClient(account.id);
+      const archivedPath = archiveProfileDir(account.profileId);
 
       return {
         content: [
           {
             type: 'text',
-            text: `Cookies deleted for account "${account.name}". You will need to login again.`,
+            text: archivedPath
+              ? `Logged out account "${account.name}": browser profile archived. Re-login with xhs_add_account.`
+              : `Logged out account "${account.name}": session cleared (no on-disk profile to archive). Re-login with xhs_add_account.`,
           },
         ],
       };

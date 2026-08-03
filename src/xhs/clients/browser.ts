@@ -136,9 +136,10 @@ export class BrowserClient {
   }
 
   /**
-   * Delete login cookies and clear session state.
+   * 登出：关闭浏览器并归档 on-disk profile（C5）。
+   * @deprecated 名称保留兼容；语义已不是「只清 Cookie」。
    */
-  async deleteCookies(): Promise<{ success: boolean; error?: string }> {
+  async deleteCookies(): Promise<{ success: boolean; archivedPath?: string | null; error?: string }> {
     return this.ctx.deleteCookies();
   }
 

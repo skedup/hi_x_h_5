@@ -56,7 +56,7 @@
 | P1-2 | 主世界 `evaluate(..., false)` 读 `__INITIAL_STATE__` | 多 service | 功能刚需；`waitForFunction` **无** `isolatedContext` API，服务端默认 `world=main`，所有状态轮询必然 main |
 | P1-3 | 部分 `evaluate`/`$$eval` 未显式传 world | creator / interact / utils | DOM 与状态脚本混用两套 world |
 | P1-4 | 发布配图 Node `fetch` 旁路 | `downloadImageFromUrl`（经 `downloadFile`） | **mitigated（C4）**：配图走账号 `APIRequestContext` + Referer/Sec-Fetch；Gemini 理解拉图仍为服务端侧 `fetch`（非浏览 egress） |
-| P1-5 | `deleteCookies` 只清 Cookie | `context.ts:220-238`：`clearCookies` + close | profile 目录与 IndexedDB 等仍在；与真人清会话不符 |
+| P1-5 | `deleteCookies` 只清 Cookie | `context.ts` / `archiveProfileDir` | **mitigated（C5）**：登出归档整个 profile；`clearCookies` 语义 deprecated |
 | P1-6 | DB `storageState` 与磁盘 profile 双源 | AccountPool 传 `state`，launch **不注入** | 真源是 persistent profile |
 
 ### P2
@@ -98,7 +98,7 @@
 5. 账号级 timezone/locale/geolocation + `grantPermissions`；校验 `navigator.languages` / Accept-Language。
 6. evaluate 封装 + `waitForFunction` 主世界等待策略成文。
 7. `resolveImagePaths` 对齐 `downloadFile`（proxy + Referer + Sec-Fetch）— **done（C4）**。
-8. 登出 = 归档 profile（复用 `profile.ts` 模式）。
+8. 登出 = 归档 profile（复用 `profile.ts` 模式）— **done（C5）**。
 
 ---
 
@@ -109,7 +109,7 @@
 - [ ] 异地代理下 `Intl` / `navigator.languages` 是否仍为宿主机
 - [ ] 代理下 WebRTC 候选地址是否暴露宿主 IP
 - [x] 发布配图请求是否带与浏览一致的 Referer/Sec-Fetch/Cookie 通道（C4）
-- [ ] `deleteCookies` 后 profile 内 IndexedDB 是否仍在
+- [x] `deleteCookies` 后 profile 内 IndexedDB 是否仍在（C5：原路径应不存在，内容在 `.archived-*`）
 - [ ] 去掉 deny 并 grant geolocation 后 `permissions.query` 是否一致
 
 ---
