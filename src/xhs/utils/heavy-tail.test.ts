@@ -31,6 +31,15 @@ describe('B1 sampleHeavyTailMs', () => {
     expect(p95).toBeGreaterThan(median * 1.4);
   });
 
+  it('关闭且提供 min/max 时在该区间均匀（对齐迁移前分布）', () => {
+    cfg.antiDetect.heavyTail = { enabled: false, sigma: 0.45, maxMultiplier: 8 };
+    for (let i = 0; i < 200; i++) {
+      const v = sampleHeavyTailMs(350, { minMs: 200, maxMs: 500 });
+      expect(v).toBeGreaterThanOrEqual(200);
+      expect(v).toBeLessThanOrEqual(500);
+    }
+  });
+
   it('关闭时落在窄带均匀区间', () => {
     cfg.antiDetect.heavyTail = { enabled: false, sigma: 0.45, maxMultiplier: 8 };
     const base = 100;

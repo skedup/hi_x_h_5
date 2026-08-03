@@ -5,7 +5,7 @@
  */
 
 import { InteractionResult, CommentResult } from '../../types.js';
-import { sleep, navigateWithRetry, typeLikeHuman, rateLimitedSleep, heavyTailDelay } from '../../utils/index.js';
+import { sleep, navigateWithRetry, typeLikeHuman, jitteredSleep, rateLimitedSleep, heavyTailDelay } from '../../utils/index.js';
 import { BrowserContextManager } from '../context.js';
 import { REQUEST_INTERVAL, INTERACTION_SELECTORS, COMMENT_SELECTORS } from '../constants.js';
 import { createLogger } from '../../../core/logger.js';
@@ -70,7 +70,7 @@ export class InteractService {
         const likeBtn = await page.$(INTERACTION_SELECTORS.likeButton);
         if (likeBtn) {
           await likeBtn.click();
-          await heavyTailDelay(500); // B1：动作后 dwell（行为，非功能轮询）
+          await heavyTailDelay(500, { minMs: 300, maxMs: 700 }); // B1：动作后 dwell
         } else {
           return {
             success: false,
@@ -150,7 +150,7 @@ export class InteractService {
         const collectBtn = await page.$(INTERACTION_SELECTORS.collectButton);
         if (collectBtn) {
           await collectBtn.click();
-          await jitteredSleep(500);
+          await heavyTailDelay(500, { minMs: 300, maxMs: 700 }); // B1：动作后 dwell
         } else {
           return {
             success: false,
@@ -208,7 +208,7 @@ export class InteractService {
       const inputTrigger = await page.$(COMMENT_SELECTORS.commentInputTrigger);
       if (inputTrigger) {
         await inputTrigger.click();
-        await jitteredSleep(500);
+        await heavyTailDelay(500, { minMs: 300, maxMs: 700 }); // B1：打开输入框后 dwell
       }
 
       // 输入评论内容
@@ -219,7 +219,7 @@ export class InteractService {
 
       await commentInput.click();
       await typeLikeHuman(page, content);
-      await jitteredSleep(300);
+      await heavyTailDelay(300, { minMs: 180, maxMs: 420 }); // B1：输入后短停
 
       // 点击提交按钮
       const submitBtn = await page.$(COMMENT_SELECTORS.submitButton);
@@ -228,7 +228,7 @@ export class InteractService {
       }
 
       await submitBtn.click();
-      await jitteredSleep(1000);
+      await jitteredSleep(1000); // 提交结果确认：功能等待
 
       const submitted = await page
         .waitForFunction(
@@ -295,7 +295,7 @@ export class InteractService {
 
       // 滚动到评论位置
       await commentEl.scrollIntoViewIfNeeded();
-      await jitteredSleep(1000);
+      await heavyTailDelay(1000, { minMs: 600, maxMs: 1400 }); // B1：滚到评论后 dwell
 
       // 查找并点击回复按钮（使用 .right .interactions .reply 选择器）
       const replyBtn = await commentEl.$('.right .interactions .reply');
@@ -304,7 +304,7 @@ export class InteractService {
       }
 
       await replyBtn.click();
-      await jitteredSleep(1000);
+      await heavyTailDelay(1000, { minMs: 600, maxMs: 1400 }); // B1：点开回复后 dwell
 
       // 输入回复内容（使用与 reference project 相同的选择器）
       const commentInput = await page.$('div.input-box div.content-edit p.content-input');
@@ -314,7 +314,7 @@ export class InteractService {
 
       await commentInput.click();
       await typeLikeHuman(page, content);
-      await jitteredSleep(500);
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 }); // B1：输入后短停
 
       // 提交回复（使用与 reference project 相同的选择器）
       const submitBtn = await page.$('div.bottom button.submit');
@@ -323,7 +323,7 @@ export class InteractService {
       }
 
       await submitBtn.click();
-      await jitteredSleep(2000); // 等待 2 秒与 reference project 一致
+      await jitteredSleep(2000); // 等待 2 秒与 reference project 一致（功能确认）
 
       const submitted = await page
         .waitForFunction(
@@ -498,7 +498,7 @@ export class InteractService {
 
       // 滚动到评论位置
       await commentEl.scrollIntoViewIfNeeded();
-      await jitteredSleep(500);
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 }); // B1：滚到评论后 dwell
 
       // 查找点赞按钮
       const likeBtn = await commentEl.$('.like .like-wrapper');
@@ -525,7 +525,7 @@ export class InteractService {
       if (shouldClick) {
         // 真实点击（CDP 鼠标事件，isTrusted=true，规避 dispatchEvent 的 isTrusted=false）
         await likeBtn.click();
-        await jitteredSleep(500);
+        await heavyTailDelay(500, { minMs: 300, maxMs: 700 }); // B1：动作后 dwell
       }
 
       return {

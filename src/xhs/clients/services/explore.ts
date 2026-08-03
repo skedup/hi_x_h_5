@@ -708,11 +708,11 @@ export class ExploreService {
 
       // 先滚动到可见区域
       await cover.scrollIntoViewIfNeeded();
-      await heavyTailDelay(300);
+      await heavyTailDelay(300, { minMs: 180, maxMs: 420 });
 
       // 真实鼠标点击（force 跳过可操作性断言但仍是 CDP 真实事件，isTrusted=true，规避 el.click() 的 isTrusted=false）
       await cover.click({ force: true });
-      await heavyTailDelay(500);
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
 
       // 等待 modal 出现
       await page.waitForSelector(EXPLORE_SELECTORS.noteContainer, { timeout: 5000 });
@@ -793,7 +793,7 @@ export class ExploreService {
 
       // 点赞
       await likeBtn.click();
-      await heavyTailDelay(500);
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
       return true;
     } catch (error) {
       log.warn('Failed to like in modal', { error });
@@ -836,7 +836,7 @@ export class ExploreService {
 
       // 点赞
       await likeBtn.click();
-      await heavyTailDelay(500);
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
       log.debug('Liked comment', { commentId });
       return true;
     } catch (error) {
@@ -858,7 +858,7 @@ export class ExploreService {
       }
 
       await inputArea.click();
-      await heavyTailDelay(500);
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
 
       // 输入评论内容
       const commentInput = await page.$(EXPLORE_SELECTORS.commentInput);
@@ -870,7 +870,7 @@ export class ExploreService {
       await commentInput.click();
       await typeLikeHuman(page, content);
 
-      await heavyTailDelay(500);
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
 
       // 点击提交按钮
       const submitBtn = await page.$(EXPLORE_SELECTORS.commentSubmit);
@@ -897,13 +897,13 @@ export class ExploreService {
       const closeBtn = await page.$(EXPLORE_SELECTORS.closeButton);
       if (closeBtn) {
         await closeBtn.click();
-        await heavyTailDelay(500);
+        await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
         return;
       }
 
       // 备选：按 ESC
       await page.keyboard.press('Escape');
-      await heavyTailDelay(500);
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
     } catch (error) {
       log.warn('Failed to close modal', { error });
       // 尝试按 ESC

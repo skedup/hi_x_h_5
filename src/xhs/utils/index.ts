@@ -77,7 +77,7 @@ export interface HeavyTailDelayOptions {
 
 /**
  * 采样行为重尾延迟毫秒数：中位数约等于 `base` 的对数正态，右尾偶发更长停顿。
- * `XHS_MCP_AD_HEAVY_TAIL=false` 时退回 [0.8base, 1.2base] 窄带均匀（夹在 min/max 内）。
+ * `XHS_MCP_AD_HEAVY_TAIL=false` 时：有 min/max 则在该区间均匀；否则 [0.8base, 1.2base]。
  * **仅**用于拟人节奏；功能等待用 `jitteredSleep`，限流用 `rateLimitedSleep`。
  */
 export function sampleHeavyTailMs(base: number, options: HeavyTailDelayOptions = {}): number {
@@ -90,6 +90,13 @@ export function sampleHeavyTailMs(base: number, options: HeavyTailDelayOptions =
   const b = Math.max(1, base);
 
   if (!ht?.enabled) {
+    // 关闭时：若调用方给了 [minMs, maxMs] 则在该区间均匀采样（对齐迁移前分布）；
+    // 否则退回 base 的 ±20% 窄带。
+    if (options.minMs !== undefined && options.maxMs !== undefined) {
+      const lo = Math.max(1, Math.round(options.minMs));
+      const hi = Math.max(lo, Math.round(options.maxMs));
+      return Math.floor(lo + Math.random() * (hi - lo + 1));
+    }
     const lo = Math.max(floor, Math.round(b * 0.8));
     const hi = Math.min(cap, Math.max(lo, Math.round(b * 1.2)));
     return Math.floor(lo + Math.random() * (hi - lo + 1));
