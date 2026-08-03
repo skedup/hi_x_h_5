@@ -6,7 +6,7 @@
 
 import { Page } from 'patchright';
 import { BrowserContextManager, log } from '../context.js';
-import { sleep, typeLikeHuman, jitteredSleep, heavyTailDelay, sampleHeavyTailMs } from '../../utils/index.js';
+import { sleep, typeLikeHuman, jitteredSleep, heavyTailDelay, sampleHeavyTailMs, clickWithTrajectory } from '../../utils/index.js';
 import { config } from '../../../core/config.js';
 import { getDatabase, ExploreSessionResult } from '../../../db/index.js';
 import {
@@ -710,8 +710,8 @@ export class ExploreService {
       await cover.scrollIntoViewIfNeeded();
       await heavyTailDelay(300, { minMs: 180, maxMs: 420 });
 
-      // 真实鼠标点击（force 跳过可操作性断言但仍是 CDP 真实事件，isTrusted=true，规避 el.click() 的 isTrusted=false）
-      await cover.click({ force: true });
+      // B2：Bezier 轨迹点击；封面可能被遮罩时才 allowForceFallback（默认禁 force）
+      await clickWithTrajectory(page, cover, { allowForceFallback: true });
       await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
 
       // 等待 modal 出现
@@ -792,7 +792,7 @@ export class ExploreService {
       }
 
       // 点赞
-      await likeBtn.click();
+      await clickWithTrajectory(page, likeBtn);
       await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
       return true;
     } catch (error) {
@@ -835,7 +835,7 @@ export class ExploreService {
       }
 
       // 点赞
-      await likeBtn.click();
+      await clickWithTrajectory(page, likeBtn);
       await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
       log.debug('Liked comment', { commentId });
       return true;
@@ -857,7 +857,7 @@ export class ExploreService {
         return false;
       }
 
-      await inputArea.click();
+      await clickWithTrajectory(page, inputArea);
       await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
 
       // 输入评论内容
@@ -867,7 +867,7 @@ export class ExploreService {
         return false;
       }
 
-      await commentInput.click();
+      await clickWithTrajectory(page, commentInput);
       await typeLikeHuman(page, content);
 
       await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
@@ -879,7 +879,7 @@ export class ExploreService {
         return false;
       }
 
-      await submitBtn.click();
+      await clickWithTrajectory(page, submitBtn);
       await jitteredSleep(2000);
       return true;
     } catch (error) {
@@ -896,7 +896,7 @@ export class ExploreService {
       // 点击关闭按钮
       const closeBtn = await page.$(EXPLORE_SELECTORS.closeButton);
       if (closeBtn) {
-        await closeBtn.click();
+        await clickWithTrajectory(page, closeBtn);
         await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
         return;
       }

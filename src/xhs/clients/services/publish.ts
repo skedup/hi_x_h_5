@@ -6,7 +6,7 @@
 
 import { Locator, Page } from 'patchright';
 import { PublishContentParams, PublishVideoParams, PublishResult } from '../../types.js';
-import { sleep, resolveImagePaths, isHttpUrl, typeLikeHuman, jitteredSleep, truncateGrapheme, fieldValueMismatch, computeTypingPlan, type TypeLikeHumanOptions } from '../../utils/index.js';
+import { sleep, resolveImagePaths, isHttpUrl, typeLikeHuman, jitteredSleep, truncateGrapheme, fieldValueMismatch, computeTypingPlan, clickWithTrajectory, type TypeLikeHumanOptions } from '../../utils/index.js';
 import { config } from '../../../core/config.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS, PUBLISH_SELECTORS, URLS } from '../constants.js';
@@ -274,7 +274,7 @@ export class PublishService {
           // Wait for and click tag suggestion
           const suggestion = await page.$(`${PUBLISH_SELECTORS.topicContainer}:has-text("${tag}")`);
           if (suggestion) {
-            await suggestion.click();
+            await clickWithTrajectory(page, suggestion);
             await jitteredSleep(300);
           } else {
             // Press space to confirm tag
@@ -290,7 +290,7 @@ export class PublishService {
         log.debug('Setting schedule time', { time: params.scheduleTime });
         const scheduleRadio = await page.$(PUBLISH_SELECTORS.scheduleRadio);
         if (scheduleRadio) {
-          await scheduleRadio.click();
+          await clickWithTrajectory(page, scheduleRadio);
           await jitteredSleep(500);
           log.warn('Schedule time selection not fully implemented', { time: params.scheduleTime });
         }
@@ -305,7 +305,7 @@ export class PublishService {
       }
 
       submissionStarted = true;
-      await publishBtn.click();
+      await clickWithTrajectory(page, publishBtn);
       log.info('Publish button clicked');
 
       stage = 'outcome';
@@ -347,7 +347,7 @@ export class PublishService {
     options: TypeLikeHumanOptions,
     isContentEditable: boolean,
   ): Promise<void> {
-    await locator.click();
+    await clickWithTrajectory(page, locator);
     // 恢复替换语义：跨平台全选（macOS 用 Meta/Cmd、Win/Linux 用 Control）后删除
     await page.keyboard.press('ControlOrMeta+A');
     await sleep(40);
@@ -496,13 +496,13 @@ export class PublishService {
 
           if (isBlocked) {
             log.debug('Tab is blocked, trying to remove overlay...');
-            // Try to click empty area to dismiss popover
-            await page.mouse.click(400, 50);
+            // B2：遮罩常量坐标改为轨迹点击
+            await clickWithTrajectory(page, { x: 400, y: 50 });
             await jitteredSleep(200);
             continue;
           }
 
-          await tab.click();
+          await clickWithTrajectory(page, tab);
           log.debug('Clicked publish tab', { tabName });
           return;
         }
@@ -573,7 +573,7 @@ export class PublishService {
       // 点击"上传视频"标签
       const videoTab = await page.$(PUBLISH_SELECTORS.uploadVideoTab);
       if (videoTab) {
-        await videoTab.click();
+        await clickWithTrajectory(page, videoTab);
         await jitteredSleep(1000);
       }
 
@@ -636,7 +636,7 @@ export class PublishService {
           await jitteredSleep(500);
           const suggestion = await page.$(`${PUBLISH_SELECTORS.topicContainer}:has-text("${tag}")`);
           if (suggestion) {
-            await suggestion.click();
+            await clickWithTrajectory(page, suggestion);
           } else {
             await page.keyboard.press('Space');
           }
@@ -650,7 +650,7 @@ export class PublishService {
         return { success: false, error: 'A unique enabled publish button was not found' };
       }
 
-      await publishBtn.click();
+      await clickWithTrajectory(page, publishBtn);
       await jitteredSleep(3000);
 
       return { success: true };

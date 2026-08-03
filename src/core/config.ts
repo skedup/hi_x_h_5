@@ -246,6 +246,15 @@ export const config = {
       /** 相对 base 的硬上限倍数，防止极端长停 */
       maxMultiplier: parseFloat(process.env.XHS_MCP_AD_HEAVY_TAIL_MAX_MULT || '') || 8,
     },
+    /**
+     * B2 指针轨迹点击：Bezier 多步 move + hover dwell；默认禁 force。
+     * 回滚：`XHS_MCP_AD_TRAJECTORY=false` → 直点。
+     */
+    trajectory: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_TRAJECTORY, true),
+      /** DoD：启用时轨迹步数下限（建议 ≥5） */
+      minSteps: parseInteger(process.env.XHS_MCP_AD_TRAJECTORY_MIN_STEPS, 5),
+    },
   },
 
   /**

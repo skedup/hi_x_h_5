@@ -116,10 +116,10 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | `clickWithTrajectory`：Bezier/Fitts，**DoD：`steps≥N`（建议 N≥5）或轨迹 hook 可观测**；默认禁 `force`；force 仅 fallback+warn。替换 explore/interact/publish 关键遮罩常量坐标。 |
-| **回滚** | 应急直 click env |
+| **回滚** | `XHS_MCP_AD_TRAJECTORY=false` → 直点 |
 
 ### B3 · Interact 会话化
 
