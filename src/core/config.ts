@@ -54,6 +54,20 @@ export function parseTypingMode(value: string | undefined, defaultValue: TypingM
   return defaultValue;
 }
 
+/** D1：Interact 进帖入口 */
+export type InteractEntryMode = 'direct' | 'feed';
+
+export function parseInteractEntryMode(
+  value: string | undefined,
+  defaultValue: InteractEntryMode = 'direct',
+): InteractEntryMode {
+  if (value === undefined) return defaultValue;
+  const v = value.toLowerCase().trim();
+  if (v === 'feed' || v === 'organic') return 'feed';
+  if (v === 'direct' || v === 'goto') return 'direct';
+  return defaultValue;
+}
+
 /**
  * 解析日志级别
  */
@@ -322,6 +336,22 @@ export const config = {
      */
     typing: {
       mode: parseTypingMode(process.env.XHS_MCP_AD_TYPING_MODE, 'direct'),
+    },
+    /**
+     * D1 Interact 进帖入口全局默认（单次 sessionOpts.entry / 工具参数可覆盖）。
+     * 环境变量：`XHS_MCP_AD_INTERACT_ENTRY=direct|feed`（默认 direct）
+     */
+    interactEntry: {
+      default: parseInteractEntryMode(process.env.XHS_MCP_AD_INTERACT_ENTRY, 'direct'),
+    },
+    /**
+     * D2 评论文本近邻去重（simhash）；精确 SHA 键仍保留。
+     * 回滚：`XHS_MCP_AD_NEAR_DEDUP=false`
+     */
+    nearDedup: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_NEAR_DEDUP, true),
+      /** Hamming 距离阈值（默认 3） */
+      threshold: parseInteger(process.env.XHS_MCP_AD_NEAR_DEDUP_THRESHOLD, 3),
     },
   },
 

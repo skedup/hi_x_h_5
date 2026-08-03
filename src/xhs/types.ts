@@ -314,6 +314,10 @@ export interface InteractSessionMeta {
   keepPage: boolean;
   /** B7：alreadyDone 路径使用了短 post-stay（非完整互动会话） */
   skippedAlreadyDone?: boolean;
+  /** D1：实际进帖入口 */
+  entry?: 'feed' | 'direct';
+  /** D1：feed 失败后回退到了 direct */
+  entryFallback?: boolean;
 }
 
 /**

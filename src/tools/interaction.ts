@@ -12,6 +12,16 @@ import { executeWithMultipleAccounts, MultiAccountParams, resolveAccount } from 
 import { sha256OfText } from '../core/antidetect.js';
 import { archiveProfileDir } from '../core/profile.js';
 
+/** D1：进帖入口（默认 direct；feed=首页封面点入） */
+const entrySchemaProp = {
+  type: 'string' as const,
+  enum: ['direct', 'feed'],
+  description:
+    "Note entry mode: 'direct' (default deep-link) or 'feed' (organic cover click from explore; falls back to direct)",
+};
+
+const entryZod = z.enum(['direct', 'feed']).optional();
+
 /**
  * Interaction tool definitions for MCP.
  */
@@ -45,6 +55,7 @@ export const interactionTools: Tool[] = [
           ],
           description: 'Multiple accounts (array of names/IDs, or "all")',
         },
+        entry: entrySchemaProp,
       },
       required: ['noteId', 'xsecToken'],
     },
@@ -78,6 +89,7 @@ export const interactionTools: Tool[] = [
           ],
           description: 'Multiple accounts (array of names/IDs, or "all")',
         },
+        entry: entrySchemaProp,
       },
       required: ['noteId', 'xsecToken'],
     },
@@ -111,6 +123,7 @@ export const interactionTools: Tool[] = [
           ],
           description: 'Multiple accounts (array of names/IDs, or "all")',
         },
+        entry: entrySchemaProp,
       },
       required: ['noteId', 'xsecToken', 'content'],
     },
@@ -141,6 +154,7 @@ export const interactionTools: Tool[] = [
           type: 'string',
           description: 'Account name or ID to use',
         },
+        entry: entrySchemaProp,
       },
       required: ['noteId', 'xsecToken', 'commentId', 'content'],
     },
@@ -178,6 +192,7 @@ export const interactionTools: Tool[] = [
           ],
           description: 'Multiple accounts (array of names/IDs, or "all")',
         },
+        entry: entrySchemaProp,
       },
       required: ['noteId', 'xsecToken', 'commentId'],
     },
@@ -217,6 +232,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           unlike: z.boolean().optional().default(false),
           account: z.string().optional(),
           accounts: z.union([z.array(z.string()), z.literal('all')]).optional(),
+          entry: entryZod,
         })
         .parse(args);
 
@@ -231,7 +247,9 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
         multiParams,
         params.unlike ? 'unlike' : 'like',
         async (ctx) => {
-          const result = await ctx.client.likeFeed(params.noteId, params.xsecToken, params.unlike);
+          const result = await ctx.client.likeFeed(params.noteId, params.xsecToken, params.unlike, {
+            entry: params.entry,
+          });
 
           // Record interaction
           db.interactions.record({
@@ -245,7 +263,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           return result;
         },
         {
-          logParams: { noteId: params.noteId, unlike: params.unlike },
+          logParams: { noteId: params.noteId, unlike: params.unlike, entry: params.entry },
           // A2：like/unlike 共用同一目标键，防止两者互相踩踏绕过去重
           dedupKey: `like:note:${params.noteId}`,
           xsecToken: params.xsecToken,
@@ -273,6 +291,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           unfavorite: z.boolean().optional().default(false),
           account: z.string().optional(),
           accounts: z.union([z.array(z.string()), z.literal('all')]).optional(),
+          entry: entryZod,
         })
         .parse(args);
 
@@ -287,7 +306,9 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
         multiParams,
         params.unfavorite ? 'unfavorite' : 'favorite',
         async (ctx) => {
-          const result = await ctx.client.favoriteFeed(params.noteId, params.xsecToken, params.unfavorite);
+          const result = await ctx.client.favoriteFeed(params.noteId, params.xsecToken, params.unfavorite, {
+            entry: params.entry,
+          });
 
           db.interactions.record({
             accountId: ctx.accountId,
@@ -300,7 +321,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           return result;
         },
         {
-          logParams: { noteId: params.noteId, unfavorite: params.unfavorite },
+          logParams: { noteId: params.noteId, unfavorite: params.unfavorite, entry: params.entry },
           // A2：favorite/unfavorite 共用同一目标键
           dedupKey: `fav:note:${params.noteId}`,
           xsecToken: params.xsecToken,
@@ -328,6 +349,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           content: z.string(),
           account: z.string().optional(),
           accounts: z.union([z.array(z.string()), z.literal('all')]).optional(),
+          entry: entryZod,
         })
         .parse(args);
 
@@ -342,7 +364,9 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
         multiParams,
         'comment',
         async (ctx) => {
-          const result = await ctx.client.postComment(params.noteId, params.xsecToken, params.content);
+          const result = await ctx.client.postComment(params.noteId, params.xsecToken, params.content, {
+            entry: params.entry,
+          });
 
           db.interactions.record({
             accountId: ctx.accountId,
@@ -357,10 +381,12 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           return result;
         },
         {
-          logParams: { noteId: params.noteId },
+          logParams: { noteId: params.noteId, entry: params.entry },
           // C2.4 跨账号相同评论正文硬拦截
           dedupKey: `comment_text:${sha256OfText(params.content)}`,
           xsecToken: params.xsecToken,
+          // D2：近邻去重（归一化 + simhash）
+          nearText: params.content,
           // A6：同一 noteId 禁止单次调用打到多个账号
           noteId: params.noteId,
         },
@@ -385,6 +411,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           commentId: z.string(),
           content: z.string(),
           account: z.string().optional(),
+          entry: entryZod,
         })
         .parse(args);
 
@@ -401,6 +428,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
             params.xsecToken,
             params.commentId,
             params.content,
+            { entry: params.entry },
           );
 
           db.interactions.record({
@@ -416,10 +444,11 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           return result;
         },
         {
-          logParams: { noteId: params.noteId, commentId: params.commentId },
+          logParams: { noteId: params.noteId, commentId: params.commentId, entry: params.entry },
           // C2.4 跨账号相同回复正文硬拦截
           dedupKey: `reply_text:${sha256OfText(params.content)}`,
           xsecToken: params.xsecToken,
+          nearText: params.content,
         },
       );
 
@@ -437,6 +466,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           unlike: z.boolean().optional().default(false),
           account: z.string().optional(),
           accounts: z.union([z.array(z.string()), z.literal('all')]).optional(),
+          entry: entryZod,
         })
         .parse(args);
 
@@ -451,7 +481,13 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
         multiParams,
         params.unlike ? 'unlike_comment' : 'like_comment',
         async (ctx) => {
-          const result = await ctx.client.likeComment(params.noteId, params.xsecToken, params.commentId, params.unlike);
+          const result = await ctx.client.likeComment(
+            params.noteId,
+            params.xsecToken,
+            params.commentId,
+            params.unlike,
+            { entry: params.entry },
+          );
 
           db.interactions.record({
             accountId: ctx.accountId,
@@ -465,7 +501,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           return result;
         },
         {
-          logParams: { noteId: params.noteId, commentId: params.commentId, unlike: params.unlike },
+          logParams: { noteId: params.noteId, commentId: params.commentId, unlike: params.unlike, entry: params.entry },
           // A2：like_comment/unlike_comment 共用同一目标键（键空间统一）
           dedupKey: `like_c:${params.noteId}:${params.commentId}`,
           xsecToken: params.xsecToken,

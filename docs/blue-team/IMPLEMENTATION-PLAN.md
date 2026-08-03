@@ -262,14 +262,14 @@
 
 ---
 
-## Wave D — 延后项（本轮不实施，仅挂账）
+## Wave D — 有机点入与近邻去重
 
-| ID | 项 | 说明 |
+| ID | 项 | 状态 |
 |----|-----|------|
-| D1 | Interact `entry: 'feed'\|'direct'` 有机点入 | 从 explore/search 列表点入替代直链 goto |
-| D2 | 评论/媒体近邻去重（embedding / pHash） | A4 精确 SHA 之后 |
-| D3 | 同 /24 代理共现检测 | 需出口 IP 解析；当前不做 |
-| D4 | 容器/云手机级硬件指纹隔离 | 基建 |
+| D1 | Interact `entry: 'feed'\|'direct'` 有机点入 | **done** · [D1-FEED-ENTRY.md](./D1-FEED-ENTRY.md) |
+| D2 | 评论文本近邻去重（simhash；**不做** pHash） | **done** · [D2-NEAR-DEDUP.md](./D2-NEAR-DEDUP.md) |
+| D3 | 同 /24 代理共现检测 | 延后；需出口 IP 解析 |
+| D4 | 容器/云手机级硬件指纹隔离 | 延后；基建 |
 
 ---
 

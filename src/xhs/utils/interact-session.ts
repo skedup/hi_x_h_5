@@ -6,14 +6,17 @@
 import type { Page } from 'patchright';
 import { config } from '../../core/config.js';
 import type { InteractSessionMeta } from '../types.js';
+import type { InteractEntry } from './interact-entry.js';
 import { humanScroll, sampleHeavyTailMs, sleep } from './index.js';
 
-/** 批处理等场景可保留页面不关 */
+/** B3 批处理等场景可保留页面不关；D1 可选有机点入 */
 export interface InteractSessionOpts {
   keepPage?: boolean;
+  /** D1：进帖入口；缺省读 config.antiDetect.interactEntry.default（默认 direct） */
+  entry?: InteractEntry;
 }
 
-export type { InteractSessionMeta };
+export type { InteractSessionMeta, InteractEntry };
 
 let lastInteractSessionMeta: InteractSessionMeta | null = null;
 
@@ -116,6 +119,8 @@ export function finalizeInteractSessionMeta(parts: {
   trajectorySteps: number | null;
   keepPage: boolean;
   skippedAlreadyDone?: boolean;
+  entry?: InteractEntry;
+  entryFallback?: boolean;
 }): InteractSessionMeta {
   return recordInteractSessionMeta({
     enabled: parts.enabled,
@@ -125,5 +130,7 @@ export function finalizeInteractSessionMeta(parts: {
     trajectorySteps: parts.trajectorySteps,
     keepPage: parts.keepPage,
     skippedAlreadyDone: parts.skippedAlreadyDone,
+    entry: parts.entry,
+    entryFallback: parts.entryFallback,
   });
 }

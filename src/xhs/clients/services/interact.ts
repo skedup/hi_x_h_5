@@ -7,7 +7,6 @@
 import type { Page } from 'patchright';
 import { InteractionResult, CommentResult, InteractSessionMeta } from '../../types.js';
 import {
-  navigateWithRetry,
   typeLikeHuman,
   jitteredSleep,
   rateLimitedSleep,
@@ -26,18 +25,15 @@ import {
   runInteractPostStay,
   finalizeInteractSessionMeta,
 } from '../../utils/interact-session.js';
+import {
+  openNoteForInteract,
+  resolveInteractEntry,
+  type InteractEntry,
+} from '../../utils/interact-entry.js';
 import { config } from '../../../core/config.js';
 import { BrowserContextManager } from '../context.js';
 import { REQUEST_INTERVAL, INTERACTION_SELECTORS, COMMENT_SELECTORS } from '../constants.js';
 import { createLogger } from '../../../core/logger.js';
-
-function buildNoteUrl(noteId: string, xsecToken: string): string {
-  let url = `https://www.xiaohongshu.com/explore/${noteId}`;
-  if (xsecToken) {
-    url += `?xsec_token=${encodeURIComponent(xsecToken)}`;
-  }
-  return url;
-}
 
 /** B6：评论/回复输入启用 revise，与 publish 正文策略对齐 */
 function commentTypingOptions(content: string): TypeLikeHumanOptions {
@@ -115,6 +111,8 @@ export class InteractService {
     keepPage: boolean;
     /** B7：已处于目标状态、无需点击 */
     alreadyDone?: boolean;
+    entry?: InteractEntry;
+    entryFallback?: boolean;
   }): Promise<InteractSessionMeta> {
     const sessionEnabled = !!config.antiDetect.interactSession?.enabled;
     const shortSession = !!parts.alreadyDone && !!config.antiDetect.alreadyDoneShort?.enabled;
@@ -127,6 +125,8 @@ export class InteractService {
       trajectorySteps: parts.trajectorySteps,
       keepPage: parts.keepPage,
       skippedAlreadyDone: post.skippedAlreadyDone,
+      entry: parts.entry,
+      entryFallback: parts.entryFallback,
     });
   }
 
@@ -150,13 +150,18 @@ export class InteractService {
     const sessionEnabled = !!config.antiDetect.interactSession?.enabled;
 
     try {
-      const accessError = await navigateWithRetry(page, buildNoteUrl(noteId, xsecToken));
-      if (accessError) {
+      const entry = resolveInteractEntry(sessionOpts.entry);
+      let entryUsed: InteractEntry = entry;
+      let entryFallback = false;
+      const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
+      entryUsed = opened.mode;
+      entryFallback = opened.entryFallback;
+      if (opened.error) {
         return {
           success: false,
           action: unlike ? 'unlike' : 'like',
           noteId,
-          error: accessError,
+          error: opened.error,
         };
       }
       await rateLimitedSleep(REQUEST_INTERVAL);
@@ -190,6 +195,8 @@ export class InteractService {
             readScrollCount,
             trajectorySteps,
             keepPage,
+            entry: entryUsed,
+            entryFallback,
           });
           return {
             success: false,
@@ -218,6 +225,8 @@ export class InteractService {
         trajectorySteps,
         keepPage,
         alreadyDone: !shouldClick,
+        entry: entryUsed,
+        entryFallback,
       });
 
       if (shouldClick) {
@@ -244,6 +253,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         }).catch(() => undefined);
       }
       return {
@@ -277,13 +288,18 @@ export class InteractService {
     const sessionEnabled = !!config.antiDetect.interactSession?.enabled;
 
     try {
-      const accessError = await navigateWithRetry(page, buildNoteUrl(noteId, xsecToken));
-      if (accessError) {
+      const entry = resolveInteractEntry(sessionOpts.entry);
+      let entryUsed: InteractEntry = entry;
+      let entryFallback = false;
+      const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
+      entryUsed = opened.mode;
+      entryFallback = opened.entryFallback;
+      if (opened.error) {
         return {
           success: false,
           action: unfavorite ? 'unfavorite' : 'favorite',
           noteId,
-          error: accessError,
+          error: opened.error,
         };
       }
       await rateLimitedSleep(REQUEST_INTERVAL);
@@ -317,6 +333,8 @@ export class InteractService {
             readScrollCount,
             trajectorySteps,
             keepPage,
+            entry: entryUsed,
+            entryFallback,
           });
           return {
             success: false,
@@ -345,6 +363,8 @@ export class InteractService {
         trajectorySteps,
         keepPage,
         alreadyDone: !shouldClick,
+        entry: entryUsed,
+        entryFallback,
       });
 
       if (shouldClick) {
@@ -371,6 +391,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         }).catch(() => undefined);
       }
       return {
@@ -403,9 +425,14 @@ export class InteractService {
     let readingStarted = false;
 
     try {
-      const accessError = await navigateWithRetry(page, buildNoteUrl(noteId, xsecToken));
-      if (accessError) {
-        return { success: false, error: accessError };
+      const entry = resolveInteractEntry(sessionOpts.entry);
+      let entryUsed: InteractEntry = entry;
+      let entryFallback = false;
+      const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
+      entryUsed = opened.mode;
+      entryFallback = opened.entryFallback;
+      if (opened.error) {
+        return { success: false, error: opened.error };
       }
       await rateLimitedSleep(REQUEST_INTERVAL);
 
@@ -427,6 +454,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         });
         return { success: false, error: 'Comment input not found', session };
       }
@@ -442,6 +471,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         });
         return { success: false, error: 'Submit button not found', session };
       }
@@ -469,6 +500,8 @@ export class InteractService {
         readScrollCount,
         trajectorySteps,
         keepPage,
+        entry: entryUsed,
+        entryFallback,
       });
 
       return submitted
@@ -482,6 +515,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         }).catch(() => undefined);
       }
       return {
@@ -514,9 +549,14 @@ export class InteractService {
     let readingStarted = false;
 
     try {
-      const accessError = await navigateWithRetry(page, buildNoteUrl(noteId, xsecToken));
-      if (accessError) {
-        return { success: false, error: accessError };
+      const entry = resolveInteractEntry(sessionOpts.entry);
+      let entryUsed: InteractEntry = entry;
+      let entryFallback = false;
+      const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
+      entryUsed = opened.mode;
+      entryFallback = opened.entryFallback;
+      if (opened.error) {
+        return { success: false, error: opened.error };
       }
       await rateLimitedSleep(REQUEST_INTERVAL);
 
@@ -534,6 +574,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         });
         return { success: false, error: `Comment not found: ${commentId}`, session };
       }
@@ -548,6 +590,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         });
         return { success: false, error: 'Reply button not found', session };
       }
@@ -562,6 +606,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         });
         return { success: false, error: 'Reply input not found', session };
       }
@@ -577,6 +623,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         });
         return { success: false, error: 'Submit button not found', session };
       }
@@ -603,6 +651,8 @@ export class InteractService {
         readScrollCount,
         trajectorySteps,
         keepPage,
+        entry: entryUsed,
+        entryFallback,
       });
 
       return submitted
@@ -616,6 +666,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         }).catch(() => undefined);
       }
       return {
@@ -729,14 +781,19 @@ export class InteractService {
     const sessionEnabled = !!config.antiDetect.interactSession?.enabled;
 
     try {
-      const accessError = await navigateWithRetry(page, buildNoteUrl(noteId, xsecToken));
-      if (accessError) {
-        this.logger.error('页面访问失败', { error: accessError });
+      const entry = resolveInteractEntry(sessionOpts.entry);
+      let entryUsed: InteractEntry = entry;
+      let entryFallback = false;
+      const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
+      entryUsed = opened.mode;
+      entryFallback = opened.entryFallback;
+      if (opened.error) {
+        this.logger.error('页面访问失败', { error: opened.error });
         return {
           success: false,
           action: unlike ? 'unlike' : 'like',
           noteId,
-          error: accessError,
+          error: opened.error,
         };
       }
       await rateLimitedSleep(REQUEST_INTERVAL);
@@ -755,6 +812,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         });
         return {
           success: false,
@@ -775,6 +834,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         });
         return {
           success: false,
@@ -815,6 +876,8 @@ export class InteractService {
         trajectorySteps,
         keepPage,
         alreadyDone: !shouldClick,
+        entry: entryUsed,
+        entryFallback,
       });
 
       if (shouldClick) {
@@ -842,6 +905,8 @@ export class InteractService {
           readScrollCount,
           trajectorySteps,
           keepPage,
+          entry: entryUsed,
+          entryFallback,
         }).catch(() => undefined);
       }
       return {

@@ -222,6 +222,15 @@ CREATE TABLE IF NOT EXISTS ad_xsec_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_ad_xsec_tokens_expires ON ad_xsec_tokens(expires_at);
 
+-- D2：评论文本近邻指纹（simhash hex）
+CREATE TABLE IF NOT EXISTS ad_dedup_near (
+  fingerprint TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ad_dedup_near_expires ON ad_dedup_near(expires_at);
+
 -- Migration: Add new columns to account_profiles if they don't exist
 -- SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we use a workaround
 -- These statements will fail silently if columns already exist
@@ -562,6 +571,14 @@ export interface AdDedupKeyRow {
 /** A5：持久化 xsec token 哈希行（毫秒时间戳） */
 export interface AdXsecTokenRow {
   token_hash: string;
+  account_id: string;
+  created_at: number;
+  expires_at: number;
+}
+
+/** D2：近邻指纹行（毫秒时间戳） */
+export interface AdNearDedupRow {
+  fingerprint: string;
   account_id: string;
   created_at: number;
   expires_at: number;

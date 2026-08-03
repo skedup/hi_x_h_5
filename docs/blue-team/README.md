@@ -44,7 +44,7 @@
 
 ### Wave B — 行为真实性
 
-1. Interact 会话化：重尾 dwell + 阅读滚动 + Fitts 多步轨迹 + 动作后停留（**「从 feed 点入」列为 Wave D**）。
+1. Interact 会话化：重尾 dwell + 阅读滚动 + Fitts 多步轨迹 + 动作后停留（有机点入见 **[D1](./D1-FEED-ENTRY.md)**，默认仍直链）。
 2. 统一轨迹点击原语；`force: true` 仅 fallback。
 3. 新增 `heavyTailDelay` **仅替换行为等待**；勿默改全局 `jitteredSleep`；`rateLimitedSleep` 保 `≥ base`。
 4. Explore：独立滚动 preset + 视频短接触 + 评论 revise；Interact 评论/回复同样开 revise。
@@ -78,7 +78,8 @@
 按波次落地的可执行 backlog（含 DoD、触及文件、回滚开关、PR 切片）见：
 
 → **[IMPLEMENTATION-PLAN.md](./IMPLEMENTATION-PLAN.md)**  
-→ A1 迁移：[A1-PROXY-RUNBOOK.md](./A1-PROXY-RUNBOOK.md)
+→ A1 迁移：[A1-PROXY-RUNBOOK.md](./A1-PROXY-RUNBOOK.md)  
+→ D1/D2：[D1-FEED-ENTRY.md](./D1-FEED-ENTRY.md) · [D2-NEAR-DEDUP.md](./D2-NEAR-DEDUP.md)
 
 顺序：**Wave A（关联/出口）→ Wave B（行为）→ Wave C（指纹/环境）**；A1 与 C3 捆绑约束见上。未完成 A1–A5（含键空间统一）前不要扩大 `accounts:all` 写流量。
 

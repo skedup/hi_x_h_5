@@ -1,13 +1,13 @@
 /**
- * @fileoverview A5 共现守卫持久化仓库：committed 去重键与 xsecToken 哈希。
+ * @fileoverview A5 / D2 共现守卫持久化仓库：committed 去重键、xsecToken 哈希、近邻指纹。
  * @module db/repos/antidetect-persist
  */
 
 import Database from 'better-sqlite3';
-import type { AdDedupKeyRow, AdXsecTokenRow } from '../schema.js';
+import type { AdDedupKeyRow, AdNearDedupRow, AdXsecTokenRow } from '../schema.js';
 
 /**
- * 蓝军 A5：仅持久化已提交（committed）状态；in-flight 仍在内存。
+ * 蓝军 A5/D2：仅持久化已提交（committed）状态；in-flight 仍在内存。
  */
 export class AntidetectPersistRepository {
   constructor(private db: Database.Database) {}
@@ -38,6 +38,19 @@ export class AntidetectPersistRepository {
       .run(tokenHash, accountId, createdAt, expiresAt);
   }
 
+  upsertNear(fingerprint: string, accountId: string, createdAt: number, expiresAt: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO ad_dedup_near (fingerprint, account_id, created_at, expires_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(fingerprint) DO UPDATE SET
+           account_id = excluded.account_id,
+           created_at = excluded.created_at,
+           expires_at = excluded.expires_at`,
+      )
+      .run(fingerprint, accountId, createdAt, expiresAt);
+  }
+
   /** 加载未过期的去重键 */
   loadActiveDedups(nowMs: number): AdDedupKeyRow[] {
     return this.db
@@ -58,15 +71,26 @@ export class AntidetectPersistRepository {
       .all(nowMs) as AdXsecTokenRow[];
   }
 
+  /** 加载未过期的近邻指纹 */
+  loadActiveNears(nowMs: number): AdNearDedupRow[] {
+    return this.db
+      .prepare(
+        `SELECT fingerprint, account_id, created_at, expires_at
+         FROM ad_dedup_near WHERE expires_at > ?`,
+      )
+      .all(nowMs) as AdNearDedupRow[];
+  }
+
   /** 删除已过期行，返回删除条数 */
   deleteExpired(nowMs: number): number {
     const d = this.db.prepare(`DELETE FROM ad_dedup_keys WHERE expires_at <= ?`).run(nowMs);
     const t = this.db.prepare(`DELETE FROM ad_xsec_tokens WHERE expires_at <= ?`).run(nowMs);
-    return (d.changes ?? 0) + (t.changes ?? 0);
+    const n = this.db.prepare(`DELETE FROM ad_dedup_near WHERE expires_at <= ?`).run(nowMs);
+    return (d.changes ?? 0) + (t.changes ?? 0) + (n.changes ?? 0);
   }
 
   /** 清空全部持久化守卫状态（测辅 / 运维） */
   clearAll(): void {
-    this.db.exec(`DELETE FROM ad_dedup_keys; DELETE FROM ad_xsec_tokens;`);
+    this.db.exec(`DELETE FROM ad_dedup_keys; DELETE FROM ad_xsec_tokens; DELETE FROM ad_dedup_near;`);
   }
 }

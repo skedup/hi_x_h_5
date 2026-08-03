@@ -102,7 +102,7 @@
 ### P1
 
 6. 异质 persona 门禁。  
-7. 近邻去重 / pHash。  
+7. 近邻去重 / pHash — **D2 文本近邻 mitigated**（simhash；见 [D2-NEAR-DEDUP.md](./D2-NEAR-DEDUP.md)）；配图 pHash / embedding **延期**。  
 8. 拒绝单次调用同 note 多账号写。  
 9. 新号速率限制。  
 10. 浏览器外 `fetch` 旁路纳入关联审计（与 C4 对齐）。
