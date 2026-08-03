@@ -41,7 +41,7 @@ export interface ExploreParams {
 /**
  * Feed 数据结构（从 __INITIAL_STATE__ 读取）
  */
-interface FeedItem {
+export interface FeedItem {
   id: string;
   xsecToken: string;
   noteCard: {
@@ -75,6 +75,19 @@ interface NoteDetail {
   title: string;
   desc: string;
   comments: CommentInfo[];
+}
+
+/**
+ * A3（blue-team）：将 getFeeds 提取到的每个 feed 的 xsecToken 绑定到实际执行提取的账号（fail-closed）。
+ * 与 tools/content.ts 中 search / list_feeds 的绑定模式一致——explore 提取 feed 即视为该账号
+ * 首个占用来源，避免后续任何账号用该 token 发起写操作时无法追溯来源账号。
+ * 抽成独立函数便于不依赖真实 Page/DOM 的单测覆盖。
+ */
+export function bindFeedXsecTokens(feeds: FeedItem[], accountId: string): void {
+  const guard = getCooccurrenceGuard();
+  for (const feed of feeds) {
+    if (feed?.xsecToken) guard.bindXsecSource(feed.xsecToken, accountId);
+  }
 }
 
 /**
@@ -251,6 +264,9 @@ export class ExploreService {
 
         // 获取当前 feeds，过滤已看过的（用于统计）
         const feeds = await this.getFeeds(page);
+        // A3（blue-team）：提取 feed 即绑定 xsecToken 来源账号，不等到真正点赞/评论才 bind，
+        // 确保「探索式提取」与 search/list_feeds 一致地 fail-closed 占用来源。
+        bindFeedXsecTokens(feeds, accountId);
         const newFeeds = feeds.filter((f) => {
           if (seenInSession.has(f.id)) return false;
           if (f.noteCard.type === 'video') return false; // 跳过视频
