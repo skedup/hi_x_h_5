@@ -8,9 +8,10 @@ import fs from 'fs-extra';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import type { Page, ElementHandle, Locator } from 'patchright';
+import type { Page, ElementHandle, Locator, APIRequestContext } from 'patchright';
 import { config, paths } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
+import { downloadFile } from '../../core/account-download.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1032,50 +1033,42 @@ export function isHttpUrl(imagePath: string): boolean {
 }
 
 /**
- * 从 URL 下载图片到本地临时目录
- * 参考 reference project 的 pkg/downloader/images.go
+ * 从 URL 下载图片到本地临时目录（C4：经账号 APIRequestContext，对齐 downloadFile）。
  *
  * @param imageUrl - 图片 URL
+ * @param apiRequest - 账号浏览器上下文的 APIRequestContext（必填；禁止裸 fetch）
  * @returns 本地文件路径
- * @throws 如果下载失败
+ * @throws 如果缺少 apiRequest 或下载失败
  */
-export async function downloadImageFromUrl(imageUrl: string): Promise<string> {
-  // 确保临时目录存在
+export async function downloadImageFromUrl(
+  imageUrl: string,
+  apiRequest: APIRequestContext,
+): Promise<string> {
   await fs.ensureDir(paths.tempImages);
 
-  // 使用 URL 的 SHA256 哈希作为文件名，确保唯一性
   const hash = crypto.createHash('sha256').update(imageUrl).digest('hex');
   const shortHash = hash.substring(0, 16);
-  const timestamp = Date.now();
 
-  // 下载图片
-  const response = await fetch(imageUrl);
-  if (!response.ok) {
-    throw new Error(`下载图片失败: HTTP ${response.status}`);
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-
-  // 检测文件类型（通过魔数判断）
-  const extension = detectImageExtension(buffer);
-  if (!extension) {
-    throw new Error('下载的文件不是有效的图片格式');
-  }
-
-  // 生成文件名
-  const fileName = `img_${shortHash}_${timestamp}.${extension}`;
-  const filePath = path.join(paths.tempImages, fileName);
-
-  // 如果文件已存在（基于哈希），直接返回
+  // 同 URL 哈希已存在则复用，避免重复下载
   const existingFiles = await fs.readdir(paths.tempImages);
-  const existingFile = existingFiles.find((f) => f.includes(shortHash));
+  const existingFile = existingFiles.find((f) => f.includes(shortHash) && !f.endsWith('.tmp'));
   if (existingFile) {
     return path.join(paths.tempImages, existingFile);
   }
 
-  // 保存文件
-  await fs.writeFile(filePath, buffer);
+  const timestamp = Date.now();
+  const tmpPath = path.join(paths.tempImages, `img_${shortHash}_${timestamp}.tmp`);
+  await downloadFile(imageUrl, tmpPath, apiRequest, { resourceType: 'image' });
 
+  const buffer = await fs.readFile(tmpPath);
+  const extension = detectImageExtension(buffer);
+  if (!extension) {
+    await fs.unlink(tmpPath).catch(() => {});
+    throw new Error('下载的文件不是有效的图片格式');
+  }
+
+  const filePath = path.join(paths.tempImages, `img_${shortHash}_${timestamp}.${extension}`);
+  await fs.rename(tmpPath, filePath);
   return filePath;
 }
 
@@ -1126,21 +1119,31 @@ function detectImageExtension(buffer: Buffer): string | null {
 }
 
 /**
- * 处理图片路径列表，将 HTTP URL 下载到本地
+ * 处理图片路径列表，将 HTTP URL 经账号会话下载到本地。
+ *
+ * C4：含 HTTP URL 时必须提供 apiRequest，禁止 Node 裸 fetch 旁路 egress。
  *
  * @param imagePaths - 图片路径或 URL 列表
+ * @param apiRequest - 账号 APIRequestContext；有 HTTP URL 时必填
  * @returns 本地文件路径列表
  */
-export async function resolveImagePaths(imagePaths: string[]): Promise<string[]> {
+export async function resolveImagePaths(
+  imagePaths: string[],
+  apiRequest?: APIRequestContext | null,
+): Promise<string[]> {
   const resolvedPaths: string[] = [];
+  const hasHttp = imagePaths.some((p) => isHttpUrl(p));
+  if (hasHttp && !apiRequest) {
+    throw new Error(
+      'HTTP 配图下载需要账号 APIRequestContext（禁止 Node 裸 fetch 旁路）。请先 ensureContext 再 resolveImagePaths。',
+    );
+  }
 
   for (const imgPath of imagePaths) {
     if (isHttpUrl(imgPath)) {
-      // 下载 HTTP 图片
-      const localPath = await downloadImageFromUrl(imgPath);
+      const localPath = await downloadImageFromUrl(imgPath, apiRequest!);
       resolvedPaths.push(localPath);
     } else {
-      // 本地路径，直接使用
       resolvedPaths.push(imgPath);
     }
   }

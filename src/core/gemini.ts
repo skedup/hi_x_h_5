@@ -47,7 +47,11 @@ export interface NoteImageUnderstanding {
 }
 
 /**
- * 从 URL 下载图片并压缩为 base64
+ * 从 URL 下载图片并压缩为 base64。
+ *
+ * 范围说明（C4）：此路径为 Gemini 多模态理解的服务端侧拉图，走 Node `fetch`，
+ * **不是**浏览会话 egress；不与账号 proxy/Cookie/Referer 对齐。发布配图请走
+ * `resolveImagePaths` → `downloadFile`（APIRequestContext）。
  */
 async function fetchAndCompressImage(url: string): Promise<{ base64: string; mimeType: string }> {
   const response = await fetch(url);

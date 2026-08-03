@@ -212,10 +212,11 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P1 |
 | **做什么** | `resolveImagePaths` 走账号 `APIRequestContext`；**复用/抽取** `tools/download.ts` 的 Referer + Sec-Fetch；禁止业务裸 `fetch` 拉资源。Gemini `fetch` 注明非浏览 egress（范围外但关联面知悉）。 |
 | **DoD** | 配图请求头与账号下载一致且走 proxy |
+| **触及** | [C4-IMAGE-DOWNLOAD.md](./C4-IMAGE-DOWNLOAD.md) · `core/account-download.ts` · `utils/index.ts` · `publish.ts` |
 
 ### C5 · 登出归档 profile
 
@@ -315,7 +316,7 @@ C4 · C5 · C6 · C7 相对独立
 - [ ] Explore 视频接触率可检；explore 滚动 preset
 - [ ] `navigateWithRetry` / `alreadyDone` 无均匀探测指纹
 - [ ] 登录强制 headful（有图形时）；容器 no-sandbox 有文档
-- [ ] A1+C3 时区/languages 自洽；配图 Referer/Sec-Fetch 对齐
+- [x] A1+C3 时区/languages 自洽；配图 Referer/Sec-Fetch 对齐（配图 C4 done；C3 仍待）
 - [ ] 代理下 WebRTC ICE 无宿主泄漏（或 `wontfix` 书面）
 - [x] CLAUDE.md 与 config 默认一致、无 stealth.js 虚述
 - [ ] 01/02/03 对应 P0 标 mitigated
