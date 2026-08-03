@@ -70,11 +70,12 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0 |
 | **做什么** | 表：`ad_dedup_keys` · `ad_xsec_tokens`（token **hash**）；committed 落库；in-flight 可内存；`XHS_MCP_AD_PERSIST`；TTL/GC 约定；`clearPersistent` 测辅。 |
+| **触及** | `antidetect.ts` · `db/repos/antidetect-persist.ts` · `schema.ts` · `config.ts` · `db/index.ts` |
 | **DoD** | 杀进程后：工具赞↔explore 赞、`comment_text` 跨帖、xsec bind 仍拦截 |
-| **回滚** | `AD_PERSIST=false` |
+| **回滚** | `XHS_MCP_AD_PERSIST=false` |
 | **顺序** | **禁止**早于 A2+A4 合入 |
 
 ### A6 · 拒绝单次同 note 多账号写

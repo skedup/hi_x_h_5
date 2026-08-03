@@ -225,6 +225,15 @@ export const config = {
     proxyRequired: {
       mode: parseProxyRequiredMode(process.env.XHS_MCP_AD_PROXY_REQUIRED),
     },
+    /**
+     * A5 共现守卫持久化：committed 去重键 / xsec token 哈希落库，进程重启后仍拦截。
+     * - enabled：`XHS_MCP_AD_PERSIST`（默认 true；设 false 仅内存）
+     * - ttlMs：行过期时间，默认 30 天；过期在 load/写入时 GC
+     */
+    persist: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_PERSIST, true),
+      ttlMs: parseInteger(process.env.XHS_MCP_AD_PERSIST_TTL_MS, 30 * 24 * 60 * 60 * 1000),
+    },
   },
 
   /**

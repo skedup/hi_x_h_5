@@ -44,6 +44,15 @@ function makeCfg(overrides: any = {}) {
       enabled: true,
       ...(overrides.headlessWriteGate || {}),
     },
+    persist: {
+      enabled: false,
+      ttlMs: 30 * 24 * 60 * 60 * 1000,
+      ...(overrides.persist || {}),
+    },
+    proxyRequired: {
+      mode: 'off' as const,
+      ...(overrides.proxyRequired || {}),
+    },
   };
 }
 
@@ -342,5 +351,192 @@ describe('R5 token 与取消状态机', () => {
     await g.cancelReservation(before.reservation, A);
 
     expect((await g.beforeAction({ accountId: A, action: 'comment', dedupKey: 'retry-after-cancel' })).allow).toBe(true);
+  });
+});
+
+/** A5：内存假 store，模拟 SQLite 持久化（bun 不支持 better-sqlite3） */
+function makeMemoryPersistStore() {
+  const dedups = new Map<string, { account_id: string; created_at: number; expires_at: number }>();
+  const tokens = new Map<string, { account_id: string; created_at: number; expires_at: number }>();
+  return {
+    upsertDedup(dedupKey: string, accountId: string, createdAt: number, expiresAt: number) {
+      dedups.set(dedupKey, { account_id: accountId, created_at: createdAt, expires_at: expiresAt });
+    },
+    upsertToken(tokenHash: string, accountId: string, createdAt: number, expiresAt: number) {
+      tokens.set(tokenHash, { account_id: accountId, created_at: createdAt, expires_at: expiresAt });
+    },
+    loadActiveDedups(nowMs: number) {
+      return [...dedups.entries()]
+        .filter(([, v]) => v.expires_at > nowMs)
+        .map(([dedup_key, v]) => ({ dedup_key, ...v }));
+    },
+    loadActiveTokens(nowMs: number) {
+      return [...tokens.entries()]
+        .filter(([, v]) => v.expires_at > nowMs)
+        .map(([token_hash, v]) => ({ token_hash, ...v }));
+    },
+    deleteExpired(nowMs: number) {
+      let n = 0;
+      for (const [k, v] of dedups) {
+        if (v.expires_at <= nowMs) {
+          dedups.delete(k);
+          n++;
+        }
+      }
+      for (const [k, v] of tokens) {
+        if (v.expires_at <= nowMs) {
+          tokens.delete(k);
+          n++;
+        }
+      }
+      return n;
+    },
+    clearAll() {
+      dedups.clear();
+      tokens.clear();
+    },
+    _dedups: dedups,
+    _tokens: tokens,
+  };
+}
+
+describe('A5 Guard 持久化（杀进程后仍拦截）', () => {
+  it('工具赞提交后，新 Guard 实例加载同一 store → explore 同键跨账号被拦', async () => {
+    const store = makeMemoryPersistStore();
+    const cfg = makeCfg({
+      persist: { enabled: true, ttlMs: 86_400_000 },
+      xsecTokenBinding: { mode: 'block' },
+      quota: { enabled: false, cooldownMsAfterAction: 0 },
+    });
+    const g1 = new CooccurrenceGuard(cfg);
+    g1.attachPersistence(store);
+    const r = await g1.beforeAction({ accountId: A, action: 'like', dedupKey: 'like:note:X' });
+    await g1.afterAction({ accountId: A, action: 'like', success: true, reservation: r.reservation });
+    expect(store._dedups.has('like:note:X')).toBe(true);
+
+    // 模拟杀进程：全新 Guard + 同一 store
+    const g2 = new CooccurrenceGuard(cfg);
+    g2.attachPersistence(store);
+    const blocked = await g2.beforeAction({ accountId: B, action: 'like', dedupKey: 'like:note:X' });
+    expect(blocked.allow).toBe(false);
+    expect(blocked.reason).toBe('cross_account_dedup');
+  });
+
+  it('comment_text 跨帖键持久化后跨实例仍互斥', async () => {
+    const store = makeMemoryPersistStore();
+    const cfg = makeCfg({
+      persist: { enabled: true, ttlMs: 86_400_000 },
+      quota: { enabled: false, cooldownMsAfterAction: 0 },
+    });
+    const key = `comment_text:${sha256OfText('同一句文案')}`;
+    const g1 = new CooccurrenceGuard(cfg);
+    g1.attachPersistence(store);
+    const r = await g1.beforeAction({ accountId: A, action: 'comment', dedupKey: key });
+    await g1.afterAction({ accountId: A, action: 'comment', success: true, reservation: r.reservation });
+
+    const g2 = new CooccurrenceGuard(cfg);
+    g2.attachPersistence(store);
+    const blocked = await g2.beforeAction({ accountId: B, action: 'comment', dedupKey: key });
+    expect(blocked.allow).toBe(false);
+    expect(blocked.reason).toBe('cross_account_dedup');
+  });
+
+  it('bindXsecSource 落库后新实例仍拦截跨账号写', async () => {
+    const store = makeMemoryPersistStore();
+    const cfg = makeCfg({
+      persist: { enabled: true, ttlMs: 86_400_000 },
+      xsecTokenBinding: { mode: 'block' },
+      quota: { enabled: false, cooldownMsAfterAction: 0 },
+    });
+    const g1 = new CooccurrenceGuard(cfg);
+    g1.attachPersistence(store);
+    g1.bindXsecSource('raw-token-abc', A);
+    expect(store._tokens.has(sha256OfText('raw-token-abc'))).toBe(true);
+
+    const g2 = new CooccurrenceGuard(cfg);
+    g2.attachPersistence(store);
+    const blocked = await g2.beforeAction({ accountId: B, action: 'like', xsecToken: 'raw-token-abc' });
+    expect(blocked.allow).toBe(false);
+    expect(blocked.reason).toBe('xsec_token_bound_to_other_account');
+  });
+
+  it('clearPersistent 清空库与内存后放行', async () => {
+    const store = makeMemoryPersistStore();
+    const cfg = makeCfg({
+      persist: { enabled: true, ttlMs: 86_400_000 },
+      quota: { enabled: false, cooldownMsAfterAction: 0 },
+    });
+    const g = new CooccurrenceGuard(cfg);
+    g.attachPersistence(store);
+    const r = await g.beforeAction({ accountId: A, action: 'like', dedupKey: 'like:note:Z' });
+    await g.afterAction({ accountId: A, action: 'like', success: true, reservation: r.reservation });
+    g.clearPersistent();
+    expect(store._dedups.size).toBe(0);
+    expect((await g.beforeAction({ accountId: B, action: 'like', dedupKey: 'like:note:Z' })).allow).toBe(true);
+  });
+
+  it('过期行在 load 时被 GC，不再拦截', async () => {
+    const store = makeMemoryPersistStore();
+    const cfg = makeCfg({
+      persist: { enabled: true, ttlMs: 1 }, // 1ms TTL
+      quota: { enabled: false, cooldownMsAfterAction: 0 },
+    });
+    const g1 = new CooccurrenceGuard(cfg);
+    g1.attachPersistence(store);
+    const r = await g1.beforeAction({ accountId: A, action: 'like', dedupKey: 'like:note:ttl' });
+    await g1.afterAction({ accountId: A, action: 'like', success: true, reservation: r.reservation });
+    await new Promise((res) => setTimeout(res, 5));
+
+    const g2 = new CooccurrenceGuard(cfg);
+    g2.attachPersistence(store);
+    expect((await g2.beforeAction({ accountId: B, action: 'like', dedupKey: 'like:note:ttl' })).allow).toBe(true);
+  });
+
+  it('同进程内 TTL 到期后惰性过期放行（不依赖重启）', async () => {
+    const store = makeMemoryPersistStore();
+    const cfg = makeCfg({
+      persist: { enabled: true, ttlMs: 1 },
+      quota: { enabled: false, cooldownMsAfterAction: 0 },
+    });
+    const g = new CooccurrenceGuard(cfg);
+    g.attachPersistence(store);
+    const r = await g.beforeAction({ accountId: A, action: 'like', dedupKey: 'like:note:live-ttl' });
+    await g.afterAction({ accountId: A, action: 'like', success: true, reservation: r.reservation });
+    expect((await g.beforeAction({ accountId: B, action: 'like', dedupKey: 'like:note:live-ttl' })).allow).toBe(
+      false,
+    );
+    await new Promise((res) => setTimeout(res, 5));
+    expect((await g.beforeAction({ accountId: B, action: 'like', dedupKey: 'like:note:live-ttl' })).allow).toBe(
+      true,
+    );
+  });
+
+  it('reset 在持久化开启时从库回填 committed，不留下拦截空洞', async () => {
+    const store = makeMemoryPersistStore();
+    const cfg = makeCfg({
+      persist: { enabled: true, ttlMs: 86_400_000 },
+      quota: { enabled: false, cooldownMsAfterAction: 0 },
+    });
+    const g = new CooccurrenceGuard(cfg);
+    g.attachPersistence(store);
+    const r = await g.beforeAction({ accountId: A, action: 'like', dedupKey: 'like:note:reset' });
+    await g.afterAction({ accountId: A, action: 'like', success: true, reservation: r.reservation });
+    g.reset(); // 应重新从 store 加载
+    const blocked = await g.beforeAction({ accountId: B, action: 'like', dedupKey: 'like:note:reset' });
+    expect(blocked.allow).toBe(false);
+    expect(blocked.reason).toBe('cross_account_dedup');
+  });
+
+  it('persist.enabled=false 时不写库', async () => {
+    const store = makeMemoryPersistStore();
+    const cfg = makeCfg({
+      persist: { enabled: false, ttlMs: 86_400_000 },
+      quota: { enabled: false, cooldownMsAfterAction: 0 },
+    });
+    const g = new CooccurrenceGuard(cfg);
+    g.attachPersistence(store);
+    const r = await g.beforeAction({ accountId: A, action: 'like', dedupKey: 'like:note:off' });
+    await g.afterAction({ accountId: A, action: 'like', success: true, reservation: r.reservation });
+    expect(store._dedups.size).toBe(0);
   });
 });
