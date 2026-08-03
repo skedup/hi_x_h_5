@@ -275,6 +275,22 @@ export const config = {
     explore: {
       allowVideo: parseBoolean(process.env.XHS_MCP_AD_EXPLORE_ALLOW_VIDEO, true),
     },
+    /**
+     * B7 alreadyDone 短会话：已赞/已藏等无需点击时，跳过加长 post-stay，改用短 dwell。
+     * 回滚：`XHS_MCP_AD_ALREADY_DONE_SHORT=false` → 与真实互动相同 post-stay。
+     */
+    alreadyDoneShort: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_ALREADY_DONE_SHORT, true),
+      /** alreadyDone 路径 post-stay 基准 ms（默认 ~400，远短于 interactSession.postStayMs） */
+      postStayMs: parseInteger(process.env.XHS_MCP_AD_ALREADY_DONE_POST_STAY_MS, 400),
+    },
+    /**
+     * B7 导航重试间隔：失败重载用重尾采样，避免 3–5s 均匀连刷同 URL。
+     * 回滚：`XHS_MCP_AD_NAV_RETRY_HEAVY_TAIL=false` → 均匀 [3000, 5000] ms。
+     */
+    navRetryHeavyTail: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_NAV_RETRY_HEAVY_TAIL, true),
+    },
   },
 
   /**

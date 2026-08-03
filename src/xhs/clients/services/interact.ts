@@ -90,9 +90,12 @@ export class InteractService {
     readScrollCount: number;
     trajectorySteps: number | null;
     keepPage: boolean;
+    /** B7：已处于目标状态、无需点击 */
+    alreadyDone?: boolean;
   }): Promise<InteractSessionMeta> {
     const sessionEnabled = !!config.antiDetect.interactSession?.enabled;
-    const post = await runInteractPostStay();
+    const shortSession = !!parts.alreadyDone && !!config.antiDetect.alreadyDoneShort?.enabled;
+    const post = await runInteractPostStay({ shortSession });
     return finalizeInteractSessionMeta({
       enabled: sessionEnabled,
       preDwellMs: parts.preDwellMs,
@@ -100,6 +103,7 @@ export class InteractService {
       postStayMs: post.postStayMs,
       trajectorySteps: parts.trajectorySteps,
       keepPage: parts.keepPage,
+      skippedAlreadyDone: post.skippedAlreadyDone,
     });
   }
 
@@ -177,6 +181,12 @@ export class InteractService {
         if (!sessionEnabled) {
           await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
         }
+      } else {
+        this.logger.info('skipped_already_done', {
+          action: unlike ? 'unlike' : 'like',
+          noteId,
+          shortSession: !!config.antiDetect.alreadyDoneShort?.enabled,
+        });
       }
 
       const session = await this.completeSession({
@@ -184,7 +194,17 @@ export class InteractService {
         readScrollCount,
         trajectorySteps,
         keepPage,
+        alreadyDone: !shouldClick,
       });
+
+      if (shouldClick) {
+        this.logger.info('interact_success', {
+          action: unlike ? 'unlike' : 'like',
+          noteId,
+          trajectorySteps,
+          postStayMs: session.postStayMs,
+        });
+      }
 
       return {
         success: true,
@@ -288,6 +308,12 @@ export class InteractService {
         if (!sessionEnabled) {
           await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
         }
+      } else {
+        this.logger.info('skipped_already_done', {
+          action: unfavorite ? 'unfavorite' : 'favorite',
+          noteId,
+          shortSession: !!config.antiDetect.alreadyDoneShort?.enabled,
+        });
       }
 
       const session = await this.completeSession({
@@ -295,7 +321,17 @@ export class InteractService {
         readScrollCount,
         trajectorySteps,
         keepPage,
+        alreadyDone: !shouldClick,
       });
+
+      if (shouldClick) {
+        this.logger.info('interact_success', {
+          action: unfavorite ? 'unfavorite' : 'favorite',
+          noteId,
+          trajectorySteps,
+          postStayMs: session.postStayMs,
+        });
+      }
 
       return {
         success: true,
@@ -742,6 +778,13 @@ export class InteractService {
         if (!sessionEnabled) {
           await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
         }
+      } else {
+        this.logger.info('skipped_already_done', {
+          action: unlike ? 'unlike' : 'like',
+          noteId,
+          commentId,
+          shortSession: !!config.antiDetect.alreadyDoneShort?.enabled,
+        });
       }
 
       const session = await this.completeSession({
@@ -749,7 +792,18 @@ export class InteractService {
         readScrollCount,
         trajectorySteps,
         keepPage,
+        alreadyDone: !shouldClick,
       });
+
+      if (shouldClick) {
+        this.logger.info('interact_success', {
+          action: unlike ? 'unlike' : 'like',
+          noteId,
+          commentId,
+          trajectorySteps,
+          postStayMs: session.postStayMs,
+        });
+      }
 
       return {
         success: true,

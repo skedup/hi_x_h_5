@@ -917,23 +917,50 @@ export async function checkPageAccessible(page: Page): Promise<string | null> {
   return null;
 }
 
+/** B7：导航重试上限（含首次 goto，共 maxRetries 次尝试） */
+export const NAVIGATE_RETRY_MAX = 3;
+
+/** B7：导航失败重试间隔默认区间 [min, max] ms */
+export const NAVIGATE_RETRY_DELAY_MS: [number, number] = [3000, 5000];
+
+/**
+ * B7：采样导航重试间隔 ms。
+ * `navRetryHeavyTail.enabled=true` 时用重尾；否则均匀 [min, max]（迁移前行为）。
+ */
+export function sampleNavRetryDelayMs(
+  retryDelay: [number, number] = NAVIGATE_RETRY_DELAY_MS,
+): number {
+  const lo = Math.max(1, Math.min(retryDelay[0], retryDelay[1]));
+  const hi = Math.max(lo, Math.max(retryDelay[0], retryDelay[1]));
+  const navCfg = config.antiDetect.navRetryHeavyTail;
+
+  if (navCfg?.enabled !== false) {
+    const base = Math.sqrt(lo * hi);
+    return sampleHeavyTailMs(base, { minMs: lo, maxMs: hi });
+  }
+
+  return Math.floor(lo + Math.random() * (hi - lo + 1));
+}
+
 /**
  * 带重试机制的页面导航和访问检测
  * 如果页面不可访问，会重试最多 maxRetries 次
  *
  * @param page - Playwright page instance
  * @param url - 要访问的 URL
- * @param maxRetries - 最大重试次数 (默认 3)
- * @param retryDelay - 重试间隔范围 [min, max] 毫秒 (默认 [3000, 5000])
+ * @param maxRetries - 最大重试次数 (默认 NAVIGATE_RETRY_MAX=3)
+ * @param retryDelay - 重试间隔范围 [min, max] 毫秒 (默认 NAVIGATE_RETRY_DELAY_MS)
  * @returns null if accessible, error message if all retries failed
  */
 export async function navigateWithRetry(
   page: Page,
   url: string,
-  maxRetries: number = 3,
-  retryDelay: [number, number] = [3000, 5000],
+  maxRetries: number = NAVIGATE_RETRY_MAX,
+  retryDelay: [number, number] = NAVIGATE_RETRY_DELAY_MS,
 ): Promise<string | null> {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  const attempts = Math.max(1, Math.floor(maxRetries));
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     // 等待 DOM 稳定，最多 3 秒（类似 reference project 的 MustWaitDOMStable）
     await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
@@ -941,18 +968,16 @@ export async function navigateWithRetry(
 
     const accessError = await checkPageAccessible(page);
     if (!accessError) {
-      // 页面可访问
       return null;
     }
 
-    // 如果是最后一次尝试，返回错误
-    if (attempt === maxRetries) {
-      return `${accessError} (重试 ${maxRetries} 次后仍然失败)`;
+    if (attempt === attempts) {
+      return `${accessError} (重试 ${attempts} 次后仍然失败)`;
     }
 
-    // 等待随机时间后重试
-    const delay = retryDelay[0] + Math.random() * (retryDelay[1] - retryDelay[0]);
-    await sleep(delay);
+    const delayMs = sampleNavRetryDelayMs(retryDelay);
+    log.debug('B7 navigateWithRetry: 重试前等待', { attempt, attempts, delayMs, url });
+    await sleep(delayMs);
   }
 
   return null;

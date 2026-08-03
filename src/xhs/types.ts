@@ -312,6 +312,8 @@ export interface InteractSessionMeta {
   /** 主动作轨迹步数；未点击或未启用轨迹时为 null */
   trajectorySteps: number | null;
   keepPage: boolean;
+  /** B7：alreadyDone 路径使用了短 post-stay（非完整互动会话） */
+  skippedAlreadyDone?: boolean;
 }
 
 /**

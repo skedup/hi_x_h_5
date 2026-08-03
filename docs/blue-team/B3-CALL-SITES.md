@@ -16,4 +16,6 @@
 
 DoD（单次 like 默认可观测）：`session.preDwellMs > 0`、`session.readScrollCount ≥ 1`、轨迹 `steps≥N`（B2）、`session.postStayMs` 采样自配置；**禁止**仅用「goto 后 &lt;1s 关页」验收。
 
-未做（Wave D / B7）：有机 feed 点入；`alreadyDone` 短探测专项治理。
+B7 alreadyDone 短会话见 `docs/blue-team/B7-CALL-SITES.md`（`skipped_already_done` 日志 + 短 post-stay）。
+
+未做（Wave D）：有机 feed 点入。
