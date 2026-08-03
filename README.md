@@ -217,7 +217,7 @@ xhs_publish_content({ title: "...", content: "...", images: [...], accounts: "al
 | `GEMINI_API_KEY` | - | Gemini API 密钥（AI 图片生成必需） |
 | `GEMINI_IMAGE_GENERATE_MODEL` | `gemini-3-pro-image` | 图片生成模型 |
 | `XHS_MCP_DATA_DIR` | `~/.xhs-mcp` | 数据存储目录 |
-| `XHS_MCP_HEADLESS` | `true` | 是否使用无头浏览器 |
+| `XHS_MCP_HEADLESS` | `false` | 是否使用无头浏览器（默认有头；写操作在 headlessWriteGate 开启时被拒绝） |
 | `XHS_MCP_LEGACY_PROFILE_ACCOUNT_ID` | - | 首次接管旧 `browser-profile` 时显式确认其所属账号 ID |
 | `XHS_MCP_KEEP_OPEN` | `false` | 操作完成后保持浏览器打开 |
 | `XHS_MCP_REQUEST_INTERVAL` | `2000` | 请求间隔（毫秒） |
