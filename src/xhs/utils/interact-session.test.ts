@@ -35,6 +35,7 @@ function makeMockPage(): Page & { wheelCalls: number } {
 describe('B3 interact session', () => {
   const prev = { ...cfg.antiDetect.interactSession };
   const prevHt = { ...cfg.antiDetect.heavyTail };
+  const prevAd = { ...cfg.antiDetect.alreadyDoneShort };
 
   beforeEach(() => {
     cfg.antiDetect.interactSession = {
@@ -44,12 +45,14 @@ describe('B3 interact session', () => {
       minReadScrolls: 1,
     };
     cfg.antiDetect.heavyTail = { enabled: false, sigma: 0.45, maxMultiplier: 8 };
+    cfg.antiDetect.alreadyDoneShort = { enabled: true, postStayMs: 80 };
     resetLastInteractSessionMeta();
   });
 
   afterAll(() => {
     cfg.antiDetect.interactSession = prev;
     cfg.antiDetect.heavyTail = prevHt;
+    cfg.antiDetect.alreadyDoneShort = prevAd;
   });
 
   it('启用时 pre dwell + ≥1 阅读滚动可观测', async () => {
@@ -97,5 +100,22 @@ describe('B3 interact session', () => {
     });
     expect(meta.trajectorySteps).toBe(6);
     expect(getLastInteractSessionMeta()).toEqual(meta);
+  });
+
+  it('B7 shortSession 使用更短 post-stay 并标记 skippedAlreadyDone', async () => {
+    const post = await runInteractPostStay({ shortSession: true });
+    expect(post.enabled).toBe(true);
+    expect(post.skippedAlreadyDone).toBe(true);
+    expect(post.postStayMs).toBeGreaterThanOrEqual(40);
+    expect(post.postStayMs).toBeLessThanOrEqual(120);
+  });
+
+  it('B7 关闭 alreadyDoneShort 时 shortSession 仍走完整 post-stay', async () => {
+    cfg.antiDetect.alreadyDoneShort = { enabled: false, postStayMs: 80 };
+    const post = await runInteractPostStay({ shortSession: true });
+    expect(post.enabled).toBe(true);
+    expect(post.skippedAlreadyDone).toBe(false);
+    expect(post.postStayMs).toBeGreaterThanOrEqual(50);
+    expect(post.postStayMs).toBeLessThanOrEqual(250);
   });
 });
