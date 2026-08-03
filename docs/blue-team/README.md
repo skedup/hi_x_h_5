@@ -57,7 +57,7 @@
 2. 登录强制 headful + `viewport: null`；无 DISPLAY 环境文档化回滚/Xvfb。
 3. 账号级 timezone/locale/geolocation + `grantPermissions` 与代理属地对齐（与 A1 捆绑验收）。
 4. 发布配图走 `APIRequestContext`，**对齐** `downloadFile` 的 Referer/Sec-Fetch — **done（C4）**。
-5. 登出语义改为归档 profile。
+5. 登出语义改为归档 profile — **done（C5）**。
 6. **C8**：代理下 WebRTC/ICE 泄漏缓解（与 A1 捆绑）；**C7**：修正 CLAUDE.md 与 live config。
 
 ---

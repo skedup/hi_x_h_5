@@ -222,9 +222,10 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P1 |
 | **做什么** | 复用 `profile.ts` 归档模式；`clearCookies` 标 deprecated。术语：归档的是 profile 内持久化标识，非硬件指纹。 |
+| **触及** | [C5-LOGOUT-ARCHIVE.md](./C5-LOGOUT-ARCHIVE.md) · `profile.ts` · `context.ts` · `tools/interaction.ts` |
 
 ### C6 · evaluate / waitForFunction 策略
 

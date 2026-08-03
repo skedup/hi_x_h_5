@@ -10,6 +10,7 @@ import { LoginUserInfo, FullUserProfile } from '../types.js';
 import { createLogger } from '../../core/logger.js';
 import { config, paths, assertDisplayAvailableForHeadful } from '../../core/config.js';
 import { parseProxyConfig, toPlaywrightProxy } from '../../core/proxy.js';
+import { archiveProfileDir } from '../../core/profile.js';
 import { getBrowserArgs } from './constants.js';
 
 // Create logger for browser module
@@ -232,21 +233,23 @@ export class BrowserContextManager {
   }
 
   /**
-   * Delete login cookies and clear session state.
-   * Used to log out or force re-authentication.
+   * 登出：关闭浏览器并归档 on-disk profile（C5）。
+   *
+   * @deprecated 旧实现仅 `context.clearCookies()`，profile 内 IndexedDB 等仍保留。
+   * 现改为归档整个 profile 目录；请勿再依赖「只清 Cookie」语义。
+   * 调用方须已持有该账号锁（或经 `xhs_delete_cookies`），避免与并发 getClient 竞态。
    */
-  async deleteCookies(): Promise<{ success: boolean; error?: string }> {
+  async deleteCookies(): Promise<{ success: boolean; archivedPath?: string | null; error?: string }> {
     try {
-      const context = await this.ensureContext();
-      await context.clearCookies();
-
-      // Clear internal state
-      this.options.state = undefined;
-
-      // Close browser instance
+      // 须先关闭，再 rename profile，避免 Chrome 文件锁
       await this.close();
-
-      return { success: true };
+      const archivedPath = archiveProfileDir(this.options.profileId);
+      this.options.state = undefined;
+      log.info('登出已归档 profile', {
+        profileId: this.options.profileId,
+        archived: Boolean(archivedPath),
+      });
+      return { success: true, archivedPath };
     } catch (error) {
       return {
         success: false,

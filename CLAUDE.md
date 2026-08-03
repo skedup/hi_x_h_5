@@ -160,7 +160,7 @@ QR code is generated via api.qrserver.com - works remotely without local file ac
 | `xhs_post_comment` | Post a comment on a note |
 | `xhs_reply_comment` | Reply to a comment |
 | `xhs_like_comment` | Like/unlike a comment |
-| `xhs_delete_cookies` | Delete saved cookies/session for an account |
+| `xhs_delete_cookies` | Delete saved cookies/session for an account（C5：归档 on-disk profile，非仅 clearCookies） |
 
 ### Statistics (New in v2.0)
 | Tool | Description |

@@ -1,7 +1,8 @@
 /**
- * @fileoverview 蓝军 #2 回归测试：finalizeLoginProfile 原子替换（归档旧目录、转正新会话）。
+ * @fileoverview 蓝军 #2 / C5 回归：profile 转正与登出归档。
  * @module core/profile.test
  */
+import './logger.js';
 import { describe, it, expect } from 'bun:test';
 import {
   chmodSync,
@@ -17,17 +18,48 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
-import { join, dirname, relative } from 'node:path';
+import { join, dirname, relative, basename } from 'node:path';
 import {
   adoptSingleLegacyProfile,
   generateProfileId,
   getLoginProfileDir,
   finalizeLoginProfile,
   removeAccountProfile,
+  archiveProfileDir,
 } from './profile.js';
 import { paths } from './config.js';
 
 const getBrowserProfileDir = (id: string) => paths.getBrowserProfileDir(id);
+
+describe('C5 archiveProfileDir 登出归档', () => {
+  it('存在的 profile 目录被 rename 为 .archived-*，原路径消失', () => {
+    const profileId = generateProfileId();
+    const targetDir = getBrowserProfileDir(profileId);
+    try {
+      mkdirSync(targetDir, { recursive: true });
+      writeFileSync(join(targetDir, 'Cookies'), 'session-blob');
+      writeFileSync(join(targetDir, 'IndexedDB'), 'idb');
+
+      const archived = archiveProfileDir(profileId);
+      expect(archived).toBeTruthy();
+      expect(existsSync(targetDir)).toBe(false);
+      expect(existsSync(join(archived!, 'Cookies'))).toBe(true);
+      expect(existsSync(join(archived!, 'IndexedDB'))).toBe(true);
+      expect(basename(archived!)).toMatch(new RegExp(`^${profileId}\\.archived-\\d+$`));
+    } finally {
+      rmSync(targetDir, { recursive: true, force: true });
+      const parent = dirname(targetDir);
+      for (const e of readdirSync(parent)) {
+        if (e.startsWith(`${profileId}.archived-`)) rmSync(join(parent, e), { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('目录不存在时返回 null，不抛错', () => {
+    expect(archiveProfileDir(generateProfileId())).toBeNull();
+    expect(archiveProfileDir(undefined)).toBeNull();
+  });
+});
 
 describe('蓝军 #2 finalizeLoginProfile 原子替换', () => {
   it('目标已存在时归档旧目录并转正新会话目录，临时目录不残留', () => {

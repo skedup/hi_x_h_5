@@ -10,6 +10,7 @@ import { AccountPool } from '../core/account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { executeWithMultipleAccounts, MultiAccountParams, resolveAccount } from '../core/multi-account.js';
 import { sha256OfText } from '../core/antidetect.js';
+import { archiveProfileDir } from '../core/profile.js';
 
 /**
  * Interaction tool definitions for MCP.
@@ -183,13 +184,14 @@ export const interactionTools: Tool[] = [
   },
   {
     name: 'xhs_delete_cookies',
-    description: 'Delete saved login cookies/session for an account. Use this to log out or re-authenticate.',
+    description:
+      'Log out an account by archiving its browser profile (cookies, localStorage, IndexedDB). Deprecated name: does not only clear cookies. Re-login with xhs_add_account after.',
     inputSchema: {
       type: 'object',
       properties: {
         account: {
           type: 'string',
-          description: 'Account name or ID to delete cookies for',
+          description: 'Account name or ID to log out',
         },
       },
     },
@@ -506,23 +508,38 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
         };
       }
 
-      // Clear state in database
-      db.accounts.updateState(account.id, null);
+      // C5：持账号锁串行化登出，避免 close 期间其他工具 getClient 重开即将归档的 profile
+      let release: (() => void) | null = null;
+      try {
+        release = await pool.acquireLock(account.id, 'delete_cookies');
+        // 先关浏览器 → 再归档磁盘 → 最后清 DB（避免归档失败时 state 已空、profile 仍在）
+        await pool.removeClient(account.id);
+        const archivedPath = archiveProfileDir(account.profileId);
+        db.accounts.updateState(account.id, null);
 
-      // Close the client to clear browser state
-      const client = await pool.getClient(account.id);
-      if (client) {
-        await client.deleteCookies();
+        return {
+          content: [
+            {
+              type: 'text',
+              text: archivedPath
+                ? `Logged out account "${account.name}": browser profile archived. Re-login with xhs_add_account.`
+                : `Logged out account "${account.name}": session cleared (no on-disk profile to archive). Re-login with xhs_add_account.`,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Failed to log out account "${account.name}": ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      } finally {
+        release?.();
       }
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Cookies deleted for account "${account.name}". You will need to login again.`,
-          },
-        ],
-      };
     }
 
     default:

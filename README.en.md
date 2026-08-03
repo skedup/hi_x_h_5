@@ -35,7 +35,7 @@ Account pool management with multiple simultaneous logins. Session persistence a
 | `xhs_set_account_config` | Update account config (name, proxy, status) |
 | `xhs_get_account_prompt` | Get account prompt (persona/select/comment) |
 | `xhs_set_account_prompt` | Update account prompt |
-| `xhs_delete_cookies` | Clear account session |
+| `xhs_delete_cookies` | Log out and archive account profile (C5) |
 
 ### Content Query
 
