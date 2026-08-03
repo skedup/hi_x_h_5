@@ -181,6 +181,15 @@ function isClickableTarget(
   return typeof (target as ElementHandle | Locator).boundingBox === 'function';
 }
 
+/** 对齐 Playwright click：先滚入视口再取坐标，避免屏外/过期 box */
+async function ensureTargetInView(target: ClickTarget): Promise<void> {
+  if (!isClickableTarget(target)) return;
+  const scroll = (target as ElementHandle | Locator).scrollIntoViewIfNeeded;
+  if (typeof scroll === 'function') {
+    await scroll.call(target).catch(() => {});
+  }
+}
+
 async function resolveClickPoint(
   target: ClickTarget,
 ): Promise<{ x: number; y: number } | null> {
@@ -198,9 +207,48 @@ async function resolveClickPoint(
 }
 
 /**
+ * 落点是否打在目标（或其子节点）上；被遮罩时 elementFromPoint 会指向上层。
+ * 检测失败时返回 null（调用方勿据此 force）。
+ */
+async function isPointHittingTarget(
+  target: ElementHandle | Locator,
+  x: number,
+  y: number,
+): Promise<boolean | null> {
+  try {
+    return await (target as Locator).evaluate(
+      (el, coords: { x: number; y: number }) => {
+        const top = document.elementFromPoint(coords.x, coords.y);
+        if (!top) return false;
+        return el === top || el.contains(top) || top.contains(el);
+      },
+      { x, y },
+    );
+  } catch {
+    return null;
+  }
+}
+
+function forceFallbackMeta(
+  steps: number,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+): TrajectoryClickMeta {
+  const meta: TrajectoryClickMeta = {
+    steps,
+    usedForce: true,
+    from,
+    to,
+    disabled: false,
+  };
+  lastTrajectoryMeta = meta;
+  return meta;
+}
+
+/**
  * B2：多步 Bezier 指针轨迹 + hover dwell 后点击（Fitts 风格步数）。
  * DoD：启用时 `steps ≥ minSteps`（默认 5），`getLastTrajectoryMeta()` 可观测。
- * 默认禁 force；仅 `allowForceFallback` 失败时 force+warn。
+ * 默认禁 force；仅 `allowForceFallback` 在无 box / 遮罩命中失败 / mouse 抛错时 force+warn。
  * 回滚：`XHS_MCP_AD_TRAJECTORY=false` → 元素/坐标直点。
  */
 export async function clickWithTrajectory(
@@ -211,14 +259,17 @@ export async function clickWithTrajectory(
   const traj = config.antiDetect.trajectory;
   const minSteps = Math.max(1, options.minSteps ?? traj?.minSteps ?? 5);
   const button = options.button ?? 'left';
+
+  await ensureTargetInView(target);
   const point = await resolveClickPoint(target);
 
   if (!traj?.enabled) {
-    if (point) {
+    if (isClickableTarget(target)) {
+      // 直点走 Playwright click（自带 actionability / 再滚一次），比裸坐标更稳
+      await target.click({ button });
+    } else if (point) {
       await page.mouse.click(point.x, point.y, { button });
       lastMousePos = point;
-    } else if (isClickableTarget(target)) {
-      await target.click({ button });
     } else {
       throw new Error('clickWithTrajectory: invalid target when trajectory disabled');
     }
@@ -237,15 +288,7 @@ export async function clickWithTrajectory(
     if (options.allowForceFallback && isClickableTarget(target)) {
       log.warn('B2 轨迹：无法取得 boundingBox，force fallback');
       await target.click({ force: true, button });
-      const meta: TrajectoryClickMeta = {
-        steps: 0,
-        usedForce: true,
-        from: lastMousePos ?? { x: 0, y: 0 },
-        to: { x: 0, y: 0 },
-        disabled: false,
-      };
-      lastTrajectoryMeta = meta;
-      return meta;
+      return forceFallbackMeta(0, lastMousePos ?? { x: 0, y: 0 }, { x: 0, y: 0 });
     }
     throw new Error('clickWithTrajectory: element has no bounding box');
   }
@@ -283,6 +326,20 @@ export async function clickWithTrajectory(
     maxMs: Math.round(hoverBase * 2.5),
   });
 
+  // 遮罩命中检测须在 mouse down 之前：否则会先点到上层再「成功」
+  if (isClickableTarget(target)) {
+    const hitting = await isPointHittingTarget(target, point.x, point.y);
+    if (hitting === false) {
+      if (options.allowForceFallback) {
+        log.warn('B2 轨迹：落点被遮罩，force fallback');
+        await target.click({ force: true, button });
+        lastMousePos = point;
+        return forceFallbackMeta(steps, from, point);
+      }
+      log.warn('B2 轨迹：落点可能被遮罩，仍尝试 mouse 点击（未开 allowForceFallback）');
+    }
+  }
+
   try {
     await page.mouse.down({ button });
     await heavyTailDelay(40, { minMs: 15, maxMs: 90 });
@@ -293,16 +350,8 @@ export async function clickWithTrajectory(
         error: err instanceof Error ? err.message : String(err),
       });
       await target.click({ force: true, button });
-      const meta: TrajectoryClickMeta = {
-        steps,
-        usedForce: true,
-        from,
-        to: point,
-        disabled: false,
-      };
-      lastTrajectoryMeta = meta;
       lastMousePos = point;
-      return meta;
+      return forceFallbackMeta(steps, from, point);
     }
     throw err;
   }
