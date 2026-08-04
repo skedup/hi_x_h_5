@@ -6,6 +6,11 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { AccountRow } from '../schema.js';
+import {
+  parseGeolocationJson,
+  serializeGeolocation,
+  type AccountLocaleEnv,
+} from '../../core/locale-env.js';
 
 /**
  * Domain model for a Xiaohongshu account.
@@ -19,6 +24,12 @@ export interface Account {
   proxy?: string;
   /** Immutable internal profile ID (random UUID) for the isolated browser profile dir */
   profileId?: string;
+  /** C3：IANA timezone */
+  timezoneId?: string;
+  /** C3：BCP-47 locale */
+  locale?: string;
+  /** C3：geolocation */
+  geolocation?: AccountLocaleEnv['geolocation'];
   /** Playwright storage state (cookies, localStorage) */
   state?: any;
   /** Account status: active, suspended, banned, or migration_required (legacy account awaiting isolated profile binding) */
@@ -32,6 +43,16 @@ export interface Account {
   /** Last update timestamp */
   updatedAt: Date;
 }
+
+/** updateConfig 入参（null 清除 C3 属地字段） */
+export type AccountConfigUpdates = {
+  name?: string;
+  proxy?: string;
+  status?: 'active' | 'suspended' | 'banned' | 'migration_required';
+  timezoneId?: string | null;
+  locale?: string | null;
+  geolocation?: AccountLocaleEnv['geolocation'] | null;
+};
 
 /**
  * Account repository - manages account CRUD operations
@@ -197,10 +218,7 @@ export class AccountRepository {
   /**
    * Update account configuration
    */
-  updateConfig(
-    id: string,
-    updates: { name?: string; proxy?: string; status?: 'active' | 'suspended' | 'banned' | 'migration_required' },
-  ): void {
+  updateConfig(id: string, updates: AccountConfigUpdates): void {
     const now = new Date().toISOString();
     const sets: string[] = ['updated_at = ?'];
     const values: any[] = [now];
@@ -216,6 +234,18 @@ export class AccountRepository {
     if (updates.status !== undefined) {
       sets.push('status = ?');
       values.push(updates.status);
+    }
+    if (updates.timezoneId !== undefined) {
+      sets.push('timezone_id = ?');
+      values.push(updates.timezoneId || null);
+    }
+    if (updates.locale !== undefined) {
+      sets.push('locale = ?');
+      values.push(updates.locale || null);
+    }
+    if (updates.geolocation !== undefined) {
+      sets.push('geolocation = ?');
+      values.push(serializeGeolocation(updates.geolocation || undefined));
     }
 
     values.push(id);
@@ -238,6 +268,9 @@ export class AccountRepository {
       name: row.name,
       proxy: row.proxy || undefined,
       profileId: row.profile_id || undefined,
+      timezoneId: row.timezone_id || undefined,
+      locale: row.locale || undefined,
+      geolocation: parseGeolocationJson(row.geolocation),
       state: row.state ? JSON.parse(row.state) : undefined,
       status: row.status,
       lastLoginAt: row.last_login_at ? new Date(row.last_login_at) : undefined,

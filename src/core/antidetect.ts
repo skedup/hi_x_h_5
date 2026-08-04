@@ -6,6 +6,7 @@
  * - C2.2 xsecToken 绑定（禁止跨账号复用同一 token，block/warn 两模式）
  * - C2.3 中央限额/熔断（每账号小时/日预算、动作后冷却、连续失败/验证码熔断进入人工）
  * - C2.4 跨账号 content/media 去重（相同评论正文 / 相同媒体哈希硬拦截）
+ * - A5 committed 状态 SQLite 持久化（XHS_MCP_AD_PERSIST；token 存哈希）
  *
  * 调用点统一为 core/multi-account.ts 的 executeWithAccount / executeWithMultipleAccounts，
  * 因此本模块是写行为的唯一共现控制汇聚点。
@@ -16,8 +17,44 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import { createLogger } from './logger.js';
 import { config } from './config.js';
+import {
+  commentNearFingerprint,
+  fingerprintFromHex,
+  hamming64,
+} from './near-text.js';
 
 const log = createLogger('antidetect');
+
+/**
+ * A5 / D2 持久化后端（由 AntidetectPersistRepository 实现）。
+ * Guard 不直接依赖 better-sqlite3，便于单测注入内存假实现。
+ */
+export interface AdPersistStore {
+  upsertDedup(dedupKey: string, accountId: string, createdAt: number, expiresAt: number): void;
+  upsertToken(tokenHash: string, accountId: string, createdAt: number, expiresAt: number): void;
+  /** D2：近邻指纹（hex） */
+  upsertNear?(fingerprint: string, accountId: string, createdAt: number, expiresAt: number): void;
+  loadActiveDedups(nowMs: number): Array<{
+    dedup_key: string;
+    account_id: string;
+    created_at: number;
+    expires_at: number;
+  }>;
+  loadActiveTokens(nowMs: number): Array<{
+    token_hash: string;
+    account_id: string;
+    created_at: number;
+    expires_at: number;
+  }>;
+  loadActiveNears?(nowMs: number): Array<{
+    fingerprint: string;
+    account_id: string;
+    created_at: number;
+    expires_at: number;
+  }>;
+  deleteExpired(nowMs: number): number;
+  clearAll(): void;
+}
 
 /**
  * 在 [min, max) 内取随机整数（含 min，不含 max）。
@@ -39,6 +76,11 @@ export interface BeforeActionInput {
   dedupKey?: string;
   /** 该账号意图使用的 xsecToken（C2.2 绑定检测） */
   xsecToken?: string;
+  /**
+   * D2：评论文本原文（近邻门禁）。与精确 SHA dedupKey 并行；
+   * 传入后与已提交/进行中指纹做 Hamming 比较。
+   */
+  nearText?: string;
 }
 
 /**
@@ -51,6 +93,8 @@ export interface PolicyReservation {
   dedupKey?: string;
   /** 本次新绑定的 xsecToken */
   xsecToken?: string;
+  /** D2：本次新占用的近邻指纹 hex */
+  nearFingerprint?: string;
   /** 本次占用的唯一 id（R3-2：分层临时占用/提交，按 id 提交或回滚） */
   id?: string;
 }
@@ -75,6 +119,8 @@ export interface AfterActionInput {
   result?: any;
   dedupKey?: string;
   xsecToken?: string;
+  /** D2：与 beforeAction 相同的评论文本（成功提交近邻指纹时用） */
+  nearText?: string;
   /** beforeAction 返回的本次新占用资源；失败/取消时精确回滚（R2-9） */
   reservation?: PolicyReservation;
 }
@@ -120,10 +166,194 @@ export class CooccurrenceGuard {
   private tokenInFlight = new Map<string, Set<string>>(); // token -> reservationId 集合
   private tokenOwner = new Map<string, string>(); // token -> 账号 ID
   private tokenSucceeded = new Set<string>();
+  /** A5：committed 过期时间（ms）；未设置表示不过期（persist 关闭时） */
+  private dedupExpires = new Map<string, number>();
+  private tokenExpires = new Map<string, number>();
+  /** D2：近邻指纹 committed（hex -> accountId / expires） */
+  private nearCommitted = new Map<string, string>(); // fingerprint -> accountId
+  private nearExpires = new Map<string, number>();
+  /** D2：近邻 in-flight：fingerprint -> reservationId 集合；owner 另表 */
+  private nearInFlight = new Map<string, Set<string>>();
+  private nearOwner = new Map<string, string>();
+  private nearSucceeded = new Set<string>();
   /** 蓝军 #4：检查/预占的全局 policy 互斥锁 */
   private policyMutex = new AsyncMutex();
+  /** A5：可选持久化后端；未挂载或 persist.enabled=false 时仅内存 */
+  private persistStore: AdPersistStore | null = null;
 
   constructor(private cfg = config.antiDetect) {}
+
+  /** A5：是否启用 committed 落库 */
+  private isPersistEnabled(): boolean {
+    return !!this.cfg.persist?.enabled && !!this.persistStore;
+  }
+
+  /** xsecToken 统一用 SHA-256 作为内存/库键，避免明文落库与重启不一致 */
+  private tokenKey(token: string): string {
+    return sha256OfText(token);
+  }
+
+  private expiresAtFromNow(now = Date.now()): number {
+    // 非法/过小 TTL 至少 1ms，避免永久卡死或负过期
+    const ttl = Math.max(1, this.cfg.persist?.ttlMs ?? 30 * 24 * 60 * 60 * 1000);
+    return now + ttl;
+  }
+
+  /** 惰性过期：若 committed 已过 TTL，从内存剔除并触发库 GC */
+  private purgeExpiredDedup(key: string, now = Date.now()): void {
+    const exp = this.dedupExpires.get(key);
+    if (exp === undefined || exp > now) return;
+    this.dedupCommitted.delete(key);
+    this.dedupExpires.delete(key);
+    if (!this.dedupInFlight.has(key)) this.dedupOwner.delete(key);
+    this.persistStore?.deleteExpired(now);
+  }
+
+  private purgeExpiredTokenHash(tKey: string, now = Date.now()): void {
+    const exp = this.tokenExpires.get(tKey);
+    if (exp === undefined || exp > now) return;
+    this.tokenCommitted.delete(tKey);
+    this.tokenExpires.delete(tKey);
+    if (!this.tokenInFlight.has(tKey)) this.tokenOwner.delete(tKey);
+    this.persistStore?.deleteExpired(now);
+  }
+
+  /**
+   * A5：挂载持久化后端并加载未过期 committed 行（启动时由 initDatabase 调用）。
+   * 可重复调用；会先 GC 过期行再灌入内存（不清空已有 in-flight）。
+   */
+  attachPersistence(store: AdPersistStore): void {
+    this.persistStore = store;
+    if (!this.cfg.persist?.enabled) {
+      log.info('A5 守卫持久化已挂载但 config.persist.enabled=false，跳过加载');
+      return;
+    }
+    this.loadPersistent();
+  }
+
+  /** A5：从 store 刷新 committed（覆盖内存中的 committed，保留 in-flight） */
+  loadPersistent(): void {
+    if (!this.persistStore || !this.cfg.persist?.enabled) return;
+    const now = Date.now();
+    const purged = this.persistStore.deleteExpired(now);
+    if (purged > 0) {
+      log.info('A5 GC 过期守卫行', { purged });
+    }
+
+    // 先清掉已提交态，再灌库，避免库已删除的行继续挡（P3 merge 残留）
+    for (const key of [...this.dedupCommitted]) {
+      this.dedupCommitted.delete(key);
+      this.dedupExpires.delete(key);
+      if (!this.dedupInFlight.has(key)) this.dedupOwner.delete(key);
+    }
+    for (const tKey of [...this.tokenCommitted]) {
+      this.tokenCommitted.delete(tKey);
+      this.tokenExpires.delete(tKey);
+      if (!this.tokenInFlight.has(tKey)) this.tokenOwner.delete(tKey);
+    }
+
+    for (const row of this.persistStore.loadActiveDedups(now)) {
+      this.dedupCommitted.add(row.dedup_key);
+      this.dedupOwner.set(row.dedup_key, row.account_id);
+      this.dedupExpires.set(row.dedup_key, row.expires_at);
+    }
+    for (const row of this.persistStore.loadActiveTokens(now)) {
+      this.tokenCommitted.add(row.token_hash);
+      this.tokenOwner.set(row.token_hash, row.account_id);
+      this.tokenExpires.set(row.token_hash, row.expires_at);
+    }
+
+    // D2：近邻指纹
+    for (const fp of [...this.nearCommitted.keys()]) {
+      this.nearCommitted.delete(fp);
+      this.nearExpires.delete(fp);
+      if (!this.nearInFlight.has(fp)) this.nearOwner.delete(fp);
+    }
+    if (this.persistStore.loadActiveNears) {
+      for (const row of this.persistStore.loadActiveNears(now)) {
+        this.nearCommitted.set(row.fingerprint, row.account_id);
+        this.nearOwner.set(row.fingerprint, row.account_id);
+        this.nearExpires.set(row.fingerprint, row.expires_at);
+      }
+    }
+
+    log.info('A5 已加载守卫持久化状态', {
+      dedup: this.dedupCommitted.size,
+      tokens: this.tokenCommitted.size,
+      nears: this.nearCommitted.size,
+    });
+  }
+
+  private persistDedup(key: string, accountId: string): void {
+    if (!this.isPersistEnabled() || !this.persistStore) return;
+    const now = Date.now();
+    const exp = this.expiresAtFromNow(now);
+    this.persistStore.deleteExpired(now);
+    this.persistStore.upsertDedup(key, accountId, now, exp);
+    this.dedupExpires.set(key, exp);
+  }
+
+  private persistTokenHash(tokenHash: string, accountId: string): void {
+    if (!this.isPersistEnabled() || !this.persistStore) return;
+    const now = Date.now();
+    const exp = this.expiresAtFromNow(now);
+    this.persistStore.deleteExpired(now);
+    this.persistStore.upsertToken(tokenHash, accountId, now, exp);
+    this.tokenExpires.set(tokenHash, exp);
+  }
+
+  private persistNear(fingerprint: string, accountId: string): void {
+    if (!this.isPersistEnabled() || !this.persistStore?.upsertNear) return;
+    const now = Date.now();
+    const exp = this.expiresAtFromNow(now);
+    this.persistStore.deleteExpired(now);
+    this.persistStore.upsertNear(fingerprint, accountId, now, exp);
+    this.nearExpires.set(fingerprint, exp);
+  }
+
+  /** D2：惰性过期近邻指纹 */
+  private purgeExpiredNear(fingerprint: string, now = Date.now()): void {
+    const exp = this.nearExpires.get(fingerprint);
+    if (exp === undefined || exp > now) return;
+    this.nearCommitted.delete(fingerprint);
+    this.nearExpires.delete(fingerprint);
+    if (!this.nearInFlight.has(fingerprint)) this.nearOwner.delete(fingerprint);
+    this.persistStore?.deleteExpired(now);
+  }
+
+  private purgeAllExpiredNears(now = Date.now()): void {
+    for (const fp of [...this.nearExpires.keys()]) {
+      this.purgeExpiredNear(fp, now);
+    }
+  }
+
+  /**
+   * D2：是否与已有（他账号）近邻指纹冲突。
+   * 同账号命中不拦截（与精确 SHA A4 策略一致）。
+   */
+  private findCrossAccountNearOwner(fpHex: string, accountId: string): string | undefined {
+    const threshold = Math.max(0, this.cfg.nearDedup?.threshold ?? 3);
+    const fp = fingerprintFromHex(fpHex);
+    this.purgeAllExpiredNears();
+
+    const check = (otherHex: string, owner: string | undefined): string | undefined => {
+      if (!owner || owner === accountId) return undefined;
+      this.purgeExpiredNear(otherHex);
+      if (!this.nearCommitted.has(otherHex) && !this.nearInFlight.has(otherHex)) return undefined;
+      if (hamming64(fp, fingerprintFromHex(otherHex)) <= threshold) return owner;
+      return undefined;
+    };
+
+    for (const [otherHex, owner] of this.nearCommitted) {
+      const hit = check(otherHex, owner);
+      if (hit) return hit;
+    }
+    for (const [otherHex] of this.nearInFlight) {
+      const hit = check(otherHex, this.nearOwner.get(otherHex));
+      if (hit) return hit;
+    }
+    return undefined;
+  }
 
   /** C2.1 是否启用共现抑制（串行） */
   isCooccurrenceEnabled(): boolean {
@@ -169,6 +399,7 @@ export class CooccurrenceGuard {
 
       // C2.4 跨账号去重：相同去重键已被占用（已提交或他人进行中）则拦截
       if (d.enabled && input.dedupKey) {
+        this.purgeExpiredDedup(input.dedupKey);
         if (this.dedupCommitted.has(input.dedupKey)) {
           const owner = this.dedupOwner.get(input.dedupKey);
           if (owner && owner !== input.accountId) {
@@ -186,8 +417,27 @@ export class CooccurrenceGuard {
         }
       }
 
-      // C2.2 xsecToken 绑定：跨账号复用处理
+      // D2：评论文本近邻（与精确 SHA 并行；同账号放行）
+      const nearEnabled = !!this.cfg.nearDedup?.enabled;
+      let nearFp: string | null = null;
+      if (nearEnabled && input.nearText) {
+        nearFp = commentNearFingerprint(input.nearText);
+        if (nearFp) {
+          const nearOwner = this.findCrossAccountNearOwner(nearFp, input.accountId);
+          if (nearOwner) {
+            log.warn('跨账号近邻去重拦截', {
+              fingerprint: nearFp.slice(0, 8),
+              owner: nearOwner,
+              accountId: input.accountId,
+            });
+            return { allow: false, reason: 'cross_account_dedup' };
+          }
+        }
+      }
+
+      // C2.2 xsecToken 绑定：跨账号复用处理（内存键为 token 哈希，A5）
       if (this.cfg.xsecTokenBinding.enabled && input.xsecToken) {
+        this.purgeExpiredTokenHash(this.tokenKey(input.xsecToken));
         const owner = this.tokenOwnerOf(input.xsecToken);
         if (owner && owner !== input.accountId) {
           if (this.cfg.xsecTokenBinding.mode === 'block') {
@@ -206,6 +456,7 @@ export class CooccurrenceGuard {
       // 成功时按 id 提交为永久占用，不回滚既有/他人绑定。
       let reservedDedup: string | undefined;
       let reservedToken: string | undefined;
+      let reservedNear: string | undefined;
       if (q.enabled) {
         this.recordCount(this.hourly, input.accountId, q.perAccountHourly, 3_600_000);
         this.recordCount(this.daily, input.accountId, q.perAccountDaily, 86_400_000);
@@ -218,27 +469,48 @@ export class CooccurrenceGuard {
           this.dedupInFlight.set(input.dedupKey, set);
           this.dedupOwner.set(input.dedupKey, input.accountId);
         }
-        // 同账号并发复用：把本次 reservationId 加入共享占用集合（引用计数）
+        // 同账号并发复用：把本次 reservationId 加入共享占用集合（引用计数，R4）
         set.add(resvId);
         reservedDedup = input.dedupKey;
       }
-      if (this.cfg.xsecTokenBinding.enabled && input.xsecToken && !this.tokenCommitted.has(input.xsecToken)) {
-        const owner = this.tokenOwnerOf(input.xsecToken);
-        // 未绑定 token 由本账号首次占用；同账号并发复用加入同一 reservation 集合。
-        // warn 模式下跨账号只放行业务，不加入原 owner 的集合，避免篡改来源归属。
-        if (!owner || owner === input.accountId) {
-          let set = this.tokenInFlight.get(input.xsecToken);
-          if (!set) {
-            set = new Set<string>();
-            this.tokenInFlight.set(input.xsecToken, set);
-            this.tokenOwner.set(input.xsecToken, input.accountId);
+      if (nearEnabled && nearFp && !this.nearCommitted.has(nearFp)) {
+        let set = this.nearInFlight.get(nearFp);
+        if (!set) {
+          set = new Set<string>();
+          this.nearInFlight.set(nearFp, set);
+          this.nearOwner.set(nearFp, input.accountId);
+        }
+        set.add(resvId);
+        reservedNear = nearFp;
+      }
+      if (this.cfg.xsecTokenBinding.enabled && input.xsecToken) {
+        const tKey = this.tokenKey(input.xsecToken);
+        if (!this.tokenCommitted.has(tKey)) {
+          const owner = this.tokenOwnerOf(input.xsecToken);
+          // 未绑定 token 由本账号首次占用；同账号并发复用加入同一 reservation 集合。
+          // warn 模式下跨账号只放行业务，不加入原 owner 的集合，避免篡改来源归属。
+          if (!owner || owner === input.accountId) {
+            let set = this.tokenInFlight.get(tKey);
+            if (!set) {
+              set = new Set<string>();
+              this.tokenInFlight.set(tKey, set);
+              this.tokenOwner.set(tKey, input.accountId);
+            }
+            set.add(resvId);
+            reservedToken = input.xsecToken; // reservation 仍带明文，settle 时再 hash
           }
-          set.add(resvId);
-          reservedToken = input.xsecToken;
         }
       }
 
-      return { allow: true, reservation: { dedupKey: reservedDedup, xsecToken: reservedToken, id: resvId } };
+      return {
+        allow: true,
+        reservation: {
+          dedupKey: reservedDedup,
+          xsecToken: reservedToken,
+          nearFingerprint: reservedNear,
+          id: resvId,
+        },
+      };
     });
   }
 
@@ -276,6 +548,9 @@ export class CooccurrenceGuard {
       }
       if (input.reservation.xsecToken) {
         this.settleTokenReservation(input.reservation.xsecToken, id, businessSuccess);
+      }
+      if (input.reservation.nearFingerprint) {
+        this.settleNearReservation(input.reservation.nearFingerprint, id, businessSuccess);
       }
     }
 
@@ -323,6 +598,9 @@ export class CooccurrenceGuard {
     if (reservation.xsecToken) {
       this.settleTokenReservation(reservation.xsecToken, id, false);
     }
+    if (reservation.nearFingerprint) {
+      this.settleNearReservation(reservation.nearFingerprint, id, false);
+    }
 
     if (this.cfg.quota.enabled) {
       this.decrementCount(this.hourly, accountId);
@@ -340,13 +618,20 @@ export class CooccurrenceGuard {
    * 使「谁取到的 token 归谁」，而非「谁先写归谁」（蓝军 #6）。提取点绑定为永久来源（committed），
    * 后续写操作的 checkXsecSource 只校验既有来源；消费路径（get_note/download/user_profile）
    * 不得补写来源（R3-5）。首个提取者占用，后续提取同 token 的不同账号不会抢占所有权。
+   *
+   * 须与 beforeAction 同用 policyMutex：已有 committed **或** in-flight 所有者时不得抢占
+   * （否则 A 写预占期间 B 的 explore/search bind 会覆盖 owner 并 persist，A 成功后归属错乱）。
    */
-  bindXsecSource(xsecToken: string, accountId: string): void {
+  async bindXsecSource(xsecToken: string, accountId: string): Promise<void> {
     if (!this.cfg.xsecTokenBinding.enabled || !xsecToken) return;
-    if (!this.tokenCommitted.has(xsecToken)) {
-      this.tokenCommitted.add(xsecToken);
-      this.tokenOwner.set(xsecToken, accountId);
-    }
+    await this.policyMutex.run(async () => {
+      const tKey = this.tokenKey(xsecToken);
+      // tokenOwnerOf 含 in-flight；勿只看 tokenCommitted
+      if (this.tokenOwnerOf(xsecToken)) return;
+      this.tokenCommitted.add(tKey);
+      this.tokenOwner.set(tKey, accountId);
+      this.persistTokenHash(tKey, accountId);
+    });
   }
 
   /**
@@ -359,6 +644,7 @@ export class CooccurrenceGuard {
     accountId: string,
   ): { known: boolean; allow: boolean; reason?: string } {
     if (!this.cfg.xsecTokenBinding.enabled || !xsecToken) return { known: false, allow: true };
+    this.purgeExpiredTokenHash(this.tokenKey(xsecToken));
     const owner = this.tokenOwnerOf(xsecToken);
     if (!owner) {
       if (this.cfg.xsecTokenBinding.mode === 'block') {
@@ -375,15 +661,15 @@ export class CooccurrenceGuard {
     return { known: true, allow: true };
   }
 
-  /** 查询 token 当前所有者（committed 或 in-flight 占用均计入） */
+  /** 查询 token 当前所有者（committed 或 in-flight 占用均计入；键为哈希） */
   private tokenOwnerOf(token: string): string | undefined {
-    return this.tokenOwner.get(token);
+    const tKey = this.tokenKey(token);
+    this.purgeExpiredTokenHash(tKey);
+    return this.tokenOwner.get(tKey);
   }
 
-  /**
-   * 测试/运维用：重置进程内守卫状态。
-   */
-  reset(): void {
+  /** 清空进程内全部守卫状态（含 expires） */
+  private clearMemoryState(): void {
     this.hourly.clear();
     this.daily.clear();
     this.lastActionAt.clear();
@@ -393,10 +679,37 @@ export class CooccurrenceGuard {
     this.dedupInFlight.clear();
     this.dedupOwner.clear();
     this.dedupSucceeded.clear();
+    this.dedupExpires.clear();
     this.tokenCommitted.clear();
     this.tokenInFlight.clear();
     this.tokenOwner.clear();
     this.tokenSucceeded.clear();
+    this.tokenExpires.clear();
+    this.nearCommitted.clear();
+    this.nearInFlight.clear();
+    this.nearOwner.clear();
+    this.nearSucceeded.clear();
+    this.nearExpires.clear();
+  }
+
+  /**
+   * 测试/运维用：重置进程内守卫状态。
+   * A5：若持久化开启，清空内存后从库重新加载 committed，避免出现「库有记录但不拦截」的空洞。
+   */
+  reset(): void {
+    this.clearMemoryState();
+    if (this.isPersistEnabled()) {
+      this.loadPersistent();
+    }
+  }
+
+  /**
+   * A5 测辅：清空持久化表 + 内存状态（含 in-flight）。
+   * 未挂载 store 时等价于仅清内存。
+   */
+  clearPersistent(): void {
+    this.persistStore?.clearAll();
+    this.clearMemoryState();
   }
 
   // ---- 内部 ----
@@ -414,26 +727,51 @@ export class CooccurrenceGuard {
     this.dedupInFlight.delete(key);
     if (this.dedupSucceeded.has(key)) {
       this.dedupCommitted.add(key);
+      const owner = this.dedupOwner.get(key);
+      if (owner) this.persistDedup(key, owner);
     } else {
       this.dedupOwner.delete(key);
     }
     this.dedupSucceeded.delete(key);
   }
 
-  /** xsecToken reservation 的收敛逻辑，与 dedup 保持相同的并发语义。 */
+  /** xsecToken reservation 的收敛逻辑；内存键为 token 哈希（A5）。 */
   private settleTokenReservation(token: string, id: string, succeeded: boolean): void {
-    const set = this.tokenInFlight.get(token);
+    const tKey = this.tokenKey(token);
+    const set = this.tokenInFlight.get(tKey);
     if (!set || !set.delete(id)) return;
-    if (succeeded) this.tokenSucceeded.add(token);
+    if (succeeded) this.tokenSucceeded.add(tKey);
     if (set.size > 0) return;
 
-    this.tokenInFlight.delete(token);
-    if (this.tokenSucceeded.has(token)) {
-      this.tokenCommitted.add(token);
+    this.tokenInFlight.delete(tKey);
+    if (this.tokenSucceeded.has(tKey)) {
+      this.tokenCommitted.add(tKey);
+      const owner = this.tokenOwner.get(tKey);
+      if (owner) this.persistTokenHash(tKey, owner);
     } else {
-      this.tokenOwner.delete(token);
+      this.tokenOwner.delete(tKey);
     }
-    this.tokenSucceeded.delete(token);
+    this.tokenSucceeded.delete(tKey);
+  }
+
+  /** D2：近邻指纹 reservation 收敛 */
+  private settleNearReservation(fingerprint: string, id: string, succeeded: boolean): void {
+    const set = this.nearInFlight.get(fingerprint);
+    if (!set || !set.delete(id)) return;
+    if (succeeded) this.nearSucceeded.add(fingerprint);
+    if (set.size > 0) return;
+
+    this.nearInFlight.delete(fingerprint);
+    if (this.nearSucceeded.has(fingerprint)) {
+      const owner = this.nearOwner.get(fingerprint);
+      if (owner) {
+        this.nearCommitted.set(fingerprint, owner);
+        this.persistNear(fingerprint, owner);
+      }
+    } else {
+      this.nearOwner.delete(fingerprint);
+    }
+    this.nearSucceeded.delete(fingerprint);
   }
 
   private checkBudget(accountId: string): boolean {

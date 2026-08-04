@@ -4,81 +4,237 @@
  * @module xhs/clients/services/interact
  */
 
-import { InteractionResult, CommentResult } from '../../types.js';
-import { sleep, navigateWithRetry, typeLikeHuman, jitteredSleep, rateLimitedSleep } from '../../utils/index.js';
+import type { Page } from 'patchright';
+import { InteractionResult, CommentResult, InteractSessionMeta } from '../../types.js';
+import {
+  typeLikeHuman,
+  jitteredSleep,
+  rateLimitedSleep,
+  heavyTailDelay,
+  clickWithTrajectory,
+  getLastTrajectoryMeta,
+  computeTypingPlan,
+  evalMainState,
+  evalDom,
+  waitForDom,
+  type TypeLikeHumanOptions,
+} from '../../utils/index.js';
+import {
+  InteractSessionOpts,
+  runInteractReadingPhase,
+  runInteractPostStay,
+  finalizeInteractSessionMeta,
+} from '../../utils/interact-session.js';
+import {
+  openNoteForInteract,
+  resolveInteractEntry,
+  type InteractEntry,
+} from '../../utils/interact-entry.js';
+import { config } from '../../../core/config.js';
 import { BrowserContextManager } from '../context.js';
 import { REQUEST_INTERVAL, INTERACTION_SELECTORS, COMMENT_SELECTORS } from '../constants.js';
 import { createLogger } from '../../../core/logger.js';
+
+/** B6：评论/回复输入启用 revise，与 publish 正文策略对齐 */
+function commentTypingOptions(content: string): TypeLikeHumanOptions {
+  return {
+    reviseGapMin: 4,
+    reviseGapMax: 12,
+    reviseMax: 1,
+    reviseChance: 0.8,
+    ...computeTypingPlan(content, {
+      minDelay: 45,
+      maxDelay: 170,
+      reviseGapMin: 4,
+      reviseGapMax: 12,
+      reviseMax: 1,
+      reviseChance: 0.8,
+      defaultMaxDurationMs: 60000,
+    }),
+  };
+}
 
 /**
  * Interact service - handles note interactions (like, favorite, comment)
  */
 export class InteractService {
   private logger = createLogger('interact');
+  /** keepPage=true 时暂存的页面；须由 releaseKeptPages() 关闭，避免 orphan tab */
+  private keptPages = new Set<Page>();
 
   constructor(private ctx: BrowserContextManager) {}
 
+  /** 当前保留未关的 Interact 页数量 */
+  getKeptPageCount(): number {
+    return this.keptPages.size;
+  }
+
+  /**
+   * 关闭所有 keepPage 保留的页面。批处理结束后应调用。
+   * @returns 实际关闭的页数
+   */
+  async releaseKeptPages(): Promise<number> {
+    let closed = 0;
+    for (const page of [...this.keptPages]) {
+      this.keptPages.delete(page);
+      try {
+        if (!page.isClosed()) {
+          await page.close();
+          closed += 1;
+        }
+      } catch (err) {
+        this.logger.warn('B3 releaseKeptPages: close failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return closed;
+  }
+
+  private async retainOrClosePage(page: Page, keepPage: boolean): Promise<void> {
+    if (keepPage) {
+      this.keptPages.add(page);
+      this.logger.info('B3 keepPage: page retained', {
+        keptCount: this.keptPages.size,
+        hint: 'call releaseKeptPages() when batch finishes',
+      });
+      return;
+    }
+    await page.close().catch(() => {});
+  }
+
+  /** 阅读阶段之后统一跑 post-stay 并落 meta（含失败早退路径） */
+  private async completeSession(parts: {
+    preDwellMs: number;
+    readScrollCount: number;
+    trajectorySteps: number | null;
+    keepPage: boolean;
+    /** B7：已处于目标状态、无需点击 */
+    alreadyDone?: boolean;
+    entry?: InteractEntry;
+    entryFallback?: boolean;
+  }): Promise<InteractSessionMeta> {
+    const sessionEnabled = !!config.antiDetect.interactSession?.enabled;
+    const shortSession = !!parts.alreadyDone && !!config.antiDetect.alreadyDoneShort?.enabled;
+    const post = await runInteractPostStay({ shortSession });
+    return finalizeInteractSessionMeta({
+      enabled: sessionEnabled,
+      preDwellMs: parts.preDwellMs,
+      readScrollCount: parts.readScrollCount,
+      postStayMs: post.postStayMs,
+      trajectorySteps: parts.trajectorySteps,
+      keepPage: parts.keepPage,
+      skippedAlreadyDone: post.skippedAlreadyDone,
+      entry: parts.entry,
+      entryFallback: parts.entryFallback,
+    });
+  }
+
   /**
    * Like or unlike a note.
-   *
-   * @param noteId - Target note ID
-   * @param xsecToken - Security token from search results
-   * @param unlike - If true, unlike the note; otherwise like it
-   * @returns Interaction result
+   * B3 模板：goto → 重尾 dwell → ≥1 阅读 scroll → 轨迹 click → 动作后停留 → close（可选 keepPage）。
    */
-  async likeFeed(noteId: string, xsecToken: string, unlike: boolean = false): Promise<InteractionResult> {
+  async likeFeed(
+    noteId: string,
+    xsecToken: string,
+    unlike: boolean = false,
+    sessionOpts: InteractSessionOpts = {},
+  ): Promise<InteractionResult> {
     await this.ctx.ensureContext();
     const page = await this.ctx.newPage();
+    const keepPage = !!sessionOpts.keepPage;
+    let trajectorySteps: number | null = null;
+    let preDwellMs = 0;
+    let readScrollCount = 0;
+    let readingStarted = false;
+    const sessionEnabled = !!config.antiDetect.interactSession?.enabled;
 
+    const entry = resolveInteractEntry(sessionOpts.entry);
+    let entryUsed: InteractEntry = entry;
+    let entryFallback = false;
     try {
-      let url = `https://www.xiaohongshu.com/explore/${noteId}`;
-      if (xsecToken) {
-        url += `?xsec_token=${encodeURIComponent(xsecToken)}`;
-      }
-
-      // 带重试的页面导航
-      const accessError = await navigateWithRetry(page, url);
-      if (accessError) {
+      const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
+      entryUsed = opened.mode;
+      entryFallback = opened.entryFallback;
+      if (opened.error) {
         return {
           success: false,
           action: unlike ? 'unlike' : 'like',
           noteId,
-          error: accessError,
+          error: opened.error,
         };
       }
       await rateLimitedSleep(REQUEST_INTERVAL);
 
-      // 获取当前点赞状态
-      const isLiked = await page.evaluate(
-        () => {
+      const reading = await runInteractReadingPhase(page);
+      readingStarted = true;
+      preDwellMs = reading.preDwellMs;
+      readScrollCount = reading.readScrollCount;
+
+      const isLiked = await evalMainState(
+        page,
+        (id) => {
           const state = (window as any).__INITIAL_STATE__;
-          const noteDetailMap = state?.note?.noteDetailMap;
-          if (noteDetailMap) {
-            const firstKey = Object.keys(noteDetailMap)[0];
-            return noteDetailMap[firstKey]?.note?.interactInfo?.liked || false;
-          }
-          return false;
+          let map = state?.note?.noteDetailMap;
+          if (!map) return false;
+          map = map.value !== undefined ? map.value : map._value || map;
+          const detail = map?.[id];
+          return detail?.note?.interactInfo?.liked || detail?.interactInfo?.liked || false;
         },
-        null,
-        false,
+        noteId,
       );
 
-      // 根据当前状态和目标操作决定是否需要点击
       const shouldClick = (unlike && isLiked) || (!unlike && !isLiked);
 
       if (shouldClick) {
         const likeBtn = await page.$(INTERACTION_SELECTORS.likeButton);
-        if (likeBtn) {
-          await likeBtn.click();
-          await jitteredSleep(500);
-        } else {
+        if (!likeBtn) {
+          const session = await this.completeSession({
+            preDwellMs,
+            readScrollCount,
+            trajectorySteps,
+            keepPage,
+            entry: entryUsed,
+            entryFallback,
+          });
           return {
             success: false,
             action: unlike ? 'unlike' : 'like',
             noteId,
             error: 'Like button not found',
+            session,
           };
         }
+        await clickWithTrajectory(page, likeBtn);
+        trajectorySteps = getLastTrajectoryMeta()?.steps ?? null;
+        if (!sessionEnabled) {
+          await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
+        }
+      } else {
+        this.logger.info('skipped_already_done', {
+          action: unlike ? 'unlike' : 'like',
+          noteId,
+          shortSession: !!config.antiDetect.alreadyDoneShort?.enabled,
+        });
+      }
+
+      const session = await this.completeSession({
+        preDwellMs,
+        readScrollCount,
+        trajectorySteps,
+        keepPage,
+        alreadyDone: !shouldClick,
+        entry: entryUsed,
+        entryFallback,
+      });
+
+      if (shouldClick) {
+        this.logger.info('interact_success', {
+          action: unlike ? 'unlike' : 'like',
+          noteId,
+          trajectorySteps,
+          postStayMs: session.postStayMs,
+        });
       }
 
       return {
@@ -86,79 +242,136 @@ export class InteractService {
         action: unlike ? 'unlike' : 'like',
         noteId,
         alreadyDone: !shouldClick,
+        session,
       };
     } catch (error) {
+      let session: InteractSessionMeta | undefined;
+      if (readingStarted) {
+        session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        }).catch(() => undefined);
+      }
       return {
         success: false,
         action: unlike ? 'unlike' : 'like',
         noteId,
         error: error instanceof Error ? error.message : String(error),
+        session,
       };
     } finally {
-      await page.close();
+      await this.retainOrClosePage(page, keepPage);
     }
   }
 
   /**
    * Favorite (collect) or unfavorite a note.
-   *
-   * @param noteId - Target note ID
-   * @param xsecToken - Security token from search results
-   * @param unfavorite - If true, unfavorite the note; otherwise favorite it
-   * @returns Interaction result
    */
-  async favoriteFeed(noteId: string, xsecToken: string, unfavorite: boolean = false): Promise<InteractionResult> {
+  async favoriteFeed(
+    noteId: string,
+    xsecToken: string,
+    unfavorite: boolean = false,
+    sessionOpts: InteractSessionOpts = {},
+  ): Promise<InteractionResult> {
     await this.ctx.ensureContext();
     const page = await this.ctx.newPage();
+    const keepPage = !!sessionOpts.keepPage;
+    let trajectorySteps: number | null = null;
+    let preDwellMs = 0;
+    let readScrollCount = 0;
+    let readingStarted = false;
+    const sessionEnabled = !!config.antiDetect.interactSession?.enabled;
 
+    const entry = resolveInteractEntry(sessionOpts.entry);
+    let entryUsed: InteractEntry = entry;
+    let entryFallback = false;
     try {
-      let url = `https://www.xiaohongshu.com/explore/${noteId}`;
-      if (xsecToken) {
-        url += `?xsec_token=${encodeURIComponent(xsecToken)}`;
-      }
-
-      // 带重试的页面导航
-      const accessError = await navigateWithRetry(page, url);
-      if (accessError) {
+      const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
+      entryUsed = opened.mode;
+      entryFallback = opened.entryFallback;
+      if (opened.error) {
         return {
           success: false,
           action: unfavorite ? 'unfavorite' : 'favorite',
           noteId,
-          error: accessError,
+          error: opened.error,
         };
       }
       await rateLimitedSleep(REQUEST_INTERVAL);
 
-      // 获取当前收藏状态
-      const isCollected = await page.evaluate(
-        () => {
+      const reading = await runInteractReadingPhase(page);
+      readingStarted = true;
+      preDwellMs = reading.preDwellMs;
+      readScrollCount = reading.readScrollCount;
+
+      const isCollected = await evalMainState(
+        page,
+        (id) => {
           const state = (window as any).__INITIAL_STATE__;
-          const noteDetailMap = state?.note?.noteDetailMap;
-          if (noteDetailMap) {
-            const firstKey = Object.keys(noteDetailMap)[0];
-            return noteDetailMap[firstKey]?.note?.interactInfo?.collected || false;
-          }
-          return false;
+          let map = state?.note?.noteDetailMap;
+          if (!map) return false;
+          map = map.value !== undefined ? map.value : map._value || map;
+          const detail = map?.[id];
+          return detail?.note?.interactInfo?.collected || detail?.interactInfo?.collected || false;
         },
-        null,
-        false,
+        noteId,
       );
 
       const shouldClick = (unfavorite && isCollected) || (!unfavorite && !isCollected);
 
       if (shouldClick) {
         const collectBtn = await page.$(INTERACTION_SELECTORS.collectButton);
-        if (collectBtn) {
-          await collectBtn.click();
-          await jitteredSleep(500);
-        } else {
+        if (!collectBtn) {
+          const session = await this.completeSession({
+            preDwellMs,
+            readScrollCount,
+            trajectorySteps,
+            keepPage,
+            entry: entryUsed,
+            entryFallback,
+          });
           return {
             success: false,
             action: unfavorite ? 'unfavorite' : 'favorite',
             noteId,
             error: 'Collect button not found',
+            session,
           };
         }
+        await clickWithTrajectory(page, collectBtn);
+        trajectorySteps = getLastTrajectoryMeta()?.steps ?? null;
+        if (!sessionEnabled) {
+          await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
+        }
+      } else {
+        this.logger.info('skipped_already_done', {
+          action: unfavorite ? 'unfavorite' : 'favorite',
+          noteId,
+          shortSession: !!config.antiDetect.alreadyDoneShort?.enabled,
+        });
+      }
+
+      const session = await this.completeSession({
+        preDwellMs,
+        readScrollCount,
+        trajectorySteps,
+        keepPage,
+        alreadyDone: !shouldClick,
+        entry: entryUsed,
+        entryFallback,
+      });
+
+      if (shouldClick) {
+        this.logger.info('interact_success', {
+          action: unfavorite ? 'unfavorite' : 'favorite',
+          noteId,
+          trajectorySteps,
+          postStayMs: session.postStayMs,
+        });
       }
 
       return {
@@ -166,227 +379,335 @@ export class InteractService {
         action: unfavorite ? 'unfavorite' : 'favorite',
         noteId,
         alreadyDone: !shouldClick,
+        session,
       };
     } catch (error) {
+      let session: InteractSessionMeta | undefined;
+      if (readingStarted) {
+        session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        }).catch(() => undefined);
+      }
       return {
         success: false,
         action: unfavorite ? 'unfavorite' : 'favorite',
         noteId,
         error: error instanceof Error ? error.message : String(error),
+        session,
       };
     } finally {
-      await page.close();
+      await this.retainOrClosePage(page, keepPage);
     }
   }
 
   /**
    * Post a comment on a note.
-   *
-   * @param noteId - Target note ID
-   * @param xsecToken - Security token from search results
-   * @param content - Comment content
-   * @returns Comment result
    */
-  async postComment(noteId: string, xsecToken: string, content: string): Promise<CommentResult> {
+  async postComment(
+    noteId: string,
+    xsecToken: string,
+    content: string,
+    sessionOpts: InteractSessionOpts = {},
+  ): Promise<CommentResult> {
     await this.ctx.ensureContext();
     const page = await this.ctx.newPage();
+    const keepPage = !!sessionOpts.keepPage;
+    let trajectorySteps: number | null = null;
+    let preDwellMs = 0;
+    let readScrollCount = 0;
+    let readingStarted = false;
 
+    const entry = resolveInteractEntry(sessionOpts.entry);
+    let entryUsed: InteractEntry = entry;
+    let entryFallback = false;
     try {
-      let url = `https://www.xiaohongshu.com/explore/${noteId}`;
-      if (xsecToken) {
-        url += `?xsec_token=${encodeURIComponent(xsecToken)}`;
-      }
-
-      // 带重试的页面导航
-      const accessError = await navigateWithRetry(page, url);
-      if (accessError) {
-        return { success: false, error: accessError };
+      const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
+      entryUsed = opened.mode;
+      entryFallback = opened.entryFallback;
+      if (opened.error) {
+        return { success: false, error: opened.error };
       }
       await rateLimitedSleep(REQUEST_INTERVAL);
 
-      // 点击评论输入框触发器
+      const reading = await runInteractReadingPhase(page);
+      readingStarted = true;
+      preDwellMs = reading.preDwellMs;
+      readScrollCount = reading.readScrollCount;
+
       const inputTrigger = await page.$(COMMENT_SELECTORS.commentInputTrigger);
       if (inputTrigger) {
-        await inputTrigger.click();
-        await jitteredSleep(500);
+        await clickWithTrajectory(page, inputTrigger);
+        await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
       }
 
-      // 输入评论内容
       const commentInput = await page.$(COMMENT_SELECTORS.commentInput);
       if (!commentInput) {
-        return { success: false, error: 'Comment input not found' };
+        const session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        });
+        return { success: false, error: 'Comment input not found', session };
       }
 
-      await commentInput.click();
-      await typeLikeHuman(page, content);
-      await jitteredSleep(300);
+      await clickWithTrajectory(page, commentInput);
+      await typeLikeHuman(page, content, commentTypingOptions(content));
+      await heavyTailDelay(300, { minMs: 180, maxMs: 420 });
 
-      // 点击提交按钮
       const submitBtn = await page.$(COMMENT_SELECTORS.submitButton);
       if (!submitBtn) {
-        return { success: false, error: 'Submit button not found' };
+        const session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        });
+        return { success: false, error: 'Submit button not found', session };
       }
 
-      await submitBtn.click();
+      await clickWithTrajectory(page, submitBtn);
+      trajectorySteps = getLastTrajectoryMeta()?.steps ?? null;
       await jitteredSleep(1000);
 
-      const submitted = await page
-        .waitForFunction(
-          (selector) => {
-            const input = document.querySelector(selector);
-            if (!input) return false;
-            const value = input instanceof HTMLTextAreaElement ? input.value : input.textContent || '';
-            return value.trim().length === 0;
-          },
-          COMMENT_SELECTORS.commentInput,
-          { timeout: 3000 },
-        )
+      const submitted = await waitForDom(
+        page,
+        (selector) => {
+          const input = document.querySelector(selector);
+          if (!input) return false;
+          const value = input instanceof HTMLTextAreaElement ? input.value : input.textContent || '';
+          return value.trim().length === 0;
+        },
+        COMMENT_SELECTORS.commentInput,
+        { timeout: 3000 },
+      )
         .then(() => true)
         .catch(() => false);
+
+      const session = await this.completeSession({
+        preDwellMs,
+        readScrollCount,
+        trajectorySteps,
+        keepPage,
+        entry: entryUsed,
+        entryFallback,
+      });
+
       return submitted
-        ? { success: true }
-        : { success: false, error: 'Comment outcome unconfirmed', sideEffectPossible: true };
+        ? { success: true, session }
+        : { success: false, error: 'Comment outcome unconfirmed', sideEffectPossible: true, session };
     } catch (error) {
+      let session: InteractSessionMeta | undefined;
+      if (readingStarted) {
+        session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        }).catch(() => undefined);
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
         sideEffectPossible: true,
+        session,
       };
     } finally {
-      await page.close();
+      await this.retainOrClosePage(page, keepPage);
     }
   }
 
   /**
    * Reply to a comment on a note.
-   * 参考 reference project 的实现，使用 #comment-${commentId} 选择器
-   *
-   * @param noteId - Target note ID
-   * @param xsecToken - Security token from search results
-   * @param commentId - Comment ID to reply to
-   * @param content - Reply content
-   * @returns Comment result
    */
-  async replyComment(noteId: string, xsecToken: string, commentId: string, content: string): Promise<CommentResult> {
+  async replyComment(
+    noteId: string,
+    xsecToken: string,
+    commentId: string,
+    content: string,
+    sessionOpts: InteractSessionOpts = {},
+  ): Promise<CommentResult> {
     await this.ctx.ensureContext();
     const page = await this.ctx.newPage();
+    const keepPage = !!sessionOpts.keepPage;
+    let trajectorySteps: number | null = null;
+    let preDwellMs = 0;
+    let readScrollCount = 0;
+    let readingStarted = false;
 
+    const entry = resolveInteractEntry(sessionOpts.entry);
+    let entryUsed: InteractEntry = entry;
+    let entryFallback = false;
     try {
-      let url = `https://www.xiaohongshu.com/explore/${noteId}`;
-      if (xsecToken) {
-        url += `?xsec_token=${encodeURIComponent(xsecToken)}`;
+      const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
+      entryUsed = opened.mode;
+      entryFallback = opened.entryFallback;
+      if (opened.error) {
+        return { success: false, error: opened.error };
       }
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
-      // 带重试的页面导航
-      const accessError = await navigateWithRetry(page, url);
-      if (accessError) {
-        return { success: false, error: accessError };
-      }
-      await jitteredSleep(1000); // 与 reference project 一致
+      const reading = await runInteractReadingPhase(page);
+      readingStarted = true;
+      preDwellMs = reading.preDwellMs;
+      readScrollCount = reading.readScrollCount;
 
-      // 等待评论区加载
-      await jitteredSleep(2000);
+      await heavyTailDelay(2000, { minMs: 1200, maxMs: 2800 });
 
-      // 查找目标评论元素（使用 #comment-${commentId} 选择器）
       const commentEl = await this.findCommentElement(page, commentId);
       if (!commentEl) {
-        return { success: false, error: `Comment not found: ${commentId}` };
+        const session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        });
+        return { success: false, error: `Comment not found: ${commentId}`, session };
       }
 
-      // 滚动到评论位置
       await commentEl.scrollIntoViewIfNeeded();
-      await jitteredSleep(1000);
+      await heavyTailDelay(1000, { minMs: 600, maxMs: 1400 });
 
-      // 查找并点击回复按钮（使用 .right .interactions .reply 选择器）
       const replyBtn = await commentEl.$('.right .interactions .reply');
       if (!replyBtn) {
-        return { success: false, error: 'Reply button not found' };
+        const session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        });
+        return { success: false, error: 'Reply button not found', session };
       }
 
-      await replyBtn.click();
-      await jitteredSleep(1000);
+      await clickWithTrajectory(page, replyBtn);
+      await heavyTailDelay(1000, { minMs: 600, maxMs: 1400 });
 
-      // 输入回复内容（使用与 reference project 相同的选择器）
       const commentInput = await page.$('div.input-box div.content-edit p.content-input');
       if (!commentInput) {
-        return { success: false, error: 'Reply input not found' };
+        const session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        });
+        return { success: false, error: 'Reply input not found', session };
       }
 
-      await commentInput.click();
-      await typeLikeHuman(page, content);
-      await jitteredSleep(500);
+      await clickWithTrajectory(page, commentInput);
+      await typeLikeHuman(page, content, commentTypingOptions(content));
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
 
-      // 提交回复（使用与 reference project 相同的选择器）
       const submitBtn = await page.$('div.bottom button.submit');
       if (!submitBtn) {
-        return { success: false, error: 'Submit button not found' };
+        const session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        });
+        return { success: false, error: 'Submit button not found', session };
       }
 
-      await submitBtn.click();
-      await jitteredSleep(2000); // 等待 2 秒与 reference project 一致
+      await clickWithTrajectory(page, submitBtn);
+      trajectorySteps = getLastTrajectoryMeta()?.steps ?? null;
+      await jitteredSleep(2000);
 
-      const submitted = await page
-        .waitForFunction(
-          (selector) => {
-            const input = document.querySelector(selector);
-            if (!input) return false;
-            return (input.textContent || '').trim().length === 0;
-          },
-          'div.input-box div.content-edit p.content-input',
-          { timeout: 3000 },
-        )
+      const submitted = await waitForDom(
+        page,
+        (selector) => {
+          const input = document.querySelector(selector);
+          if (!input) return false;
+          return (input.textContent || '').trim().length === 0;
+        },
+        'div.input-box div.content-edit p.content-input',
+        { timeout: 3000 },
+      )
         .then(() => true)
         .catch(() => false);
+
+      const session = await this.completeSession({
+        preDwellMs,
+        readScrollCount,
+        trajectorySteps,
+        keepPage,
+        entry: entryUsed,
+        entryFallback,
+      });
+
       return submitted
-        ? { success: true }
-        : { success: false, error: 'Reply outcome unconfirmed', sideEffectPossible: true };
+        ? { success: true, session }
+        : { success: false, error: 'Reply outcome unconfirmed', sideEffectPossible: true, session };
     } catch (error) {
+      let session: InteractSessionMeta | undefined;
+      if (readingStarted) {
+        session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        }).catch(() => undefined);
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
         sideEffectPossible: true,
+        session,
       };
     } finally {
-      await page.close();
+      await this.retainOrClosePage(page, keepPage);
     }
   }
 
   /**
    * 查找评论元素，支持滚动加载
-   * 参考 reference project 的 findCommentElement 实现
-   * 关键：先在当前视图查找，再滚动加载
    */
   private async findCommentElement(page: any, commentId: string): Promise<any> {
     const maxAttempts = 50;
-    const scrollInterval = 800;
     const selector = `#comment-${commentId}`;
 
     this.logger.debug('查找评论元素', { commentId, selector });
 
-    // 先在当前页面尝试查找（对于顶部的评论很重要）
     let el = await page.$(selector);
     if (el) {
       this.logger.debug('在当前页面找到评论');
       return el;
     }
 
-    // 滚动到评论区
-    await page.evaluate(() => {
+    await evalDom(page, () => {
       const commentsArea = document.querySelector('.comments-container, .comment-list, .note-comments');
       if (commentsArea) {
         commentsArea.scrollIntoView({ behavior: 'smooth' });
       }
-    });
-    await jitteredSleep(1000);
+    }, null);
+    await heavyTailDelay(1000, { minMs: 600, maxMs: 1400 });
 
-    // 滚动后再次尝试查找
     el = await page.$(selector);
     if (el) {
       this.logger.debug('滚动到评论区后找到评论');
       return el;
     }
 
-    // 调试：列出当前页面上的评论ID
     const commentIds = await page
       .$$eval('[id^="comment-"]', (els: Element[]) => els.map((e) => e.id))
       .catch(() => [] as string[]);
@@ -396,14 +717,12 @@ export class InteractService {
     let stagnantChecks = 0;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      // 检查是否到达底部
       const hasEndContainer = await page.$('.end-container, .comments-end, .no-more-comments');
       if (hasEndContainer && attempt > 5) {
         this.logger.debug('到达评论底部', { attempt });
         break;
       }
 
-      // 获取当前评论数量
       const currentCount = await page
         .$$eval('.comment-item, .parent-comment', (els: Element[]) => els.length)
         .catch(() => 0);
@@ -415,19 +734,16 @@ export class InteractService {
         stagnantChecks++;
       }
 
-      // 停滞检测
       if (stagnantChecks >= 10) {
         this.logger.debug('评论数停滞', { attempt, stagnantChecks });
         break;
       }
 
-      // 滚动加载更多评论
-      await page.evaluate(() => {
+      await evalDom(page, () => {
         window.scrollBy(0, window.innerHeight * 0.8);
-      });
-      await sleep(scrollInterval);
+      }, null);
+      await heavyTailDelay(800, { minMs: 500, maxMs: 1400 });
 
-      // 滚动后立即查找（边滚动边查找）
       el = await page.$(selector);
       if (el) {
         this.logger.debug('滚动查找后找到评论', { attempt });
@@ -435,7 +751,6 @@ export class InteractService {
       }
     }
 
-    // 最后再尝试一次查找
     el = await page.$(selector);
     if (!el) {
       this.logger.warn('未找到评论', { commentId, selector });
@@ -445,73 +760,90 @@ export class InteractService {
 
   /**
    * Like or unlike a comment.
-   *
-   * @param noteId - Target note ID
-   * @param xsecToken - Security token from search results
-   * @param commentId - Comment ID to like
-   * @param unlike - If true, unlike the comment; otherwise like it
-   * @returns Interaction result
    */
   async likeComment(
     noteId: string,
     xsecToken: string,
     commentId: string,
     unlike: boolean = false,
+    sessionOpts: InteractSessionOpts = {},
   ): Promise<InteractionResult> {
     this.logger.info('开始点赞评论', { noteId, commentId, unlike });
     await this.ctx.ensureContext();
     const page = await this.ctx.newPage();
+    const keepPage = !!sessionOpts.keepPage;
+    let trajectorySteps: number | null = null;
+    let preDwellMs = 0;
+    let readScrollCount = 0;
+    let readingStarted = false;
+    const sessionEnabled = !!config.antiDetect.interactSession?.enabled;
 
+    const entry = resolveInteractEntry(sessionOpts.entry);
+    let entryUsed: InteractEntry = entry;
+    let entryFallback = false;
     try {
-      let url = `https://www.xiaohongshu.com/explore/${noteId}`;
-      if (xsecToken) {
-        url += `?xsec_token=${encodeURIComponent(xsecToken)}`;
-      }
-      this.logger.debug('导航到帖子页面', { url });
-
-      // 带重试的页面导航
-      const accessError = await navigateWithRetry(page, url);
-      if (accessError) {
-        this.logger.error('页面访问失败', { error: accessError });
+      const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
+      entryUsed = opened.mode;
+      entryFallback = opened.entryFallback;
+      if (opened.error) {
+        this.logger.error('页面访问失败', { error: opened.error });
         return {
           success: false,
           action: unlike ? 'unlike' : 'like',
           noteId,
-          error: accessError,
+          error: opened.error,
         };
       }
-      await jitteredSleep(1000); // 与 reference project 一致
+      await rateLimitedSleep(REQUEST_INTERVAL);
 
-      // 等待评论区加载
-      await jitteredSleep(2000);
+      const reading = await runInteractReadingPhase(page);
+      readingStarted = true;
+      preDwellMs = reading.preDwellMs;
+      readScrollCount = reading.readScrollCount;
 
-      // 查找目标评论元素
+      await heavyTailDelay(2000, { minMs: 1200, maxMs: 2800 });
+
       const commentEl = await this.findCommentElement(page, commentId);
       if (!commentEl) {
+        const session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        });
         return {
           success: false,
           action: unlike ? 'unlike' : 'like',
           noteId,
           error: `Comment not found: ${commentId}`,
+          session,
         };
       }
 
-      // 滚动到评论位置
       await commentEl.scrollIntoViewIfNeeded();
-      await jitteredSleep(500);
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
 
-      // 查找点赞按钮
       const likeBtn = await commentEl.$('.like .like-wrapper');
       if (!likeBtn) {
+        const session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        });
         return {
           success: false,
           action: unlike ? 'unlike' : 'like',
           noteId,
           error: 'Like button not found',
+          session,
         };
       }
 
-      // 通过 xlink:href 检测当前点赞状态（#like=未点赞，#liked=已点赞）
       const isLiked = await likeBtn.evaluate((el: Element) => {
         const useEl = el.querySelector('use');
         if (!useEl) return false;
@@ -519,13 +851,41 @@ export class InteractService {
         return href === '#liked';
       });
 
-      // 根据当前状态和目标操作决定是否需要点击
       const shouldClick = (unlike && isLiked) || (!unlike && !isLiked);
 
       if (shouldClick) {
-        // 真实点击（CDP 鼠标事件，isTrusted=true，规避 dispatchEvent 的 isTrusted=false）
-        await likeBtn.click();
-        await jitteredSleep(500);
+        await clickWithTrajectory(page, likeBtn);
+        trajectorySteps = getLastTrajectoryMeta()?.steps ?? null;
+        if (!sessionEnabled) {
+          await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
+        }
+      } else {
+        this.logger.info('skipped_already_done', {
+          action: unlike ? 'unlike' : 'like',
+          noteId,
+          commentId,
+          shortSession: !!config.antiDetect.alreadyDoneShort?.enabled,
+        });
+      }
+
+      const session = await this.completeSession({
+        preDwellMs,
+        readScrollCount,
+        trajectorySteps,
+        keepPage,
+        alreadyDone: !shouldClick,
+        entry: entryUsed,
+        entryFallback,
+      });
+
+      if (shouldClick) {
+        this.logger.info('interact_success', {
+          action: unlike ? 'unlike' : 'like',
+          noteId,
+          commentId,
+          trajectorySteps,
+          postStayMs: session.postStayMs,
+        });
       }
 
       return {
@@ -533,16 +893,29 @@ export class InteractService {
         action: unlike ? 'unlike' : 'like',
         noteId,
         alreadyDone: !shouldClick,
+        session,
       };
     } catch (error) {
+      let session: InteractSessionMeta | undefined;
+      if (readingStarted) {
+        session = await this.completeSession({
+          preDwellMs,
+          readScrollCount,
+          trajectorySteps,
+          keepPage,
+          entry: entryUsed,
+          entryFallback,
+        }).catch(() => undefined);
+      }
       return {
         success: false,
         action: unlike ? 'unlike' : 'like',
         noteId,
         error: error instanceof Error ? error.message : String(error),
+        session,
       };
     } finally {
-      await page.close();
+      await this.retainOrClosePage(page, keepPage);
     }
   }
 }

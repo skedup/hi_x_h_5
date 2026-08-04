@@ -89,6 +89,8 @@ export async function executeWithAccount<T>(
     dedupKey?: string;
     /** C2.2 本账号意图使用的 xsecToken（用于跨账号复用检测） */
     xsecToken?: string;
+    /** D2：评论/回复原文（近邻去重） */
+    nearText?: string;
     /**
      * 动作能力分级（蓝军 #3）：
      * - 'write'   默认；受全部反检测门禁（账号状态/息屏/headless/预算熔断去重）约束；
@@ -170,6 +172,7 @@ export async function executeWithAccount<T>(
       action,
       dedupKey: options?.dedupKey,
       xsecToken: options?.xsecToken,
+      nearText: options?.nearText,
     });
     if (!before.allow) {
       return {
@@ -231,6 +234,7 @@ export async function executeWithAccount<T>(
       result: outcome.result,
       dedupKey: options?.dedupKey,
       xsecToken: options?.xsecToken,
+      nearText: options?.nearText,
       reservation: before?.reservation,
     });
     trippedNow = after.trippedNow;
@@ -308,6 +312,8 @@ export async function executeWithMultipleAccounts<T>(
     dedupKey?: string;
     /** C2.2 本账号意图使用的 xsecToken */
     xsecToken?: string;
+    /** D2：评论/回复原文（近邻去重） */
+    nearText?: string;
     /** 动作能力分级（蓝军 #3），透传至 executeWithAccount */
     capability?: ToolCapability;
     /**

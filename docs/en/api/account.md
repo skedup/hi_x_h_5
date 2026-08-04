@@ -53,7 +53,7 @@ Add a new account or re-login an existing account via QR code.
 
 ### Behavior
 
-1. Launches headless browser
+1. Launches browser **headful by default** (ignores `XHS_MCP_HEADLESS` unless `XHS_MCP_ALLOW_HEADLESS_LOGIN=true`; see `docs/blue-team/C2-LOGIN-HEADFUL.md`)
 2. Navigates to Xiaohongshu login page
 3. Captures QR code and saves to file
 4. Opens QR code in default image viewer
@@ -169,7 +169,7 @@ Check if an account is currently logged in.
 
 ## xhs_delete_cookies
 
-Delete saved login cookies/session for an account.
+Log out by **archiving** the on-disk browser profile (not cookie-clear alone; C5). Re-login with `xhs_add_account`.
 
 ### Parameters
 

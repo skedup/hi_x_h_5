@@ -5,7 +5,7 @@
  */
 
 import { XhsNote, XhsSearchItem, XhsUserInfo } from '../../types.js';
-import { sleep, navigateWithRetry, jitteredSleep, rateLimitedSleep } from '../../utils/index.js';
+import { sleep, navigateWithRetry, jitteredSleep, rateLimitedSleep, evalMainState, waitForInitialState } from '../../utils/index.js';
 import { BrowserContextManager, log } from '../context.js';
 import { TIMEOUTS, REQUEST_INTERVAL } from '../constants.js';
 
@@ -41,15 +41,14 @@ export class ContentService {
         return null;
       }
 
-      // 等待 __INITIAL_STATE__ 存在
-      await page.waitForFunction(() => (window as any).__INITIAL_STATE__ !== undefined, {
-        timeout: TIMEOUTS.PAGE_LOAD,
-      });
+      // 等待 __INITIAL_STATE__ 存在（C6 主世界）
+      await waitForInitialState(page, { timeout: TIMEOUTS.PAGE_LOAD });
 
       await rateLimitedSleep(REQUEST_INTERVAL);
 
       // 获取笔记详情和评论（参照 xiaohongshu-mcp）
-      const result = await page.evaluate(
+      const result = await evalMainState(
+        page,
         (_nid: string) => {
           const state = (window as any).__INITIAL_STATE__;
           if (state?.note?.noteDetailMap) {
@@ -59,7 +58,6 @@ export class ContentService {
           return '';
         },
         noteId,
-        false,
       );
 
       if (!result) {
@@ -162,14 +160,13 @@ export class ContentService {
       await page.goto(url, { waitUntil: 'domcontentloaded' });
       await page.waitForLoadState('networkidle').catch(() => {});
 
-      await page.waitForFunction(() => (window as any).__INITIAL_STATE__ !== undefined, {
-        timeout: TIMEOUTS.PAGE_LOAD,
-      });
+      await waitForInitialState(page, { timeout: TIMEOUTS.PAGE_LOAD });
 
       await rateLimitedSleep(REQUEST_INTERVAL);
 
       // 直接在浏览器中提取需要的数据，避免循环引用
-      const result = await page.evaluate(
+      const result = await evalMainState(
+        page,
         (uid: string) => {
           const state = (window as any).__INITIAL_STATE__;
           if (!state?.user?.userPageData) {
@@ -225,7 +222,6 @@ export class ContentService {
           });
         },
         userId,
-        false,
       );
 
       if (!result) {
@@ -251,13 +247,12 @@ export class ContentService {
       await page.goto('https://www.xiaohongshu.com/explore', { waitUntil: 'domcontentloaded' });
       await page.waitForLoadState('networkidle').catch(() => {});
 
-      await page.waitForFunction(() => (window as any).__INITIAL_STATE__ !== undefined, {
-        timeout: TIMEOUTS.PAGE_LOAD,
-      });
+      await waitForInitialState(page, { timeout: TIMEOUTS.PAGE_LOAD });
 
       await rateLimitedSleep(REQUEST_INTERVAL);
 
-      const result = await page.evaluate(
+      const result = await evalMainState(
+        page,
         () => {
           const state = (window as any).__INITIAL_STATE__;
           if (state?.feed?.feeds) {
@@ -270,7 +265,6 @@ export class ContentService {
           return '';
         },
         null,
-        false,
       );
 
       if (!result) {

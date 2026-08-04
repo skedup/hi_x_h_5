@@ -6,11 +6,8 @@
 
 import { config } from '../../core/config.js';
 
-// Anti-detection browser launch arguments (based on MediaCrawler)
-export const BROWSER_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-blink-features=AutomationControlled', // Disable automation control flag
+/** C1：默认 Chrome 启动参数（不含 env 门控的 sandbox 项） */
+const BROWSER_ARGS_BASE = [
   '--disable-infobars', // Disable info bars
   // 注：已移除 --disable-background-timer-throttling / --disable-backgrounding-occluded-windows
   // / --disable-renderer-backgrounding（C3.2 / 07 门禁 #2）。写操作不应依赖后台节流禁用
@@ -18,12 +15,27 @@ export const BROWSER_ARGS = [
   // 注：已移除 --disable-notifications（B1 / 05 §7.4）——该参数使 Notification 变为
   // undefined，制造可观测异常；平台/页面依赖 Notification 时反而暴露自动化。
   // （如确需静音通知，应在页面层用权限策略而非该启动参数。）
+  // 注：C1 已移除 --disable-blink-features=AutomationControlled（与 patchright 重复）。
+  // 注：C1 已移除 --deny-permission-prompts；时区/geo 权限改由 C3 grantPermissions 联调。
   '--disable-features=ExternalProtocolDialog', // 禁用"访问其他应用"对话框
   '--disable-session-crashed-bubble', // 禁用"意外关闭"恢复提示
   '--hide-crash-restore-bubble', // 隐藏崩溃恢复气泡
   '--noerrdialogs', // 禁用错误对话框
-  '--deny-permission-prompts', // 拒绝所有权限请求（地理位置等）
-];
+] as const;
+
+/** 容器/CI 回滚：无 sandbox 权限时追加（XHS_MCP_BROWSER_NO_SANDBOX=true） */
+const BROWSER_ARGS_NO_SANDBOX = ['--no-sandbox', '--disable-setuid-sandbox'] as const;
+
+/**
+ * 构建 Chrome 启动参数（C1：默认保留 sandbox；容器需 env 显式关闭）。
+ * @param noSandbox 覆盖 config.browser.noSandbox，便于单测
+ */
+export function getBrowserArgs(noSandbox = config.browser.noSandbox): string[] {
+  if (noSandbox) {
+    return [...BROWSER_ARGS_NO_SANDBOX, ...BROWSER_ARGS_BASE];
+  }
+  return [...BROWSER_ARGS_BASE];
+}
 
 /**
  * 超时时间常量（毫秒）
@@ -78,6 +90,19 @@ export const SCROLL_CONFIG = {
   SCROLL_BACK_CHANCE: 0.08,
   /** 鼠标移动概率（增加自然性） */
   MOUSE_MOVE_CHANCE: 0.3,
+} as const;
+
+/**
+ * Explore 专用滚动 preset（B4）：步间延迟短于搜索 SCROLL_CONFIG，
+ * 避免 humanScroll 内置 1–2s 读延迟拖垮 explore duration。
+ */
+export const SCROLL_CONFIG_EXPLORE = {
+  MIN_DISTANCE: 300,
+  MAX_DISTANCE: 700,
+  MIN_DELAY: 400,
+  MAX_DELAY: 900,
+  SCROLL_BACK_CHANCE: 0.1,
+  MOUSE_MOVE_CHANCE: 0.35,
 } as const;
 
 /**

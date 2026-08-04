@@ -10,6 +10,17 @@ import { AccountPool } from '../core/account-pool.js';
 import { XhsDatabase } from '../db/index.js';
 import { executeWithMultipleAccounts, MultiAccountParams, resolveAccount } from '../core/multi-account.js';
 import { sha256OfText } from '../core/antidetect.js';
+import { archiveProfileDir } from '../core/profile.js';
+
+/** D1：进帖入口（默认 direct；feed=首页封面点入） */
+const entrySchemaProp = {
+  type: 'string' as const,
+  enum: ['direct', 'feed'],
+  description:
+    "Note entry mode: 'direct' (default deep-link) or 'feed' (organic cover click from explore; falls back to direct)",
+};
+
+const entryZod = z.enum(['direct', 'feed']).optional();
 
 /**
  * Interaction tool definitions for MCP.
@@ -44,6 +55,7 @@ export const interactionTools: Tool[] = [
           ],
           description: 'Multiple accounts (array of names/IDs, or "all")',
         },
+        entry: entrySchemaProp,
       },
       required: ['noteId', 'xsecToken'],
     },
@@ -77,6 +89,7 @@ export const interactionTools: Tool[] = [
           ],
           description: 'Multiple accounts (array of names/IDs, or "all")',
         },
+        entry: entrySchemaProp,
       },
       required: ['noteId', 'xsecToken'],
     },
@@ -110,6 +123,7 @@ export const interactionTools: Tool[] = [
           ],
           description: 'Multiple accounts (array of names/IDs, or "all")',
         },
+        entry: entrySchemaProp,
       },
       required: ['noteId', 'xsecToken', 'content'],
     },
@@ -140,6 +154,7 @@ export const interactionTools: Tool[] = [
           type: 'string',
           description: 'Account name or ID to use',
         },
+        entry: entrySchemaProp,
       },
       required: ['noteId', 'xsecToken', 'commentId', 'content'],
     },
@@ -177,19 +192,21 @@ export const interactionTools: Tool[] = [
           ],
           description: 'Multiple accounts (array of names/IDs, or "all")',
         },
+        entry: entrySchemaProp,
       },
       required: ['noteId', 'xsecToken', 'commentId'],
     },
   },
   {
     name: 'xhs_delete_cookies',
-    description: 'Delete saved login cookies/session for an account. Use this to log out or re-authenticate.',
+    description:
+      'Log out an account by archiving its browser profile (cookies, localStorage, IndexedDB). Deprecated name: does not only clear cookies. Re-login with xhs_add_account after.',
     inputSchema: {
       type: 'object',
       properties: {
         account: {
           type: 'string',
-          description: 'Account name or ID to delete cookies for',
+          description: 'Account name or ID to log out',
         },
       },
     },
@@ -215,6 +232,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           unlike: z.boolean().optional().default(false),
           account: z.string().optional(),
           accounts: z.union([z.array(z.string()), z.literal('all')]).optional(),
+          entry: entryZod,
         })
         .parse(args);
 
@@ -229,7 +247,9 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
         multiParams,
         params.unlike ? 'unlike' : 'like',
         async (ctx) => {
-          const result = await ctx.client.likeFeed(params.noteId, params.xsecToken, params.unlike);
+          const result = await ctx.client.likeFeed(params.noteId, params.xsecToken, params.unlike, {
+            entry: params.entry,
+          });
 
           // Record interaction
           db.interactions.record({
@@ -243,7 +263,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           return result;
         },
         {
-          logParams: { noteId: params.noteId, unlike: params.unlike },
+          logParams: { noteId: params.noteId, unlike: params.unlike, entry: params.entry },
           // A2：like/unlike 共用同一目标键，防止两者互相踩踏绕过去重
           dedupKey: `like:note:${params.noteId}`,
           xsecToken: params.xsecToken,
@@ -271,6 +291,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           unfavorite: z.boolean().optional().default(false),
           account: z.string().optional(),
           accounts: z.union([z.array(z.string()), z.literal('all')]).optional(),
+          entry: entryZod,
         })
         .parse(args);
 
@@ -285,7 +306,9 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
         multiParams,
         params.unfavorite ? 'unfavorite' : 'favorite',
         async (ctx) => {
-          const result = await ctx.client.favoriteFeed(params.noteId, params.xsecToken, params.unfavorite);
+          const result = await ctx.client.favoriteFeed(params.noteId, params.xsecToken, params.unfavorite, {
+            entry: params.entry,
+          });
 
           db.interactions.record({
             accountId: ctx.accountId,
@@ -298,7 +321,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           return result;
         },
         {
-          logParams: { noteId: params.noteId, unfavorite: params.unfavorite },
+          logParams: { noteId: params.noteId, unfavorite: params.unfavorite, entry: params.entry },
           // A2：favorite/unfavorite 共用同一目标键
           dedupKey: `fav:note:${params.noteId}`,
           xsecToken: params.xsecToken,
@@ -326,6 +349,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           content: z.string(),
           account: z.string().optional(),
           accounts: z.union([z.array(z.string()), z.literal('all')]).optional(),
+          entry: entryZod,
         })
         .parse(args);
 
@@ -340,7 +364,9 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
         multiParams,
         'comment',
         async (ctx) => {
-          const result = await ctx.client.postComment(params.noteId, params.xsecToken, params.content);
+          const result = await ctx.client.postComment(params.noteId, params.xsecToken, params.content, {
+            entry: params.entry,
+          });
 
           db.interactions.record({
             accountId: ctx.accountId,
@@ -355,10 +381,12 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           return result;
         },
         {
-          logParams: { noteId: params.noteId },
+          logParams: { noteId: params.noteId, entry: params.entry },
           // C2.4 跨账号相同评论正文硬拦截
           dedupKey: `comment_text:${sha256OfText(params.content)}`,
           xsecToken: params.xsecToken,
+          // D2：近邻去重（归一化 + simhash）
+          nearText: params.content,
           // A6：同一 noteId 禁止单次调用打到多个账号
           noteId: params.noteId,
         },
@@ -383,6 +411,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           commentId: z.string(),
           content: z.string(),
           account: z.string().optional(),
+          entry: entryZod,
         })
         .parse(args);
 
@@ -399,6 +428,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
             params.xsecToken,
             params.commentId,
             params.content,
+            { entry: params.entry },
           );
 
           db.interactions.record({
@@ -414,10 +444,11 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           return result;
         },
         {
-          logParams: { noteId: params.noteId, commentId: params.commentId },
+          logParams: { noteId: params.noteId, commentId: params.commentId, entry: params.entry },
           // C2.4 跨账号相同回复正文硬拦截
           dedupKey: `reply_text:${sha256OfText(params.content)}`,
           xsecToken: params.xsecToken,
+          nearText: params.content,
         },
       );
 
@@ -435,6 +466,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           unlike: z.boolean().optional().default(false),
           account: z.string().optional(),
           accounts: z.union([z.array(z.string()), z.literal('all')]).optional(),
+          entry: entryZod,
         })
         .parse(args);
 
@@ -449,7 +481,13 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
         multiParams,
         params.unlike ? 'unlike_comment' : 'like_comment',
         async (ctx) => {
-          const result = await ctx.client.likeComment(params.noteId, params.xsecToken, params.commentId, params.unlike);
+          const result = await ctx.client.likeComment(
+            params.noteId,
+            params.xsecToken,
+            params.commentId,
+            params.unlike,
+            { entry: params.entry },
+          );
 
           db.interactions.record({
             accountId: ctx.accountId,
@@ -463,7 +501,7 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
           return result;
         },
         {
-          logParams: { noteId: params.noteId, commentId: params.commentId, unlike: params.unlike },
+          logParams: { noteId: params.noteId, commentId: params.commentId, unlike: params.unlike, entry: params.entry },
           // A2：like_comment/unlike_comment 共用同一目标键（键空间统一）
           dedupKey: `like_c:${params.noteId}:${params.commentId}`,
           xsecToken: params.xsecToken,
@@ -506,23 +544,38 @@ export async function handleInteractionTools(name: string, args: any, pool: Acco
         };
       }
 
-      // Clear state in database
-      db.accounts.updateState(account.id, null);
+      // C5：持账号锁串行化登出，避免 close 期间其他工具 getClient 重开即将归档的 profile
+      let release: (() => void) | null = null;
+      try {
+        release = await pool.acquireLock(account.id, 'delete_cookies');
+        // 先关浏览器 → 再归档磁盘 → 最后清 DB（避免归档失败时 state 已空、profile 仍在）
+        await pool.removeClient(account.id);
+        const archivedPath = archiveProfileDir(account.profileId);
+        db.accounts.updateState(account.id, null);
 
-      // Close the client to clear browser state
-      const client = await pool.getClient(account.id);
-      if (client) {
-        await client.deleteCookies();
+        return {
+          content: [
+            {
+              type: 'text',
+              text: archivedPath
+                ? `Logged out account "${account.name}": browser profile archived. Re-login with xhs_add_account.`
+                : `Logged out account "${account.name}": session cleared (no on-disk profile to archive). Re-login with xhs_add_account.`,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Failed to log out account "${account.name}": ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      } finally {
+        release?.();
       }
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Cookies deleted for account "${account.name}". You will need to login again.`,
-          },
-        ],
-      };
     }
 
     default:

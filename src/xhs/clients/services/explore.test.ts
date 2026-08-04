@@ -42,18 +42,18 @@ describe('A3 explore getFeeds 后绑定 xsecToken 来源账号', () => {
     getCooccurrenceGuard().reset();
   });
 
-  it('getFeeds 提取的每个 feed 的 token 都绑定到提取账号', () => {
+  it('getFeeds 提取的每个 feed 的 token 都绑定到提取账号', async () => {
     const feeds = [makeFeed('note-1', 'tok-1'), makeFeed('note-2', 'tok-2')];
-    bindFeedXsecTokens(feeds, A);
+    await bindFeedXsecTokens(feeds, A);
 
     const guard = getCooccurrenceGuard();
     expect(guard.checkXsecSource('tok-1', A).allow).toBe(true);
     expect(guard.checkXsecSource('tok-2', A).allow).toBe(true);
   });
 
-  it('B 账号使用 A 提取的 token 写操作在 block 模式下被拒绝', () => {
+  it('B 账号使用 A 提取的 token 写操作在 block 模式下被拒绝', async () => {
     const feeds = [makeFeed('note-1', 'tok-shared')];
-    bindFeedXsecTokens(feeds, A);
+    await bindFeedXsecTokens(feeds, A);
 
     const guard = getCooccurrenceGuard();
     const check = guard.checkXsecSource('tok-shared', B);
@@ -61,17 +61,17 @@ describe('A3 explore getFeeds 后绑定 xsecToken 来源账号', () => {
     expect(check.reason).toBe('xsec_token_bound_to_other_account');
   });
 
-  it('首个提取账号占用来源，后续同 token 不同账号的提取不会抢占', () => {
-    bindFeedXsecTokens([makeFeed('note-1', 'tok-x')], A);
-    bindFeedXsecTokens([makeFeed('note-1', 'tok-x')], B); // 抢占无效
+  it('首个提取账号占用来源，后续同 token 不同账号的提取不会抢占', async () => {
+    await bindFeedXsecTokens([makeFeed('note-1', 'tok-x')], A);
+    await bindFeedXsecTokens([makeFeed('note-1', 'tok-x')], B); // 抢占无效
 
     const guard = getCooccurrenceGuard();
     expect(guard.checkXsecSource('tok-x', A).allow).toBe(true);
     expect(guard.checkXsecSource('tok-x', B).allow).toBe(false);
   });
 
-  it('跳过没有 xsecToken 的 feed，不抛错', () => {
+  it('跳过没有 xsecToken 的 feed，不抛错', async () => {
     const feeds = [{ id: 'note-no-token', xsecToken: '', noteCard: { type: 'normal' } } as FeedItem];
-    expect(() => bindFeedXsecTokens(feeds, A)).not.toThrow();
+    await expect(bindFeedXsecTokens(feeds, A)).resolves.toBeUndefined();
   });
 });

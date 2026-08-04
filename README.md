@@ -46,7 +46,7 @@
 | `xhs_set_account_config` | 修改账号配置（名称、代理、状态） |
 | `xhs_get_account_prompt` | 获取账号 Prompt（人设/选择/评论） |
 | `xhs_set_account_prompt` | 更新账号 Prompt |
-| `xhs_delete_cookies` | 清除账号会话 |
+| `xhs_delete_cookies` | 登出并归档账号 profile（C5） |
 
 ### 内容查询
 
@@ -217,7 +217,7 @@ xhs_publish_content({ title: "...", content: "...", images: [...], accounts: "al
 | `GEMINI_API_KEY` | - | Gemini API 密钥（AI 图片生成必需） |
 | `GEMINI_IMAGE_GENERATE_MODEL` | `gemini-3-pro-image` | 图片生成模型 |
 | `XHS_MCP_DATA_DIR` | `~/.xhs-mcp` | 数据存储目录 |
-| `XHS_MCP_HEADLESS` | `true` | 是否使用无头浏览器 |
+| `XHS_MCP_HEADLESS` | `false` | 是否使用无头浏览器（默认有头；写操作在 headlessWriteGate 开启时被拒绝） |
 | `XHS_MCP_LEGACY_PROFILE_ACCOUNT_ID` | - | 首次接管旧 `browser-profile` 时显式确认其所属账号 ID |
 | `XHS_MCP_KEEP_OPEN` | `false` | 操作完成后保持浏览器打开 |
 | `XHS_MCP_REQUEST_INTERVAL` | `2000` | 请求间隔（毫秒） |

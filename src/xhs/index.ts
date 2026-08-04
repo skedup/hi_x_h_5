@@ -33,6 +33,16 @@ export interface XhsClientOptions {
   state?: any;
   /** Proxy server URL (e.g., "http://proxy:8080") */
   proxy?: string;
+  /** C3：IANA timezone */
+  timezoneId?: string;
+  /** C3：BCP-47 locale */
+  locale?: string;
+  /** C3：geolocation */
+  geolocation?: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+  };
   /** Callback invoked when session state changes (e.g., after login) */
   onStateChange?: (state: any) => void | Promise<void>;
 }
@@ -67,6 +77,9 @@ export class XhsClient {
       profileId: options.profileId,
       state: options.state,
       proxy: options.proxy,
+      timezoneId: options.timezoneId,
+      locale: options.locale,
+      geolocation: options.geolocation,
       onStateChange: options.onStateChange,
     });
   }
@@ -119,21 +132,42 @@ export class XhsClient {
   }
 
   // New methods for interactions
-  async likeFeed(noteId: string, xsecToken: string, unlike: boolean = false): Promise<InteractionResult> {
-    return await this.browserClient.likeFeed(noteId, xsecToken, unlike);
+  async likeFeed(
+    noteId: string,
+    xsecToken: string,
+    unlike: boolean = false,
+    sessionOpts?: import('./utils/interact-session.js').InteractSessionOpts,
+  ): Promise<InteractionResult> {
+    return await this.browserClient.likeFeed(noteId, xsecToken, unlike, sessionOpts);
   }
 
-  async favoriteFeed(noteId: string, xsecToken: string, unfavorite: boolean = false): Promise<InteractionResult> {
-    return await this.browserClient.favoriteFeed(noteId, xsecToken, unfavorite);
+  async favoriteFeed(
+    noteId: string,
+    xsecToken: string,
+    unfavorite: boolean = false,
+    sessionOpts?: import('./utils/interact-session.js').InteractSessionOpts,
+  ): Promise<InteractionResult> {
+    return await this.browserClient.favoriteFeed(noteId, xsecToken, unfavorite, sessionOpts);
   }
 
   // New methods for comments
-  async postComment(noteId: string, xsecToken: string, content: string): Promise<CommentResult> {
-    return await this.browserClient.postComment(noteId, xsecToken, content);
+  async postComment(
+    noteId: string,
+    xsecToken: string,
+    content: string,
+    sessionOpts?: import('./utils/interact-session.js').InteractSessionOpts,
+  ): Promise<CommentResult> {
+    return await this.browserClient.postComment(noteId, xsecToken, content, sessionOpts);
   }
 
-  async replyComment(noteId: string, xsecToken: string, commentId: string, content: string): Promise<CommentResult> {
-    return await this.browserClient.replyComment(noteId, xsecToken, commentId, content);
+  async replyComment(
+    noteId: string,
+    xsecToken: string,
+    commentId: string,
+    content: string,
+    sessionOpts?: import('./utils/interact-session.js').InteractSessionOpts,
+  ): Promise<CommentResult> {
+    return await this.browserClient.replyComment(noteId, xsecToken, commentId, content, sessionOpts);
   }
 
   // Like comment
@@ -142,8 +176,18 @@ export class XhsClient {
     xsecToken: string,
     commentId: string,
     unlike: boolean = false,
+    sessionOpts?: import('./utils/interact-session.js').InteractSessionOpts,
   ): Promise<InteractionResult> {
-    return await this.browserClient.likeComment(noteId, xsecToken, commentId, unlike);
+    return await this.browserClient.likeComment(noteId, xsecToken, commentId, unlike, sessionOpts);
+  }
+
+  /** B3：关闭 keepPage 保留的 Interact 页 */
+  async releaseKeptInteractPages(): Promise<number> {
+    return await this.browserClient.releaseKeptInteractPages();
+  }
+
+  getKeptInteractPageCount(): number {
+    return this.browserClient.getKeptInteractPageCount();
   }
 
   // Cookie management

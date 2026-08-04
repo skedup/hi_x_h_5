@@ -8,12 +8,28 @@ import { chromium, Browser, BrowserContext, Page } from 'patchright';
 import type { APIRequestContext } from 'patchright';
 import { LoginUserInfo, FullUserProfile } from '../types.js';
 import { createLogger } from '../../core/logger.js';
-import { config, paths } from '../../core/config.js';
+import { config, paths, assertDisplayAvailableForHeadful } from '../../core/config.js';
 import { parseProxyConfig, toPlaywrightProxy } from '../../core/proxy.js';
-import { BROWSER_ARGS } from './constants.js';
+import {
+  buildPlaywrightLocaleOptions,
+  warnIfProxyWithoutLocale,
+  type AccountLocaleEnv,
+} from '../../core/locale-env.js';
+import { applyWebRtcIpHandlingPolicy } from '../../core/webrtc-prefs.js';
+import { archiveProfileDir } from '../../core/profile.js';
+import { evalMainState, waitForInitialState, waitForMainState } from '../utils/index.js';
+import { getBrowserArgs } from './constants.js';
 
 // Create logger for browser module
 export const log = createLogger('browser');
+
+/** launchProfileContext 可选参数（C2 登录强制 headful / C3 属地等） */
+export interface LaunchProfileContextOptions {
+  /** 强制 headful，忽略 headless 参数（登录路径用） */
+  forceHeadful?: boolean;
+  /** C3：时区 / locale / geo */
+  localeEnv?: AccountLocaleEnv;
+}
 
 /**
  * Launch a persistent Chrome profile context rooted at the given directory.
@@ -26,20 +42,50 @@ export async function launchProfileContext(
   profileDir: string,
   headless = config.browser.headless,
   proxy?: string,
+  options?: LaunchProfileContextOptions,
 ): Promise<{ browser: Browser; context: BrowserContext }> {
+  const effectiveHeadless = options?.forceHeadful ? false : headless;
+  if (!effectiveHeadless) {
+    assertDisplayAvailableForHeadful();
+  }
+
   const parsedProxy = parseProxyConfig(proxy);
   if (proxy?.trim() && !parsedProxy) {
     log.warn('账号 proxy 无法解析，将不使用代理启动', { proxyPreview: proxy.slice(0, 32) });
   }
+
+  const localeEnv = options?.localeEnv ?? {};
+  warnIfProxyWithoutLocale(proxy, localeEnv);
+  const localeOpts = buildPlaywrightLocaleOptions(localeEnv);
+
+  // C8：有代理且开启缓解时，启动前写入 WebRTC IP 策略（降低 ICE 宿主泄漏）
+  if (parsedProxy && config.antiDetect.webrtc?.enabled) {
+    applyWebRtcIpHandlingPolicy(profileDir);
+  }
+
   const context = await chromium.launchPersistentContext(profileDir, {
-    headless,
+    headless: effectiveHeadless,
     channel: 'chrome',
-    args: BROWSER_ARGS,
+    args: getBrowserArgs(),
     // B1（05 R3）：headful 时 viewport 置 null，消除 screen==viewport 的组合异常指纹；
     // headless（自动化测试）保留固定 viewport。
-    viewport: headless ? { width: 1920, height: 1080 } : null,
+    viewport: effectiveHeadless ? { width: 1920, height: 1080 } : null,
     ...(parsedProxy ? { proxy: toPlaywrightProxy(parsedProxy) } : {}),
+    ...(localeOpts.timezoneId ? { timezoneId: localeOpts.timezoneId } : {}),
+    ...(localeOpts.locale ? { locale: localeOpts.locale } : {}),
+    ...(localeOpts.geolocation ? { geolocation: localeOpts.geolocation } : {}),
   });
+
+  // C3：配置了 geo 时授予小红书域 geolocation（C1 已去掉 deny-permission-prompts）
+  if (localeOpts.geolocation) {
+    await context.grantPermissions(['geolocation'], {
+      origin: 'https://www.xiaohongshu.com',
+    });
+    await context.grantPermissions(['geolocation'], {
+      origin: 'https://creator.xiaohongshu.com',
+    }).catch(() => {});
+  }
+
   const browser = context.browser();
   if (!browser) {
     await context.close();
@@ -68,6 +114,12 @@ export interface BrowserClientOptions {
   state?: any;
   /** Proxy server URL (bound to the profile) */
   proxy?: string;
+  /** C3：IANA timezone */
+  timezoneId?: string;
+  /** C3：BCP-47 locale */
+  locale?: string;
+  /** C3：geolocation */
+  geolocation?: AccountLocaleEnv['geolocation'];
   /** Callback to save state when it changes */
   onStateChange?: (state: any) => void | Promise<void>;
 }
@@ -122,7 +174,13 @@ export class BrowserContextManager {
       );
     }
     const profileDir = paths.getBrowserProfileDir(this.options.profileId);
-    const session = await this.launchContext(profileDir, headless, this.options.proxy);
+    const session = await this.launchContext(profileDir, headless, this.options.proxy, {
+      localeEnv: {
+        timezoneId: this.options.timezoneId,
+        locale: this.options.locale,
+        geolocation: this.options.geolocation,
+      },
+    });
     this.browser = session.browser;
     this.context = session.context;
     session.context.on('close', () => this.clearClosedSession(session.browser, session.context));
@@ -184,7 +242,8 @@ export class BrowserContextManager {
    */
   async extractUserInfo(page: Page): Promise<LoginUserInfo | null> {
     try {
-      const result = await page.evaluate(
+      const result = await evalMainState(
+        page,
         () => {
           const state = (window as any).__INITIAL_STATE__;
           if (!state?.user?.userInfo) return null;
@@ -206,7 +265,6 @@ export class BrowserContextManager {
           };
         },
         null,
-        false,
       );
 
       if (result) {
@@ -220,21 +278,23 @@ export class BrowserContextManager {
   }
 
   /**
-   * Delete login cookies and clear session state.
-   * Used to log out or force re-authentication.
+   * 登出：关闭浏览器并归档 on-disk profile（C5）。
+   *
+   * @deprecated 旧实现仅 `context.clearCookies()`，profile 内 IndexedDB 等仍保留。
+   * 现改为归档整个 profile 目录；请勿再依赖「只清 Cookie」语义。
+   * 调用方须已持有该账号锁（或经 `xhs_delete_cookies`），避免与并发 getClient 竞态。
    */
-  async deleteCookies(): Promise<{ success: boolean; error?: string }> {
+  async deleteCookies(): Promise<{ success: boolean; archivedPath?: string | null; error?: string }> {
     try {
-      const context = await this.ensureContext();
-      await context.clearCookies();
-
-      // Clear internal state
-      this.options.state = undefined;
-
-      // Close browser instance
+      // 须先关闭，再 rename profile，避免 Chrome 文件锁
       await this.close();
-
-      return { success: true };
+      const archivedPath = archiveProfileDir(this.options.profileId);
+      this.options.state = undefined;
+      log.info('登出已归档 profile', {
+        profileId: this.options.profileId,
+        archived: Boolean(archivedPath),
+      });
+      return { success: true, archivedPath };
     } catch (error) {
       return {
         success: false,
@@ -276,26 +336,25 @@ export class BrowserContextManager {
       await page.goto(url, { waitUntil: 'domcontentloaded' });
       await page.waitForLoadState('networkidle').catch(() => {});
 
-      // 等待 __INITIAL_STATE__ 加载
-      await page.waitForFunction(() => (window as any).__INITIAL_STATE__ !== undefined, {
-        timeout: 30000,
-      });
+      // 等待 __INITIAL_STATE__ 加载（C6 主世界）
+      await waitForInitialState(page, { timeout: 30000 });
 
       // 等待用户数据加载
-      await page
-        .waitForFunction(
-          () => {
-            const state = (window as any).__INITIAL_STATE__;
-            const userPageData = state?.user?.userPageData;
-            const basicInfo = userPageData?._rawValue?.basicInfo || userPageData?.basicInfo;
-            return basicInfo?.nickname;
-          },
-          { timeout: 10000 },
-        )
-        .catch(() => {});
+      await waitForMainState(
+        page,
+        () => {
+          const state = (window as any).__INITIAL_STATE__;
+          const userPageData = state?.user?.userPageData;
+          const basicInfo = userPageData?._rawValue?.basicInfo || userPageData?.basicInfo;
+          return basicInfo?.nickname;
+        },
+        null,
+        { timeout: 10000 },
+      ).catch(() => {});
 
       // 提取完整用户信息
-      const result = await page.evaluate(
+      const result = await evalMainState(
+        page,
         (uid: string) => {
           const state = (window as any).__INITIAL_STATE__;
           if (!state?.user) return null;
@@ -350,7 +409,6 @@ export class BrowserContextManager {
           };
         },
         userId,
-        false,
       );
 
       if (result) {

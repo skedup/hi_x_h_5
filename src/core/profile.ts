@@ -643,6 +643,28 @@ export function removeProfileDir(profileId: string | undefined): void {
 }
 
 /**
+ * C5：登出时归档账号 profile 目录（Cookie / localStorage / IndexedDB / ServiceWorker 等）。
+ * 术语：归档的是 profile **内持久化会话标识**，非硬件指纹。
+ * 复用 finalizeLoginProfile 的 `.archived-` 命名；浏览器须已关闭再调用，避免文件锁。
+ *
+ * @returns 归档后的目录路径；目录不存在时返回 null
+ */
+export function archiveProfileDir(profileId: string | undefined): string | null {
+  if (!profileId) return null;
+  const dir = paths.getBrowserProfileDir(profileId);
+  if (!existsSync(dir)) return null;
+  const archived = `${dir}.archived-${Date.now()}`;
+  renameSync(dir, archived);
+  fsyncDirectory(dirname(dir));
+  // 旧版兼容链接若仍指向原 profile 路径，一并拆除，避免 dangling symlink
+  if (linkTargetsProfile(paths.browserProfile, dir)) {
+    unlinkSync(paths.browserProfile);
+    fsyncDirectory(dirname(paths.browserProfile));
+  }
+  return archived;
+}
+
+/**
  * 删除账号时同时消费属于它的在途旧 profile 迁移，避免账号已删除后遗留 marker 阻断后续启动。
  */
 function removeAccountProfileLocked(

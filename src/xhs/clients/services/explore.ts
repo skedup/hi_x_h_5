@@ -6,7 +6,22 @@
 
 import { Page } from 'patchright';
 import { BrowserContextManager, log } from '../context.js';
-import { sleep, typeLikeHuman, jitteredSleep } from '../../utils/index.js';
+import {
+  sleep,
+  typeLikeHuman,
+  jitteredSleep,
+  rateLimitedSleep,
+  heavyTailDelay,
+  sampleHeavyTailMs,
+  clickWithTrajectory,
+  humanScroll,
+  wheelApproachElement,
+  computeTypingPlan,
+  evalMainState,
+  waitForMainState,
+  waitForInitialState,
+  type TypeLikeHumanOptions,
+} from '../../utils/index.js';
 import { config } from '../../../core/config.js';
 import { getDatabase, ExploreSessionResult } from '../../../db/index.js';
 import {
@@ -18,7 +33,15 @@ import {
 } from '../../../core/explore-ai.js';
 import { getCooccurrenceGuard, sha256OfText } from '../../../core/antidetect.js';
 import { isWriteAllowed, getLiveness } from '../../../core/liveness.js';
-import { EXPLORE_SELECTORS } from '../constants.js';
+import { EXPLORE_SELECTORS, SCROLL_CONFIG_EXPLORE, REQUEST_INTERVAL } from '../constants.js';
+import {
+  computeEffectiveOpenRate,
+  computeFeedVideoRatio,
+  createOpenRateCooldownState,
+  filterExploreOpenCandidates,
+  shouldContactVideoFeed,
+  updateOpenRateStateAfterRound,
+} from './explore-helpers.js';
 
 /**
  * Explore 参数
@@ -83,11 +106,41 @@ interface NoteDetail {
  * 首个占用来源，避免后续任何账号用该 token 发起写操作时无法追溯来源账号。
  * 抽成独立函数便于不依赖真实 Page/DOM 的单测覆盖。
  */
-export function bindFeedXsecTokens(feeds: FeedItem[], accountId: string): void {
+export async function bindFeedXsecTokens(feeds: FeedItem[], accountId: string): Promise<void> {
   const guard = getCooccurrenceGuard();
   for (const feed of feeds) {
-    if (feed?.xsecToken) guard.bindXsecSource(feed.xsecToken, accountId);
+    if (feed?.xsecToken) await guard.bindXsecSource(feed.xsecToken, accountId);
   }
+}
+/** B4：Explore 专用 humanScroll preset（步间短于搜索，避免拖垮 duration） */
+async function exploreHumanScroll(page: Page): Promise<void> {
+  await humanScroll(page, {
+    minDistance: SCROLL_CONFIG_EXPLORE.MIN_DISTANCE,
+    maxDistance: SCROLL_CONFIG_EXPLORE.MAX_DISTANCE,
+    minDelay: SCROLL_CONFIG_EXPLORE.MIN_DELAY,
+    maxDelay: SCROLL_CONFIG_EXPLORE.MAX_DELAY,
+    scrollBackChance: SCROLL_CONFIG_EXPLORE.SCROLL_BACK_CHANCE,
+    mouseMoveChance: SCROLL_CONFIG_EXPLORE.MOUSE_MOVE_CHANCE,
+  });
+}
+
+/** B4：Explore 评论 revise 参数 */
+function exploreCommentTypingOptions(content: string): TypeLikeHumanOptions {
+  return {
+    reviseGapMin: 4,
+    reviseGapMax: 10,
+    reviseMax: 1,
+    reviseChance: 0.75,
+    ...computeTypingPlan(content, {
+      minDelay: 45,
+      maxDelay: 170,
+      reviseGapMin: 4,
+      reviseGapMax: 10,
+      reviseMax: 1,
+      reviseChance: 0.75,
+      defaultMaxDurationMs: 45000,
+    }),
+  };
 }
 
 /**
@@ -202,14 +255,17 @@ export class ExploreService {
       await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
       await jitteredSleep(2000);
 
-      // 等待 __INITIAL_STATE__ 加载
-      await page.waitForFunction(() => (window as any).__INITIAL_STATE__?.feed?.feeds, {
-        timeout: 10000,
-      });
+      // 等待 __INITIAL_STATE__ 加载（C6 主世界）
+      await waitForMainState(
+        page,
+        () => !!(window as any).__INITIAL_STATE__?.feed?.feeds,
+        null,
+        { timeout: 10000 },
+      );
 
-      // 主循环
-      // 连续未打开计数（用于兜底逻辑）
-      let skippedRounds = 0;
+      // 主循环 — B4：打开率冷却/衰减（替代 skippedRounds 线性爬升）
+      let openRateState = createOpenRateCooldownState();
+      const allowVideo = config.antiDetect.explore.allowVideo;
 
       while (Date.now() < endTime) {
         // 检查是否被中途停止
@@ -233,8 +289,8 @@ export class ExploreService {
           log.debug('Behavior: quick scroll mode');
           const quickScrolls = 3 + Math.floor(Math.random() * 3); // 3-5 次
           for (let i = 0; i < quickScrolls; i++) {
-            await this.humanScroll(page);
-            await sleep(200 + Math.random() * 300);
+            await exploreHumanScroll(page);
+            await heavyTailDelay(350, { minMs: 200, maxMs: 500 }); // B1：快滑步间
           }
           continue;
         }
@@ -243,19 +299,22 @@ export class ExploreService {
         if (behaviorRoll < 0.15) {
           log.debug('Behavior: scroll back');
           await page.mouse.wheel(0, -(200 + Math.random() * 200));
-          await sleep(1000 + Math.random() * 1000);
+          await heavyTailDelay(1500, { minMs: 1000, maxMs: 2000 }); // B1：回看停顿
         }
 
         // 正常滑动 1-3 次
         const scrollCount = 1 + Math.floor(Math.random() * 3);
         for (let i = 0; i < scrollCount; i++) {
-          await this.humanScroll(page);
-          await sleep(400 + Math.random() * 400);
+          await exploreHumanScroll(page);
+          await heavyTailDelay(600, { minMs: 400, maxMs: 800 }); // B1：滑动步间
         }
 
-        // 停顿阅读：正常 3-8 秒，10% 概率长时间停留 10-20 秒
+        // 停顿阅读：基准 5s 重尾；10% 概率以 15s 为中位的长停（仍可 abort）
         const isLongPause = Math.random() < 0.1;
-        const readingDelay = isLongPause ? 10000 + Math.random() * 10000 : 3000 + Math.random() * 5000;
+        const readingBase = isLongPause ? 15000 : 5000;
+        const readingDelay = isLongPause
+          ? sampleHeavyTailMs(readingBase, { minMs: 10000, maxMs: 20000 })
+          : sampleHeavyTailMs(readingBase, { minMs: 3000, maxMs: 8000 });
         if (isLongPause) {
           log.debug('Behavior: long pause');
         }
@@ -266,10 +325,11 @@ export class ExploreService {
         const feeds = await this.getFeeds(page);
         // A3（blue-team）：提取 feed 即绑定 xsecToken 来源账号，不等到真正点赞/评论才 bind，
         // 确保「探索式提取」与 search/list_feeds 一致地 fail-closed 占用来源。
-        bindFeedXsecTokens(feeds, accountId);
+        await bindFeedXsecTokens(feeds, accountId);
+        const videoRatio = computeFeedVideoRatio(feeds);
         const newFeeds = feeds.filter((f) => {
           if (seenInSession.has(f.id)) return false;
-          if (f.noteCard.type === 'video') return false; // 跳过视频
+          if (!allowVideo && f.noteCard.type === 'video') return false;
           return true;
         });
 
@@ -291,21 +351,24 @@ export class ExploreService {
           );
         }
 
-        log.debug('Feeds after scroll', { total: feeds.length, new: newFeeds.length });
+        log.debug('Feeds after scroll', { total: feeds.length, new: newFeeds.length, videoRatio, allowVideo });
 
-        // === 决定是否打开笔记 ===
-        // 连续跳过多轮后概率递增（兜底逻辑）
-        const adjustedOpenRate = Math.min(openRate + skippedRounds * 0.1, 0.9);
+        // B4：打开率冷却/衰减
+        const effectiveOpenRate = computeEffectiveOpenRate(openRate, openRateState);
+        let openedThisRound = false;
 
-        if (Math.random() < adjustedOpenRate) {
-          // 获取当前 DOM 中可见的笔记 ID
+        if (Math.random() < effectiveOpenRate) {
           const visibleIds = await this.getVisibleNoteIds(page);
           log.debug('Visible notes in DOM', { count: visibleIds.size });
 
-          // 从可见笔记中筛选：排除会话内已打开、视频
-          let candidateFeeds = feeds.filter(
-            (f) => visibleIds.has(f.id) && !openedInSession.has(f.id) && f.noteCard.type !== 'video',
-          );
+          const wantVideoContact = allowVideo && shouldContactVideoFeed(videoRatio, Math.random());
+          // B4：始终按 wantVideoContact 过滤；无匹配类型时本轮不打开（禁止 fallback 打穿视频模型）
+          let candidateFeeds = filterExploreOpenCandidates(feeds, {
+            visibleIds,
+            openedInSession,
+            allowVideo,
+            wantVideoContact,
+          });
 
           // 跨会话去重：排除之前互动过的笔记
           if (deduplicate && candidateFeeds.length > 0) {
@@ -323,7 +386,7 @@ export class ExploreService {
 
           if (candidateFeeds.length === 0) {
             log.debug('No candidate feeds to open');
-            skippedRounds++;
+            openRateState = updateOpenRateStateAfterRound(openRateState, false);
             continue;
           }
 
@@ -338,10 +401,16 @@ export class ExploreService {
           const selection = await selectNoteToOpen(accountInfo, noteBriefs, interests);
 
           if (selection.noteId) {
-            skippedRounds = 0; // 重置跳过计数
+            openedThisRound = true;
             const selectedFeed = candidateFeeds.find((f) => f.id === selection.noteId);
             if (selectedFeed) {
-              log.info('AI selected note', { noteId: selection.noteId, reason: selection.reason });
+              const isVideoNote = selectedFeed.noteCard.type === 'video';
+              log.info('AI selected note', {
+                noteId: selection.noteId,
+                reason: selection.reason,
+                isVideo: isVideoNote,
+                videoRatio,
+              });
 
               // 标记为已打开
               openedInSession.add(selectedFeed.id);
@@ -359,18 +428,21 @@ export class ExploreService {
               const opened = await this.openNoteModal(page, selectedFeed.id);
 
               if (opened) {
-                // 15% 概率快速关掉（假装不感兴趣）
-                if (Math.random() < 0.15) {
+                // B4：视频必须 dwell，禁止打开即关凑 opened 统计。
+                // quick-close 不得 continue——须落到下方 updateOpenRateStateAfterRound / updateSessionStats。
+                const quickClose = !isVideoNote && Math.random() < 0.15;
+                if (quickClose) {
                   log.debug('Behavior: quick close (not interested)');
-                  await sleep(800 + Math.random() * 700);
+                  await heavyTailDelay(1150, { minMs: 800, maxMs: 1500 });
                   await this.closeModal(page);
-                  await sleep(500 + Math.random() * 500);
-                  continue;
-                }
-
-                // 正常阅读：3-8 秒，10% 概率长时间 10-20 秒
+                  await heavyTailDelay(750, { minMs: 500, maxMs: 1000 });
+                } else {
+                // 正常阅读：基准 5s 重尾；10% 深度阅读以 15s 为中位
                 const isDeepRead = Math.random() < 0.1;
-                const modalReadDelay = isDeepRead ? 10000 + Math.random() * 10000 : 3000 + Math.random() * 5000;
+                const modalReadBase = isDeepRead ? 15000 : 5000;
+                const modalReadDelay = isDeepRead
+                  ? sampleHeavyTailMs(modalReadBase, { minMs: 10000, maxMs: 20000 })
+                  : sampleHeavyTailMs(modalReadBase, { minMs: 3000, maxMs: 8000 });
                 if (isDeepRead) {
                   log.debug('Behavior: deep reading');
                 }
@@ -508,6 +580,7 @@ export class ExploreService {
                       action: 'comment',
                       dedupKey,
                       xsecToken: selectedFeed.xsecToken,
+                      nearText: commentText,
                     });
                     if (!resv.allow) {
                       log.warn('explore 内部评论被共现守卫拦截', { noteId: selectedFeed.id, reason: resv.reason });
@@ -536,6 +609,7 @@ export class ExploreService {
                           success: commented,
                           dedupKey,
                           xsecToken: selectedFeed.xsecToken,
+                          nearText: commentText,
                           reservation: resv.reservation,
                         });
                       }
@@ -544,18 +618,18 @@ export class ExploreService {
                   }
                 }
 
-                // 关闭 modal，随机停顿
+                // 关闭 modal，随机停顿（B1 重尾）
                 await this.closeModal(page);
-                await sleep(800 + Math.random() * 1500);
+                await heavyTailDelay(1500, { minMs: 800, maxMs: 2300 });
+                } // end else non-quick-close
               }
             }
           } else {
             log.debug('AI chose not to open any note', { reason: selection.reason });
-            skippedRounds++;
           }
-        } else {
-          skippedRounds++;
         }
+
+        openRateState = updateOpenRateStateAfterRound(openRateState, openedThisRound);
 
         // 更新统计
         db.explore.updateSessionStats(sessionId, {
@@ -624,24 +698,12 @@ export class ExploreService {
   }
 
   /**
-   * 模拟人类滚动
-   */
-  private async humanScroll(page: Page): Promise<void> {
-    const distance = 300 + Math.random() * 400;
-    const steps = 5 + Math.floor(Math.random() * 5);
-
-    for (let i = 0; i < steps; i++) {
-      await page.mouse.wheel(0, distance / steps);
-      await sleep(20 + Math.random() * 60);
-    }
-  }
-
-  /**
    * 从页面获取 feeds
    */
   private async getFeeds(page: Page): Promise<FeedItem[]> {
     try {
-      const feedsJson = await page.evaluate(
+      const feedsJson = await evalMainState(
+        page,
         () => {
           const state = (window as any).__INITIAL_STATE__;
           if (state?.feed?.feeds) {
@@ -654,7 +716,6 @@ export class ExploreService {
           return '[]';
         },
         null,
-        false,
       );
       return JSON.parse(feedsJson);
     } catch (error) {
@@ -701,12 +762,12 @@ export class ExploreService {
       }
 
       // 先滚动到可见区域
-      await cover.scrollIntoViewIfNeeded();
-      await jitteredSleep(300);
+      await wheelApproachElement(page, cover);
+      await heavyTailDelay(300, { minMs: 180, maxMs: 420 });
 
-      // 真实鼠标点击（force 跳过可操作性断言但仍是 CDP 真实事件，isTrusted=true，规避 el.click() 的 isTrusted=false）
-      await cover.click({ force: true });
-      await jitteredSleep(500);
+      // B2：Bezier 轨迹点击；封面可能被遮罩时才 allowForceFallback（默认禁 force）
+      await clickWithTrajectory(page, cover, { allowForceFallback: true });
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
 
       // 等待 modal 出现
       await page.waitForSelector(EXPLORE_SELECTORS.noteContainer, { timeout: 5000 });
@@ -723,7 +784,8 @@ export class ExploreService {
    */
   private async getNoteDetailFromModal(page: Page, noteId: string): Promise<NoteDetail | null> {
     try {
-      const detailJson = await page.evaluate(
+      const detailJson = await evalMainState(
+        page,
         (id) => {
           const state = (window as any).__INITIAL_STATE__;
           const noteMap = state?.note?.noteDetailMap;
@@ -752,7 +814,6 @@ export class ExploreService {
           return null;
         },
         noteId,
-        false,
       );
 
       return detailJson ? JSON.parse(detailJson) : null;
@@ -786,8 +847,8 @@ export class ExploreService {
       }
 
       // 点赞
-      await likeBtn.click();
-      await jitteredSleep(500);
+      await clickWithTrajectory(page, likeBtn);
+      await rateLimitedSleep(REQUEST_INTERVAL);
       return true;
     } catch (error) {
       log.warn('Failed to like in modal', { error });
@@ -829,8 +890,8 @@ export class ExploreService {
       }
 
       // 点赞
-      await likeBtn.click();
-      await jitteredSleep(500);
+      await clickWithTrajectory(page, likeBtn);
+      await rateLimitedSleep(REQUEST_INTERVAL);
       log.debug('Liked comment', { commentId });
       return true;
     } catch (error) {
@@ -851,8 +912,8 @@ export class ExploreService {
         return false;
       }
 
-      await inputArea.click();
-      await jitteredSleep(500);
+      await clickWithTrajectory(page, inputArea);
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
 
       // 输入评论内容
       const commentInput = await page.$(EXPLORE_SELECTORS.commentInput);
@@ -861,10 +922,10 @@ export class ExploreService {
         return false;
       }
 
-      await commentInput.click();
-      await typeLikeHuman(page, content);
+      await clickWithTrajectory(page, commentInput);
+      await typeLikeHuman(page, content, exploreCommentTypingOptions(content));
 
-      await jitteredSleep(500);
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
 
       // 点击提交按钮
       const submitBtn = await page.$(EXPLORE_SELECTORS.commentSubmit);
@@ -873,8 +934,8 @@ export class ExploreService {
         return false;
       }
 
-      await submitBtn.click();
-      await jitteredSleep(2000);
+      await clickWithTrajectory(page, submitBtn);
+      await rateLimitedSleep(REQUEST_INTERVAL);
       return true;
     } catch (error) {
       log.warn('Failed to comment in modal', { error });
@@ -890,14 +951,14 @@ export class ExploreService {
       // 点击关闭按钮
       const closeBtn = await page.$(EXPLORE_SELECTORS.closeButton);
       if (closeBtn) {
-        await closeBtn.click();
-        await jitteredSleep(500);
+        await clickWithTrajectory(page, closeBtn);
+        await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
         return;
       }
 
       // 备选：按 ESC
       await page.keyboard.press('Escape');
-      await jitteredSleep(500);
+      await heavyTailDelay(500, { minMs: 300, maxMs: 700 });
     } catch (error) {
       log.warn('Failed to close modal', { error });
       // 尝试按 ESC

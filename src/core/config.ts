@@ -43,6 +43,31 @@ export function parseXsecMode(value: string | undefined, defaultValue: 'block' |
   return defaultValue;
 }
 
+/** B5：键入模式。`direct`=码点 keyboard.type；`ime`=请求 composition（当前 wontfix，降级 direct） */
+export type TypingMode = 'direct' | 'ime';
+
+export function parseTypingMode(value: string | undefined, defaultValue: TypingMode = 'direct'): TypingMode {
+  if (value === undefined) return defaultValue;
+  const v = value.toLowerCase().trim();
+  if (v === 'direct' || v === 'codepoint' || v === 'keyboard') return 'direct';
+  if (v === 'ime' || v === 'composition') return 'ime';
+  return defaultValue;
+}
+
+/** D1：Interact 进帖入口 */
+export type InteractEntryMode = 'direct' | 'feed';
+
+export function parseInteractEntryMode(
+  value: string | undefined,
+  defaultValue: InteractEntryMode = 'direct',
+): InteractEntryMode {
+  if (value === undefined) return defaultValue;
+  const v = value.toLowerCase().trim();
+  if (v === 'feed' || v === 'organic') return 'feed';
+  if (v === 'direct' || v === 'goto') return 'direct';
+  return defaultValue;
+}
+
 /**
  * 解析日志级别
  */
@@ -119,6 +144,17 @@ export const config = {
     requestInterval: parseInteger(process.env.XHS_MCP_REQUEST_INTERVAL, 2000),
     /** 操作完成后是否保持浏览器打开 (XHS_MCP_KEEP_OPEN)，默认 false */
     keepOpen: parseBoolean(process.env.XHS_MCP_KEEP_OPEN, false),
+    /**
+     * 容器/CI 回滚：为 Chrome 追加 --no-sandbox / --disable-setuid-sandbox（C1）。
+     * 默认 false（桌面/macOS 保留 sandbox）；Docker/root 无权限时需显式 true。
+     */
+    noSandbox: parseBoolean(process.env.XHS_MCP_BROWSER_NO_SANDBOX, false),
+    /**
+     * C2 登录是否允许走 headless（XHS_MCP_ALLOW_HEADLESS_LOGIN）。
+     * 默认 false：登录忽略全局 headless，强制 headful + viewport:null。
+     * 设为 true 时登录可沿用 config.browser.headless（迁移/CI 逃生口）。
+     */
+    allowHeadlessLogin: parseBoolean(process.env.XHS_MCP_ALLOW_HEADLESS_LOGIN, false),
   },
 
   /**
@@ -225,6 +261,105 @@ export const config = {
     proxyRequired: {
       mode: parseProxyRequiredMode(process.env.XHS_MCP_AD_PROXY_REQUIRED),
     },
+    /**
+     * C8：代理会话下 WebRTC ICE 宿主 IP 缓解（Preferences webrtc.ip_handling_policy）。
+     * 回滚：`XHS_MCP_AD_WEBRTC_MITIGATION=false`
+     */
+    webrtc: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_WEBRTC_MITIGATION, true),
+    },
+    /**
+     * A5 共现守卫持久化：committed 去重键 / xsec token 哈希落库，进程重启后仍拦截。
+     * - enabled：`XHS_MCP_AD_PERSIST`（默认 true；设 false 仅内存）
+     * - ttlMs：行过期时间，默认 30 天；过期在 load/写入时 GC
+     */
+    persist: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_PERSIST, true),
+      ttlMs: parseInteger(process.env.XHS_MCP_AD_PERSIST_TTL_MS, 30 * 24 * 60 * 60 * 1000),
+    },
+    /**
+     * B1 行为重尾延迟：打字/阅读/滚动步间/Interact dwell 用对数正态，打破均匀时钟。
+     * 回滚：`XHS_MCP_AD_HEAVY_TAIL=false`（退回窄带均匀抖动）。
+     * 功能等待（发布轮询、上传）继续用 `jitteredSleep`；限流继续用 `rateLimitedSleep`。
+     */
+    heavyTail: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_HEAVY_TAIL, true),
+      /** 对数正态 σ；越大右尾越重 */
+      sigma: parseFloat(process.env.XHS_MCP_AD_HEAVY_TAIL_SIGMA || '') || 0.45,
+      /** 相对 base 的硬上限倍数，防止极端长停 */
+      maxMultiplier: parseFloat(process.env.XHS_MCP_AD_HEAVY_TAIL_MAX_MULT || '') || 8,
+    },
+    /**
+     * B2 指针轨迹点击：Bezier 多步 move + hover dwell；默认禁 force。
+     * 回滚：`XHS_MCP_AD_TRAJECTORY=false` → 直点。
+     */
+    trajectory: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_TRAJECTORY, true),
+      /** DoD：启用时轨迹步数下限（建议 ≥5） */
+      minSteps: parseInteger(process.env.XHS_MCP_AD_TRAJECTORY_MIN_STEPS, 5),
+    },
+    /**
+     * B3 Interact 会话化：goto 后重尾 dwell → ≥1 阅读 scroll → 轨迹 click → 动作后停留。
+     * 回滚：`XHS_MCP_AD_INTERACT_SESSION=false` → 跳过入页阅读/滚动与加长后停留（仍保留 B1/B2）。
+     */
+    interactSession: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_INTERACT_SESSION, true),
+      /** 入页后、动作前阅读 dwell 基准 ms */
+      preDwellMs: parseInteger(process.env.XHS_MCP_AD_INTERACT_PRE_DWELL_MS, 1500),
+      /** 动作后停留基准 ms（DoD 可观测 ≥ 该配置的合理采样下限） */
+      postStayMs: parseInteger(process.env.XHS_MCP_AD_INTERACT_POST_STAY_MS, 1200),
+      /** 最少阅读滚动次数（humanScroll / wheel） */
+      minReadScrolls: parseInteger(process.env.XHS_MCP_AD_INTERACT_MIN_SCROLLS, 1),
+    },
+    /**
+     * B4 Explore 视频接触：按 feed 视频占比打开并 dwell，不再硬跳过全部视频。
+     * 回滚：`XHS_MCP_AD_EXPLORE_ALLOW_VIDEO=false` → 退回非视频路径（与旧行为一致）。
+     */
+    explore: {
+      allowVideo: parseBoolean(process.env.XHS_MCP_AD_EXPLORE_ALLOW_VIDEO, true),
+    },
+    /**
+     * B7 alreadyDone 短会话：已赞/已藏等无需点击时，跳过加长 post-stay，改用短 dwell。
+     * 回滚：`XHS_MCP_AD_ALREADY_DONE_SHORT=false` → 与真实互动相同 post-stay。
+     */
+    alreadyDoneShort: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_ALREADY_DONE_SHORT, true),
+      /** alreadyDone 路径 post-stay 基准 ms（默认 ~400，远短于 interactSession.postStayMs） */
+      postStayMs: parseInteger(process.env.XHS_MCP_AD_ALREADY_DONE_POST_STAY_MS, 400),
+    },
+    /**
+     * B7 导航重试间隔：失败重载用重尾采样，避免 3–5s 均匀连刷同 URL。
+     * 回滚：`XHS_MCP_AD_NAV_RETRY_HEAVY_TAIL=false` → 均匀 [3000, 5000] ms。
+     */
+    navRetryHeavyTail: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_NAV_RETRY_HEAVY_TAIL, true),
+    },
+    /**
+     * B5 键入 / IME 策略。
+     * - `direct`（默认）：按码点 `keyboard.type` + revise/间隔方差（可信 CDP Input）
+     * - `ime`：请求真实 composition；**当前 wontfix**，运行时降级为 `direct` 并 warn 一次
+     * 环境变量：`XHS_MCP_AD_TYPING_MODE=direct|ime`
+     * 详见 `docs/blue-team/B5-IME.md`
+     */
+    typing: {
+      mode: parseTypingMode(process.env.XHS_MCP_AD_TYPING_MODE, 'direct'),
+    },
+    /**
+     * D1 Interact 进帖入口全局默认（单次 sessionOpts.entry / 工具参数可覆盖）。
+     * 环境变量：`XHS_MCP_AD_INTERACT_ENTRY=direct|feed`（默认 direct）
+     */
+    interactEntry: {
+      default: parseInteractEntryMode(process.env.XHS_MCP_AD_INTERACT_ENTRY, 'direct'),
+    },
+    /**
+     * D2 评论文本近邻去重（simhash）；精确 SHA 键仍保留。
+     * 回滚：`XHS_MCP_AD_NEAR_DEDUP=false`
+     */
+    nearDedup: {
+      enabled: parseBoolean(process.env.XHS_MCP_AD_NEAR_DEDUP, true),
+      /** Hamming 距离阈值（默认 3） */
+      threshold: parseInteger(process.env.XHS_MCP_AD_NEAR_DEDUP_THRESHOLD, 3),
+    },
   },
 
   /**
@@ -270,6 +405,30 @@ export const config = {
     },
   },
 } as const;
+
+/**
+ * C2：解析登录会话是否应使用 headless。
+ * allowHeadlessLogin=false（默认）时强制 headful，忽略全局 XHS_MCP_HEADLESS。
+ */
+export function resolveLoginHeadless(
+  headless: boolean = config.browser.headless,
+  allowHeadlessLogin: boolean = config.browser.allowHeadlessLogin,
+): boolean {
+  if (allowHeadlessLogin) return headless;
+  return false;
+}
+
+/**
+ * C2：headful 启动前检查图形环境；Linux 无 DISPLAY/WAYLAND 时 fail-closed。
+ */
+export function assertDisplayAvailableForHeadful(): void {
+  if (process.platform !== 'linux') return;
+  if (process.env.DISPLAY?.trim() || process.env.WAYLAND_DISPLAY?.trim()) return;
+  throw new Error(
+    'Headful browser required for login but no DISPLAY (or WAYLAND_DISPLAY) is set. ' +
+      'Use Xvfb (e.g. xvfb-run bun run start) or set XHS_MCP_ALLOW_HEADLESS_LOGIN=true to allow headless login.',
+  );
+}
 
 /**
  * 派生路径（基于 data.dir）

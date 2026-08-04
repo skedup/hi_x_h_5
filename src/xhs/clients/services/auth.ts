@@ -23,7 +23,7 @@ export class AuthService {
    * 如果已登录，会从 __INITIAL_STATE__ 中提取用户信息。
    *
    * 环境变量控制：
-   * - XHS_MCP_HEADLESS=false：显示浏览器窗口
+   * - XHS_MCP_HEADLESS：默认 false（有头）；true 为无头
    * - XHS_MCP_KEEP_OPEN=true：操作完成后不关闭页面
    *
    * @returns 登录状态、消息和用户信息（如果已登录）

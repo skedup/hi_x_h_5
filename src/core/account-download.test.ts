@@ -1,9 +1,10 @@
 /**
- * @fileoverview 蓝军 #8 / #9 回归测试：Fetch Metadata 一致推导、出口统一。
- * @module tools/download.test
+ * @fileoverview 蓝军 #8 / #9 / C4：Fetch Metadata 与账号下载出口。
+ * @module core/account-download.test
  */
+import './logger.js';
 import { describe, it, expect } from 'bun:test';
-import { downloadFile } from './download.js';
+import { downloadFile } from './account-download.js';
 
 function makeApiRequest() {
   const calls: { url: string; opts: any }[] = [];
@@ -64,14 +65,12 @@ describe('蓝军 #9 出口统一', () => {
   });
 
   it('未提供 apiRequest（无账号会话）时回退直连，不抛错', async () => {
-    // 仅验证函数对 null 入参不抛类型错误；真实直连由集成环境覆盖
     let threw = false;
     try {
-      // 用明显非法的 URL 触发回退路径内的网络错误但不应因 apiRequest 为 null 崩溃
       await downloadFile('not-a-real-url', '/tmp/_xhs_dl_null.jpg', null, { resourceType: 'image' });
     } catch {
       threw = true;
     }
-    expect(threw).toBe(true); // 因 URL 非法失败，而非因 apiRequest 为 null
+    expect(threw).toBe(true);
   });
 });

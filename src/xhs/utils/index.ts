@@ -8,11 +8,15 @@ import fs from 'fs-extra';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import type { Page } from 'patchright';
-import { paths } from '../../core/config.js';
+import type { Page, ElementHandle, Locator, APIRequestContext } from 'patchright';
+import { config, paths } from '../../core/config.js';
+import { createLogger } from '../../core/logger.js';
+import { downloadFile } from '../../core/account-download.js';
+import { evalDom } from './page-eval.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const log = createLogger('xhs-utils');
 
 /**
  * Sleep for a specified duration.
@@ -53,6 +57,317 @@ export async function jitteredSleep(base: number, ratio = 0.4): Promise<void> {
  */
 export async function rateLimitedSleep(base: number, ratio = 0.4): Promise<void> {
   await sleep(Math.round(base * (1 + Math.random() * ratio)));
+}
+
+/**
+ * 标准正态 N(0,1)（Box-Muller）。
+ */
+function randomNormal(): number {
+  let u = 0;
+  let v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+export interface HeavyTailDelayOptions {
+  /** 对数正态 σ，默认取 config.antiDetect.heavyTail.sigma */
+  sigma?: number;
+  /** 下限毫秒（含） */
+  minMs?: number;
+  /** 上限毫秒（含）；默认 base * maxMultiplier */
+  maxMs?: number;
+}
+
+/**
+ * 采样行为重尾延迟毫秒数：中位数约等于 `base` 的对数正态，右尾偶发更长停顿。
+ * `XHS_MCP_AD_HEAVY_TAIL=false` 时：有 min/max 则在该区间均匀；否则 [0.8base, 1.2base]。
+ * **仅**用于拟人节奏；功能等待用 `jitteredSleep`，限流用 `rateLimitedSleep`。
+ */
+export function sampleHeavyTailMs(base: number, options: HeavyTailDelayOptions = {}): number {
+  const ht = config.antiDetect.heavyTail;
+  const floor = Math.max(1, Math.round(options.minMs ?? 1));
+  const cap = Math.max(
+    floor,
+    Math.round(options.maxMs ?? Math.max(base, 1) * (ht?.maxMultiplier ?? 8)),
+  );
+  const b = Math.max(1, base);
+
+  if (!ht?.enabled) {
+    // 关闭时：若调用方给了 [minMs, maxMs] 则在该区间均匀采样（对齐迁移前分布）；
+    // 否则退回 base 的 ±20% 窄带。
+    if (options.minMs !== undefined && options.maxMs !== undefined) {
+      const lo = Math.max(1, Math.round(options.minMs));
+      const hi = Math.max(lo, Math.round(options.maxMs));
+      return Math.floor(lo + Math.random() * (hi - lo + 1));
+    }
+    const lo = Math.max(floor, Math.round(b * 0.8));
+    const hi = Math.min(cap, Math.max(lo, Math.round(b * 1.2)));
+    return Math.floor(lo + Math.random() * (hi - lo + 1));
+  }
+
+  const sigma = options.sigma ?? ht.sigma ?? 0.45;
+  const mu = Math.log(b);
+  const sample = Math.exp(mu + sigma * randomNormal());
+  return Math.max(floor, Math.min(cap, Math.round(sample)));
+}
+
+/**
+ * 行为重尾等待（B1）。见 `sampleHeavyTailMs`。
+ */
+export async function heavyTailDelay(base: number, options?: HeavyTailDelayOptions): Promise<void> {
+  await sleep(sampleHeavyTailMs(base, options));
+}
+
+/**
+ * 在 [minMs, maxMs] 内做重尾采样（几何均值为中位近似）。
+ */
+export async function heavyTailDelayBetween(minMs: number, maxMs: number): Promise<void> {
+  const lo = Math.max(1, Math.min(minMs, maxMs));
+  const hi = Math.max(lo, Math.max(minMs, maxMs));
+  const base = Math.sqrt(lo * hi);
+  await heavyTailDelay(base, { minMs: lo, maxMs: hi });
+}
+
+/** B2：最近一次轨迹点击元数据（测辅 / DoD 可观测） */
+export interface TrajectoryClickMeta {
+  steps: number;
+  usedForce: boolean;
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+  disabled: boolean;
+}
+
+let lastTrajectoryMeta: TrajectoryClickMeta | null = null;
+
+/** 读取最近一次 `clickWithTrajectory` 元数据（测试用） */
+export function getLastTrajectoryMeta(): TrajectoryClickMeta | null {
+  return lastTrajectoryMeta;
+}
+
+export interface ClickWithTrajectoryOptions {
+  /** 轨迹步数；启用时强制 ≥ minSteps（默认 5） */
+  steps?: number;
+  /** 最小步数下限（默认 config / 5） */
+  minSteps?: number;
+  /** 到达后 hover 停顿基准 ms（默认 80，走重尾） */
+  hoverDwellMs?: number;
+  /**
+   * 仅当常规轨迹点击失败时允许 force 直点（会 warn）。
+   * 默认 false——禁止默认 force。
+   */
+  allowForceFallback?: boolean;
+  button?: 'left' | 'right' | 'middle';
+}
+
+function cubicBezier(
+  t: number,
+  p0: number,
+  p1: number,
+  p2: number,
+  p3: number,
+): number {
+  const u = 1 - t;
+  return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
+}
+
+/** 进程内记录上次鼠标位置，供下一次轨迹起点（无则用视口随机角落） */
+let lastMousePos: { x: number; y: number } | null = null;
+
+/** ElementHandle / Locator / 视口坐标 */
+export type ClickTarget = ElementHandle | Locator | { x: number; y: number };
+
+function isClickableTarget(
+  target: ClickTarget,
+): target is ElementHandle | Locator {
+  return typeof (target as ElementHandle | Locator).boundingBox === 'function';
+}
+
+/** 对齐 Playwright click：先滚入视口再取坐标，避免屏外/过期 box */
+async function ensureTargetInView(target: ClickTarget): Promise<void> {
+  if (!isClickableTarget(target)) return;
+  const scroll = (target as ElementHandle | Locator).scrollIntoViewIfNeeded;
+  if (typeof scroll === 'function') {
+    await scroll.call(target).catch(() => {});
+  }
+}
+
+async function resolveClickPoint(
+  target: ClickTarget,
+): Promise<{ x: number; y: number } | null> {
+  if (isClickableTarget(target)) {
+    const box = await target.boundingBox();
+    if (!box || box.width <= 0 || box.height <= 0) return null;
+    const ox = (Math.random() - 0.5) * box.width * 0.4;
+    const oy = (Math.random() - 0.5) * box.height * 0.4;
+    return {
+      x: box.x + box.width / 2 + ox,
+      y: box.y + box.height / 2 + oy,
+    };
+  }
+  return { x: target.x, y: target.y };
+}
+
+/**
+ * 落点是否打在目标（或其子节点）上；被遮罩时 elementFromPoint 会指向上层。
+ * 检测失败时返回 null（调用方勿据此 force）。
+ */
+async function isPointHittingTarget(
+  target: ElementHandle | Locator,
+  x: number,
+  y: number,
+): Promise<boolean | null> {
+  try {
+    return await (target as Locator).evaluate(
+      (el, coords: { x: number; y: number }) => {
+        const top = document.elementFromPoint(coords.x, coords.y);
+        if (!top) return false;
+        return el === top || el.contains(top) || top.contains(el);
+      },
+      { x, y },
+    );
+  } catch {
+    return null;
+  }
+}
+
+function forceFallbackMeta(
+  steps: number,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+): TrajectoryClickMeta {
+  const meta: TrajectoryClickMeta = {
+    steps,
+    usedForce: true,
+    from,
+    to,
+    disabled: false,
+  };
+  lastTrajectoryMeta = meta;
+  return meta;
+}
+
+/**
+ * B2：多步 Bezier 指针轨迹 + hover dwell 后点击（Fitts 风格步数）。
+ * DoD：启用时 `steps ≥ minSteps`（默认 5），`getLastTrajectoryMeta()` 可观测。
+ * 默认禁 force；仅 `allowForceFallback` 在无 box / 遮罩命中失败 / mouse 抛错时 force+warn。
+ * 回滚：`XHS_MCP_AD_TRAJECTORY=false` → 元素/坐标直点。
+ */
+export async function clickWithTrajectory(
+  page: Page,
+  target: ClickTarget,
+  options: ClickWithTrajectoryOptions = {},
+): Promise<TrajectoryClickMeta> {
+  const traj = config.antiDetect.trajectory;
+  const minSteps = Math.max(1, options.minSteps ?? traj?.minSteps ?? 5);
+  const button = options.button ?? 'left';
+
+  await ensureTargetInView(target);
+  const point = await resolveClickPoint(target);
+
+  if (!traj?.enabled) {
+    if (isClickableTarget(target)) {
+      // 直点走 Playwright click（自带 actionability / 再滚一次），比裸坐标更稳
+      await target.click({ button });
+    } else if (point) {
+      await page.mouse.click(point.x, point.y, { button });
+      lastMousePos = point;
+    } else {
+      throw new Error('clickWithTrajectory: invalid target when trajectory disabled');
+    }
+    const meta: TrajectoryClickMeta = {
+      steps: 1,
+      usedForce: false,
+      from: lastMousePos ?? { x: 0, y: 0 },
+      to: point ?? { x: 0, y: 0 },
+      disabled: true,
+    };
+    lastTrajectoryMeta = meta;
+    return meta;
+  }
+
+  if (!point) {
+    if (options.allowForceFallback && isClickableTarget(target)) {
+      log.warn('B2 轨迹：无法取得 boundingBox，force fallback');
+      await target.click({ force: true, button });
+      return forceFallbackMeta(0, lastMousePos ?? { x: 0, y: 0 }, { x: 0, y: 0 });
+    }
+    throw new Error('clickWithTrajectory: element has no bounding box');
+  }
+
+  const viewport = page.viewportSize() ?? { width: 1280, height: 800 };
+  const from = lastMousePos ?? {
+    x: randomBetween(40, Math.max(80, viewport.width * 0.25)),
+    y: randomBetween(40, Math.max(80, viewport.height * 0.25)),
+  };
+
+  // Fitts：距离越大步数略增，但不少于 minSteps
+  const dist = Math.hypot(point.x - from.x, point.y - from.y);
+  const fittsSteps = Math.ceil(Math.log2(dist / 50 + 1) * 3);
+  const steps = Math.max(minSteps, options.steps ?? fittsSteps);
+
+  // 三次 Bezier 控制点（轻微弧线，避免直线插值指纹）
+  const cx1 = from.x + (point.x - from.x) * (0.25 + Math.random() * 0.2) + (Math.random() - 0.5) * dist * 0.25;
+  const cy1 = from.y + (point.y - from.y) * (0.1 + Math.random() * 0.2) + (Math.random() - 0.5) * dist * 0.3;
+  const cx2 = from.x + (point.x - from.x) * (0.55 + Math.random() * 0.25) + (Math.random() - 0.5) * dist * 0.2;
+  const cy2 = from.y + (point.y - from.y) * (0.6 + Math.random() * 0.25) + (Math.random() - 0.5) * dist * 0.25;
+
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const x = cubicBezier(t, from.x, cx1, cx2, point.x);
+    const y = cubicBezier(t, from.y, cy1, cy2, point.y);
+    await page.mouse.move(x, y);
+    if (i < steps) {
+      await heavyTailDelay(12, { minMs: 4, maxMs: 28 });
+    }
+  }
+
+  const hoverBase = options.hoverDwellMs ?? 80;
+  await heavyTailDelay(hoverBase, {
+    minMs: Math.max(20, Math.round(hoverBase * 0.5)),
+    maxMs: Math.round(hoverBase * 2.5),
+  });
+
+  // 遮罩命中检测须在 mouse down 之前：否则会先点到上层再「成功」
+  if (isClickableTarget(target)) {
+    const hitting = await isPointHittingTarget(target, point.x, point.y);
+    if (hitting === false) {
+      if (options.allowForceFallback) {
+        log.warn('B2 轨迹：落点被遮罩，force fallback');
+        await target.click({ force: true, button });
+        lastMousePos = point;
+        return forceFallbackMeta(steps, from, point);
+      }
+      log.warn('B2 轨迹：落点可能被遮罩，仍尝试 mouse 点击（未开 allowForceFallback）');
+    }
+  }
+
+  try {
+    await page.mouse.down({ button });
+    await heavyTailDelay(40, { minMs: 15, maxMs: 90 });
+    await page.mouse.up({ button });
+  } catch (err) {
+    if (options.allowForceFallback && isClickableTarget(target)) {
+      log.warn('B2 轨迹 mouse 点击失败，force fallback', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      await target.click({ force: true, button });
+      lastMousePos = point;
+      return forceFallbackMeta(steps, from, point);
+    }
+    throw err;
+  }
+
+  lastMousePos = point;
+  const meta: TrajectoryClickMeta = {
+    steps,
+    usedForce: false,
+    from,
+    to: point,
+    disabled: false,
+  };
+  lastTrajectoryMeta = meta;
+  return meta;
 }
 
 /**
@@ -234,16 +549,51 @@ export interface TypeLikeHumanOptions {
    * 调用方须在 finally 中释放页面操作与账户锁。
    */
   signal?: AbortSignal;
+  /**
+   * B5：覆盖全局 `config.antiDetect.typing.mode`。
+   * `ime` 当前 wontfix，降级为 direct（见 docs/blue-team/B5-IME.md）。
+   */
+  mode?: 'direct' | 'ime';
+}
+
+/** B5：进程内仅 warn 一次，避免每条评论刷屏 */
+let imeWontfixWarned = false;
+
+/**
+ * 解析有效键入模式（选项覆盖 config）。
+ * `ime` → 返回 `direct` 并可选 warn（composition 为 wontfix）。
+ */
+export function resolveTypingMode(
+  override?: 'direct' | 'ime',
+  warn = true,
+): 'direct' {
+  const requested = override ?? config.antiDetect.typing?.mode ?? 'direct';
+  if (requested === 'ime') {
+    if (warn && !imeWontfixWarned) {
+      imeWontfixWarned = true;
+      log.warn(
+        'B5 IME composition 为 wontfix：可信 CDP Input 无法模拟真实中文 IME composition 事件流，已降级为 direct（码点 keyboard.type + revise）',
+        { requested, see: 'docs/blue-team/B5-IME.md' },
+      );
+    }
+  }
+  return 'direct';
+}
+
+/** 测试辅助：重置 IME wontfix warn 闸门 */
+export function resetImeWontfixWarnGate(): void {
+  imeWontfixWarned = false;
 }
 
 /**
- * 拟人化逐字输入（A2）：
+ * 拟人化逐字输入（A2 / B5）：
  * - 每个字符之间加入可变延迟与偶发长停顿，消除无 delay keyboard.type 的
  *   亚毫秒输入突发（蓝军报告 04 §3.2/§3.3），单字符间隔 CV > 0。
  * - 按码点切分（Array.from），正确处理代理对/emoji。
  * - 偶发"删除/修订"：回删若干字符后重输（可信 Backspace），满足 A2 DoD
- *   的"存在删除/修订"；中文路径无 composition 事件属平台已知限制，经可信
- *   通道无法模拟 IME composition，故 DoD 收缩为可测量的"删除/修订 + 间隔方差"。
+ *   的"存在删除/修订"。
+ * - B5：`typing.mode=ime` 为书面 wontfix——经可信通道无法模拟 IME composition，
+ *   运行时降级 `direct`；DoD 收缩为可测量的"删除/修订 + 间隔方差"。见 B5-IME.md。
  * - 支持取消（AbortSignal）与软上限（maxDurationMs），避免长文阻塞账户锁。
  * 全程走真实键盘通道（isTrusted=true 的可信事件），仅把节奏拟人化。
  */
@@ -252,6 +602,9 @@ export async function typeLikeHuman(
   text: string,
   options?: TypeLikeHumanOptions,
 ): Promise<void> {
+  // B5：解析模式（ime → direct + 一次性 warn）
+  resolveTypingMode(options?.mode);
+
   const minDelay = options?.minDelay ?? 45;
   const maxDelay = options?.maxDelay ?? 170;
   const pauseChance = options?.pauseChance ?? 0.05;
@@ -288,7 +641,7 @@ export async function typeLikeHuman(
       throw new DOMException('typeLikeHuman timeout: maxDurationMs exceeded, input incomplete', 'AbortError');
     }
     await page.keyboard.type(chars[i]);
-    await sleep(randomBetween(minDelay, maxDelay));
+    await heavyTailDelayBetween(minDelay, maxDelay);
     i += 1;
 
     // 人类修订：回删若干字符后重输，制造删除/修订信号（可信事件，不引入 isTrusted=false）
@@ -297,11 +650,11 @@ export async function typeLikeHuman(
       const redo = chars.slice(i - back, i);
       for (let k = 0; k < back; k++) {
         await page.keyboard.press('Backspace');
-        await sleep(randomBetween(Math.max(10, minDelay / 2), maxDelay / 2));
+        await heavyTailDelayBetween(Math.max(10, minDelay / 2), maxDelay / 2);
       }
       for (const ch of redo) {
         await page.keyboard.type(ch);
-        await sleep(randomBetween(minDelay, maxDelay));
+        await heavyTailDelayBetween(minDelay, maxDelay);
       }
       revisions += 1;
       // 重新随机下一次修订间距
@@ -309,7 +662,7 @@ export async function typeLikeHuman(
     }
 
     if (Math.random() < pauseChance) {
-      await sleep(randomBetween(pauseMin, pauseMax));
+      await heavyTailDelayBetween(pauseMin, pauseMax);
     }
   }
 }
@@ -394,8 +747,8 @@ export async function humanScroll(page: Page, options: HumanScrollOptions = {}):
       await page.mouse.wheel(jitter, 0);
     }
 
-    // Short pause between steps (20-80ms)
-    await sleep(randomBetween(20, 80));
+    // Short pause between steps (20-80ms) — B1 行为重尾
+    await heavyTailDelayBetween(20, 80);
   }
 
   // Random mouse movement (simulates eyes following content)
@@ -406,9 +759,8 @@ export async function humanScroll(page: Page, options: HumanScrollOptions = {}):
     await page.mouse.move(x, y, { steps: Math.floor(randomBetween(5, 15)) });
   }
 
-  // Main delay (simulates reading content)
-  const readingDelay = randomBetween(minDelay, maxDelay);
-  await sleep(readingDelay);
+  // Main delay (simulates reading content) — B1 行为重尾
+  await heavyTailDelayBetween(minDelay, maxDelay);
 
   // Occasionally scroll back up (humans review content)
   if (Math.random() < scrollBackChance) {
@@ -417,12 +769,72 @@ export async function humanScroll(page: Page, options: HumanScrollOptions = {}):
 
     for (let i = 0; i < backSteps; i++) {
       await page.mouse.wheel(0, -backDistance / backSteps);
-      await sleep(randomBetween(20, 50));
+      await heavyTailDelayBetween(20, 50);
     }
 
     // Short pause after scrolling back
-    await sleep(randomBetween(200, 500));
+    await heavyTailDelayBetween(200, 500);
   }
+}
+
+export interface WheelApproachOptions {
+  /** 最大 wheel 逼近步数（默认 5） */
+  maxWheelSteps?: number;
+  /** 视口内边距（默认 60px） */
+  viewportMargin?: number;
+}
+
+/**
+ * B4：wheel 小步逼近目标元素，替代裸 scrollIntoViewIfNeeded。
+ * 先用 mouse.wheel 向目标方向滚动；仍不可见时 scrollIntoViewIfNeeded 兜底。
+ * headful `viewport: null` 时用 window.innerHeight，勿默认 800 误判可见性。
+ */
+export async function wheelApproachElement(
+  page: Page,
+  element: ElementHandle,
+  options: WheelApproachOptions = {},
+): Promise<void> {
+  const maxWheelSteps = options.maxWheelSteps ?? 5;
+  const margin = options.viewportMargin ?? 60;
+  const vh = await resolvePageViewportHeight(page);
+
+  const isComfortablyVisible = async (): Promise<boolean> => {
+    const box = await element.boundingBox();
+    if (!box || box.width <= 0 || box.height <= 0) return false;
+    return box.y >= margin && box.y + box.height <= vh - margin;
+  };
+
+  if (await isComfortablyVisible()) return;
+
+  for (let i = 0; i < maxWheelSteps; i++) {
+    const box = await element.boundingBox();
+    if (!box) break;
+    if (box.y >= margin && box.y + box.height <= vh - margin) return;
+
+    const delta =
+      box.y < margin
+        ? -(120 + Math.random() * 180)
+        : 150 + Math.random() * 220;
+    await page.mouse.wheel(0, delta);
+    await heavyTailDelayBetween(80, 220);
+  }
+
+  if (!(await isComfortablyVisible())) {
+    await element.scrollIntoViewIfNeeded().catch(() => {});
+  }
+}
+
+/** Playwright 固定 viewport，或 headful null 时取真实窗口高度 */
+async function resolvePageViewportHeight(page: Page): Promise<number> {
+  const fixed = page.viewportSize();
+  if (fixed?.height && fixed.height > 0) return fixed.height;
+  try {
+    const h = await page.evaluate(() => window.innerHeight);
+    if (typeof h === 'number' && h > 0) return h;
+  } catch {
+    /* page closed */
+  }
+  return 800;
 }
 
 /**
@@ -444,11 +856,15 @@ export async function humanScrollToBottom(
 
   for (let i = 0; i < maxScrolls; i++) {
     // Get current scroll position and page height
-    const { scrollTop, scrollHeight, clientHeight } = await page.evaluate(() => ({
-      scrollTop: window.scrollY,
-      scrollHeight: document.body.scrollHeight,
-      clientHeight: window.innerHeight,
-    }));
+    const { scrollTop, scrollHeight, clientHeight } = await evalDom(
+      page,
+      () => ({
+        scrollTop: window.scrollY,
+        scrollHeight: document.body.scrollHeight,
+        clientHeight: window.innerHeight,
+      }),
+      null,
+    );
 
     // Check if we've reached the bottom
     if (scrollTop + clientHeight >= scrollHeight - 100) {
@@ -558,23 +974,50 @@ export async function checkPageAccessible(page: Page): Promise<string | null> {
   return null;
 }
 
+/** B7：导航重试上限（含首次 goto，共 maxRetries 次尝试） */
+export const NAVIGATE_RETRY_MAX = 3;
+
+/** B7：导航失败重试间隔默认区间 [min, max] ms */
+export const NAVIGATE_RETRY_DELAY_MS: [number, number] = [3000, 5000];
+
+/**
+ * B7：采样导航重试间隔 ms。
+ * `navRetryHeavyTail.enabled=true` 时用重尾；否则均匀 [min, max]（迁移前行为）。
+ */
+export function sampleNavRetryDelayMs(
+  retryDelay: [number, number] = NAVIGATE_RETRY_DELAY_MS,
+): number {
+  const lo = Math.max(1, Math.min(retryDelay[0], retryDelay[1]));
+  const hi = Math.max(lo, Math.max(retryDelay[0], retryDelay[1]));
+  const navCfg = config.antiDetect.navRetryHeavyTail;
+
+  if (navCfg?.enabled !== false) {
+    const base = Math.sqrt(lo * hi);
+    return sampleHeavyTailMs(base, { minMs: lo, maxMs: hi });
+  }
+
+  return Math.floor(lo + Math.random() * (hi - lo + 1));
+}
+
 /**
  * 带重试机制的页面导航和访问检测
  * 如果页面不可访问，会重试最多 maxRetries 次
  *
  * @param page - Playwright page instance
  * @param url - 要访问的 URL
- * @param maxRetries - 最大重试次数 (默认 3)
- * @param retryDelay - 重试间隔范围 [min, max] 毫秒 (默认 [3000, 5000])
+ * @param maxRetries - 最大重试次数 (默认 NAVIGATE_RETRY_MAX=3)
+ * @param retryDelay - 重试间隔范围 [min, max] 毫秒 (默认 NAVIGATE_RETRY_DELAY_MS)
  * @returns null if accessible, error message if all retries failed
  */
 export async function navigateWithRetry(
   page: Page,
   url: string,
-  maxRetries: number = 3,
-  retryDelay: [number, number] = [3000, 5000],
+  maxRetries: number = NAVIGATE_RETRY_MAX,
+  retryDelay: [number, number] = NAVIGATE_RETRY_DELAY_MS,
 ): Promise<string | null> {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  const attempts = Math.max(1, Math.floor(maxRetries));
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     // 等待 DOM 稳定，最多 3 秒（类似 reference project 的 MustWaitDOMStable）
     await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
@@ -582,18 +1025,16 @@ export async function navigateWithRetry(
 
     const accessError = await checkPageAccessible(page);
     if (!accessError) {
-      // 页面可访问
       return null;
     }
 
-    // 如果是最后一次尝试，返回错误
-    if (attempt === maxRetries) {
-      return `${accessError} (重试 ${maxRetries} 次后仍然失败)`;
+    if (attempt === attempts) {
+      return `${accessError} (重试 ${attempts} 次后仍然失败)`;
     }
 
-    // 等待随机时间后重试
-    const delay = retryDelay[0] + Math.random() * (retryDelay[1] - retryDelay[0]);
-    await sleep(delay);
+    const delayMs = sampleNavRetryDelayMs(retryDelay);
+    log.debug('B7 navigateWithRetry: 重试前等待', { attempt, attempts, delayMs, url });
+    await sleep(delayMs);
   }
 
   return null;
@@ -610,50 +1051,42 @@ export function isHttpUrl(imagePath: string): boolean {
 }
 
 /**
- * 从 URL 下载图片到本地临时目录
- * 参考 reference project 的 pkg/downloader/images.go
+ * 从 URL 下载图片到本地临时目录（C4：经账号 APIRequestContext，对齐 downloadFile）。
  *
  * @param imageUrl - 图片 URL
+ * @param apiRequest - 账号浏览器上下文的 APIRequestContext（必填；禁止裸 fetch）
  * @returns 本地文件路径
- * @throws 如果下载失败
+ * @throws 如果缺少 apiRequest 或下载失败
  */
-export async function downloadImageFromUrl(imageUrl: string): Promise<string> {
-  // 确保临时目录存在
+export async function downloadImageFromUrl(
+  imageUrl: string,
+  apiRequest: APIRequestContext,
+): Promise<string> {
   await fs.ensureDir(paths.tempImages);
 
-  // 使用 URL 的 SHA256 哈希作为文件名，确保唯一性
   const hash = crypto.createHash('sha256').update(imageUrl).digest('hex');
   const shortHash = hash.substring(0, 16);
-  const timestamp = Date.now();
 
-  // 下载图片
-  const response = await fetch(imageUrl);
-  if (!response.ok) {
-    throw new Error(`下载图片失败: HTTP ${response.status}`);
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-
-  // 检测文件类型（通过魔数判断）
-  const extension = detectImageExtension(buffer);
-  if (!extension) {
-    throw new Error('下载的文件不是有效的图片格式');
-  }
-
-  // 生成文件名
-  const fileName = `img_${shortHash}_${timestamp}.${extension}`;
-  const filePath = path.join(paths.tempImages, fileName);
-
-  // 如果文件已存在（基于哈希），直接返回
+  // 同 URL 哈希已存在则复用，避免重复下载
   const existingFiles = await fs.readdir(paths.tempImages);
-  const existingFile = existingFiles.find((f) => f.includes(shortHash));
+  const existingFile = existingFiles.find((f) => f.includes(shortHash) && !f.endsWith('.tmp'));
   if (existingFile) {
     return path.join(paths.tempImages, existingFile);
   }
 
-  // 保存文件
-  await fs.writeFile(filePath, buffer);
+  const timestamp = Date.now();
+  const tmpPath = path.join(paths.tempImages, `img_${shortHash}_${timestamp}.tmp`);
+  await downloadFile(imageUrl, tmpPath, apiRequest, { resourceType: 'image' });
 
+  const buffer = await fs.readFile(tmpPath);
+  const extension = detectImageExtension(buffer);
+  if (!extension) {
+    await fs.unlink(tmpPath).catch(() => {});
+    throw new Error('下载的文件不是有效的图片格式');
+  }
+
+  const filePath = path.join(paths.tempImages, `img_${shortHash}_${timestamp}.${extension}`);
+  await fs.rename(tmpPath, filePath);
   return filePath;
 }
 
@@ -704,24 +1137,44 @@ function detectImageExtension(buffer: Buffer): string | null {
 }
 
 /**
- * 处理图片路径列表，将 HTTP URL 下载到本地
+ * 处理图片路径列表，将 HTTP URL 经账号会话下载到本地。
+ *
+ * C4：含 HTTP URL 时必须提供 apiRequest，禁止 Node 裸 fetch 旁路 egress。
  *
  * @param imagePaths - 图片路径或 URL 列表
+ * @param apiRequest - 账号 APIRequestContext；有 HTTP URL 时必填
  * @returns 本地文件路径列表
  */
-export async function resolveImagePaths(imagePaths: string[]): Promise<string[]> {
+export async function resolveImagePaths(
+  imagePaths: string[],
+  apiRequest?: APIRequestContext | null,
+): Promise<string[]> {
   const resolvedPaths: string[] = [];
+  const hasHttp = imagePaths.some((p) => isHttpUrl(p));
+  if (hasHttp && !apiRequest) {
+    throw new Error(
+      'HTTP 配图下载需要账号 APIRequestContext（禁止 Node 裸 fetch 旁路）。请先 ensureContext 再 resolveImagePaths。',
+    );
+  }
 
   for (const imgPath of imagePaths) {
     if (isHttpUrl(imgPath)) {
-      // 下载 HTTP 图片
-      const localPath = await downloadImageFromUrl(imgPath);
+      const localPath = await downloadImageFromUrl(imgPath, apiRequest!);
       resolvedPaths.push(localPath);
     } else {
-      // 本地路径，直接使用
       resolvedPaths.push(imgPath);
     }
   }
 
   return resolvedPaths;
 }
+
+export {
+  evalMainState,
+  evalDom,
+  waitForMainState,
+  waitForDom,
+  waitForInitialState,
+  isFatalPageEvalError,
+  type WaitForMainStateOptions,
+} from './page-eval.js';

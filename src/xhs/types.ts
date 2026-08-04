@@ -303,6 +303,23 @@ export interface PublishResult {
 // Interaction Types
 // ============================================================================
 
+/** B3：Interact 会话可观测元数据（dwell / 阅读滚动 / 轨迹步数 / 后停留） */
+export interface InteractSessionMeta {
+  enabled: boolean;
+  preDwellMs: number;
+  readScrollCount: number;
+  postStayMs: number;
+  /** 主动作轨迹步数；未点击或未启用轨迹时为 null */
+  trajectorySteps: number | null;
+  keepPage: boolean;
+  /** B7：alreadyDone 路径使用了短 post-stay（非完整互动会话） */
+  skippedAlreadyDone?: boolean;
+  /** D1：实际进帖入口 */
+  entry?: 'feed' | 'direct';
+  /** D1：feed 失败后回退到了 direct */
+  entryFallback?: boolean;
+}
+
 /**
  * Result of an interaction operation (like, favorite, etc.).
  */
@@ -317,6 +334,8 @@ export interface InteractionResult {
   alreadyDone?: boolean;
   /** Error message (if failed) */
   error?: string;
+  /** B3：本次会话可观测元数据 */
+  session?: InteractSessionMeta;
 }
 
 /**
@@ -331,4 +350,6 @@ export interface CommentResult {
   error?: string;
   /** True when a click happened but the platform outcome could not be confirmed. */
   sideEffectPossible?: boolean;
+  /** B3：本次会话可观测元数据 */
+  session?: InteractSessionMeta;
 }

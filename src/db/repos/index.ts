@@ -22,3 +22,4 @@ export type {
   ExploreSessionStats,
   ExploreSessionResult,
 } from './explore.js';
+export { AntidetectPersistRepository } from './antidetect-persist.js';

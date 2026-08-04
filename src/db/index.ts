@@ -21,10 +21,11 @@ import {
   ConfigRepository,
   MyNotesRepository,
   ExploreRepository,
+  AntidetectPersistRepository,
 } from './repos/index.js';
 
 // Re-export domain models
-export type { Account } from './repos/accounts.js';
+export type { Account, AccountConfigUpdates } from './repos/accounts.js';
 export type { AccountProfile } from './repos/profiles.js';
 export type { OperationLog, AccountStats } from './repos/operations.js';
 export type { MyPublishedNote, MyNotesFilter } from './repos/my-notes.js';
@@ -61,6 +62,8 @@ export class XhsDatabase {
   readonly config: ConfigRepository;
   readonly myNotes: MyNotesRepository;
   readonly explore: ExploreRepository;
+  /** A5：共现守卫 committed 状态持久化 */
+  readonly adPersist: AntidetectPersistRepository;
 
   /**
    * Create a new database instance.
@@ -91,6 +94,7 @@ export class XhsDatabase {
     this.config = new ConfigRepository(this.db);
     this.myNotes = new MyNotesRepository(this.db);
     this.explore = new ExploreRepository(this.db);
+    this.adPersist = new AntidetectPersistRepository(this.db);
   }
 
   /**
@@ -172,13 +176,21 @@ export class XhsDatabase {
     } catch (e: any) {
       if (!e.message?.includes('duplicate column name')) throw e;
     }
+    // C3：时区 / locale / geo
+    for (const col of ['timezone_id TEXT', 'locale TEXT', 'geolocation TEXT']) {
+      try {
+        this.db.exec(`ALTER TABLE accounts ADD COLUMN ${col}`);
+      } catch (e: any) {
+        if (!e.message?.includes('duplicate column name')) throw e;
+      }
+    }
     // R3-8：再重建应用新 CHECK（仅当缺 migration_required 时）。事务保证原子，不留 accounts_new 半成品。
     this.rebuildAccountsForMigration();
   }
 
   /**
    * R2-7 / R3-8：若 accounts 表 CHECK 约束不含 'migration_required'（升级前的旧库），
-   * 用事务重建该表以应用新约束（已含则跳过）。重建仅复制既有列，不丢数据。
+   * 用事务重建该表以应用新约束（已含则跳过）。重建须复制含 C3 在内的既有列，不丢数据。
    */
   private rebuildAccountsForMigration(): void {
     const row = this.db
@@ -194,12 +206,17 @@ export class XhsDatabase {
 
     try {
       const tx = this.db.transaction(() => {
+        // 须含 C3 列：migrateAccounts 已 ALTER 增加 timezone_id/locale/geolocation，
+        // 若重建 DDL 漏掉会在同一次启动里把新列丢掉。
         this.db.exec(`
           CREATE TABLE accounts_new (
             id TEXT PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
             proxy TEXT,
             profile_id TEXT,
+            timezone_id TEXT,
+            locale TEXT,
+            geolocation TEXT,
             state JSON,
             status TEXT DEFAULT 'active' CHECK(status IN ('active','suspended','banned','migration_required')),
             last_login_at DATETIME,
@@ -207,8 +224,8 @@ export class XhsDatabase {
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
           );
-          INSERT INTO accounts_new (id, name, proxy, profile_id, state, status, last_login_at, last_active_at, created_at, updated_at)
-            SELECT id, name, proxy, profile_id, state, status, last_login_at, last_active_at, created_at, updated_at FROM accounts;
+          INSERT INTO accounts_new (id, name, proxy, profile_id, timezone_id, locale, geolocation, state, status, last_login_at, last_active_at, created_at, updated_at)
+            SELECT id, name, proxy, profile_id, timezone_id, locale, geolocation, state, status, last_login_at, last_active_at, created_at, updated_at FROM accounts;
           DROP TABLE accounts;
           ALTER TABLE accounts_new RENAME TO accounts;
         `);
@@ -281,6 +298,9 @@ export async function initDatabase(): Promise<XhsDatabase> {
     await ensureDirectories();
     dbInstance = new XhsDatabase();
     await dbInstance.init();
+    // A5：启动时挂载守卫持久化并加载 committed 状态
+    const { getCooccurrenceGuard } = await import('../core/antidetect.js');
+    getCooccurrenceGuard().attachPersistence(dbInstance.adPersist);
   }
   return dbInstance;
 }

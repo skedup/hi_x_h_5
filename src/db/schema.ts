@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   name TEXT UNIQUE NOT NULL,
   proxy TEXT,
   profile_id TEXT,
+  timezone_id TEXT,
+  locale TEXT,
+  geolocation TEXT,
   state JSON,
   status TEXT DEFAULT 'active' CHECK(status IN ('active', 'suspended', 'banned', 'migration_required')),
   last_login_at DATETIME,
@@ -203,6 +206,34 @@ CREATE INDEX IF NOT EXISTS idx_explore_sessions_account_id ON explore_sessions(a
 CREATE INDEX IF NOT EXISTS idx_explore_logs_session_id ON explore_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_explored_notes_account_id ON explored_notes(account_id);
 
+-- A5：共现守卫持久化（仅 committed；in-flight 仍仅内存）
+-- ad_dedup_keys：跨账号去重键（如 like:note:… / comment_text:…）
+CREATE TABLE IF NOT EXISTS ad_dedup_keys (
+  dedup_key TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ad_dedup_keys_expires ON ad_dedup_keys(expires_at);
+
+-- ad_xsec_tokens：xsecToken 存 SHA-256，不落明文
+CREATE TABLE IF NOT EXISTS ad_xsec_tokens (
+  token_hash TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ad_xsec_tokens_expires ON ad_xsec_tokens(expires_at);
+
+-- D2：评论文本近邻指纹（simhash hex）
+CREATE TABLE IF NOT EXISTS ad_dedup_near (
+  fingerprint TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ad_dedup_near_expires ON ad_dedup_near(expires_at);
+
 -- Migration: Add new columns to account_profiles if they don't exist
 -- SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we use a workaround
 -- These statements will fail silently if columns already exist
@@ -225,6 +256,12 @@ export interface AccountRow {
   proxy: string | null;
   /** Immutable internal profile ID (random UUID) for the isolated browser profile dir */
   profile_id: string | null;
+  /** C3：IANA timezone（旧库 migrate 后必有列） */
+  timezone_id?: string | null;
+  /** C3：BCP-47 locale */
+  locale?: string | null;
+  /** C3：geolocation JSON */
+  geolocation?: string | null;
   /** Playwright storage state as JSON string */
   state: string | null;
   /** Account status */
@@ -530,4 +567,28 @@ export interface ExploredNoteRow {
   explored_at: string;
   /** Whether the user interacted with the note */
   interacted: number;
+}
+
+/** A5：持久化去重键行（毫秒时间戳） */
+export interface AdDedupKeyRow {
+  dedup_key: string;
+  account_id: string;
+  created_at: number;
+  expires_at: number;
+}
+
+/** A5：持久化 xsec token 哈希行（毫秒时间戳） */
+export interface AdXsecTokenRow {
+  token_hash: string;
+  account_id: string;
+  created_at: number;
+  expires_at: number;
+}
+
+/** D2：近邻指纹行（毫秒时间戳） */
+export interface AdNearDedupRow {
+  fingerprint: string;
+  account_id: string;
+  created_at: number;
+  expires_at: number;
 }
