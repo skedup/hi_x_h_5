@@ -6,12 +6,22 @@
 
 import { XhsClient } from '../xhs/index.js';
 import { XhsDatabase, Account, getDatabase } from '../db/index.js';
+import type { AccountConfigUpdates } from '../db/repos/accounts.js';
 import { AccountLock, getAccountLock } from './account-lock.js';
 import { deleteAccountWithProfileLock, finalizeLoginProfile, generateProfileId } from './profile.js';
 import { config } from './config.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('account-pool');
+
+/** 从 Account 组装 C3 属地启动选项 */
+function localeFieldsFromAccount(account: Account) {
+  return {
+    timezoneId: account.timezoneId,
+    locale: account.locale,
+    geolocation: account.geolocation,
+  };
+}
 
 /**
  * XhsClient 实例池，用于多账户管理
@@ -86,6 +96,7 @@ export class AccountPool {
       profileId: account.profileId,
       state: account.state,
       proxy: account.proxy,
+      ...localeFieldsFromAccount(account),
       onStateChange: async (state) => {
         // Save state to database when it changes
         this.db.accounts.updateState(account!.id, state);
@@ -156,6 +167,7 @@ export class AccountPool {
       const client = new XhsClient({
         accountId: account.id,
         proxy: proxy || account.proxy,
+        ...localeFieldsFromAccount(account),
         // R4 P0：profileId 缺失时分配临时隔离目录，避免 context.ts fail-closed 抛错；
         // 真正转正由 createAccountAfterLogin 的 finalizeLoginProfile 完成。
         profileId: account.profileId || generateProfileId(),
@@ -234,6 +246,7 @@ export class AccountPool {
             profileId: finalProfileId,
             state,
             proxy: proxy ?? existingAccount.proxy,
+            ...localeFieldsFromAccount(existingAccount),
             onStateChange: async (newState) => {
               this.db.accounts.updateState(existingAccount.id, newState);
             },
@@ -266,6 +279,7 @@ export class AccountPool {
       profileId: finalProfileId,
       state,
       proxy: account.proxy,
+      ...localeFieldsFromAccount(account),
       onStateChange: async (newState) => {
         this.db.accounts.updateState(account.id, newState);
       },
@@ -331,7 +345,7 @@ export class AccountPool {
    */
   async updateAccountConfig(
     accountIdOrName: string,
-    updates: { name?: string; proxy?: string; status?: 'active' | 'suspended' | 'banned' | 'migration_required' },
+    updates: AccountConfigUpdates,
   ): Promise<boolean> {
     const account = this.resolveAccount(accountIdOrName);
 
@@ -348,8 +362,13 @@ export class AccountPool {
 
     this.db.accounts.updateConfig(account.id, updates);
 
-    // If proxy changed, recreate the client
-    if (updates.proxy !== undefined && this.clients.has(account.id)) {
+    // proxy / 属地变更需重建客户端，否则 launch 选项仍是旧值
+    const needsRecreate =
+      updates.proxy !== undefined ||
+      updates.timezoneId !== undefined ||
+      updates.locale !== undefined ||
+      updates.geolocation !== undefined;
+    if (needsRecreate && this.clients.has(account.id)) {
       const oldClient = this.clients.get(account.id)!;
       await oldClient.close();
       this.clients.delete(account.id);

@@ -10,6 +10,12 @@ import { LoginUserInfo, FullUserProfile } from '../types.js';
 import { createLogger } from '../../core/logger.js';
 import { config, paths, assertDisplayAvailableForHeadful } from '../../core/config.js';
 import { parseProxyConfig, toPlaywrightProxy } from '../../core/proxy.js';
+import {
+  buildPlaywrightLocaleOptions,
+  warnIfProxyWithoutLocale,
+  type AccountLocaleEnv,
+} from '../../core/locale-env.js';
+import { applyWebRtcIpHandlingPolicy } from '../../core/webrtc-prefs.js';
 import { archiveProfileDir } from '../../core/profile.js';
 import { evalMainState, waitForInitialState, waitForMainState } from '../utils/index.js';
 import { getBrowserArgs } from './constants.js';
@@ -17,10 +23,12 @@ import { getBrowserArgs } from './constants.js';
 // Create logger for browser module
 export const log = createLogger('browser');
 
-/** launchProfileContext 可选参数（C2 登录强制 headful 等） */
+/** launchProfileContext 可选参数（C2 登录强制 headful / C3 属地等） */
 export interface LaunchProfileContextOptions {
   /** 强制 headful，忽略 headless 参数（登录路径用） */
   forceHeadful?: boolean;
+  /** C3：时区 / locale / geo */
+  localeEnv?: AccountLocaleEnv;
 }
 
 /**
@@ -45,6 +53,16 @@ export async function launchProfileContext(
   if (proxy?.trim() && !parsedProxy) {
     log.warn('账号 proxy 无法解析，将不使用代理启动', { proxyPreview: proxy.slice(0, 32) });
   }
+
+  const localeEnv = options?.localeEnv ?? {};
+  warnIfProxyWithoutLocale(proxy, localeEnv);
+  const localeOpts = buildPlaywrightLocaleOptions(localeEnv);
+
+  // C8：有代理且开启缓解时，启动前写入 WebRTC IP 策略（降低 ICE 宿主泄漏）
+  if (parsedProxy && config.antiDetect.webrtc?.enabled) {
+    applyWebRtcIpHandlingPolicy(profileDir);
+  }
+
   const context = await chromium.launchPersistentContext(profileDir, {
     headless: effectiveHeadless,
     channel: 'chrome',
@@ -53,7 +71,21 @@ export async function launchProfileContext(
     // headless（自动化测试）保留固定 viewport。
     viewport: effectiveHeadless ? { width: 1920, height: 1080 } : null,
     ...(parsedProxy ? { proxy: toPlaywrightProxy(parsedProxy) } : {}),
+    ...(localeOpts.timezoneId ? { timezoneId: localeOpts.timezoneId } : {}),
+    ...(localeOpts.locale ? { locale: localeOpts.locale } : {}),
+    ...(localeOpts.geolocation ? { geolocation: localeOpts.geolocation } : {}),
   });
+
+  // C3：配置了 geo 时授予小红书域 geolocation（C1 已去掉 deny-permission-prompts）
+  if (localeOpts.geolocation) {
+    await context.grantPermissions(['geolocation'], {
+      origin: 'https://www.xiaohongshu.com',
+    });
+    await context.grantPermissions(['geolocation'], {
+      origin: 'https://creator.xiaohongshu.com',
+    }).catch(() => {});
+  }
+
   const browser = context.browser();
   if (!browser) {
     await context.close();
@@ -82,6 +114,12 @@ export interface BrowserClientOptions {
   state?: any;
   /** Proxy server URL (bound to the profile) */
   proxy?: string;
+  /** C3：IANA timezone */
+  timezoneId?: string;
+  /** C3：BCP-47 locale */
+  locale?: string;
+  /** C3：geolocation */
+  geolocation?: AccountLocaleEnv['geolocation'];
   /** Callback to save state when it changes */
   onStateChange?: (state: any) => void | Promise<void>;
 }
@@ -136,7 +174,13 @@ export class BrowserContextManager {
       );
     }
     const profileDir = paths.getBrowserProfileDir(this.options.profileId);
-    const session = await this.launchContext(profileDir, headless, this.options.proxy);
+    const session = await this.launchContext(profileDir, headless, this.options.proxy, {
+      localeEnv: {
+        timezoneId: this.options.timezoneId,
+        locale: this.options.locale,
+        geolocation: this.options.geolocation,
+      },
+    });
     this.browser = session.browser;
     this.context = session.context;
     session.context.on('close', () => this.clearClosedSession(session.browser, session.context));

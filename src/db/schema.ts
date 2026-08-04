@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   name TEXT UNIQUE NOT NULL,
   proxy TEXT,
   profile_id TEXT,
+  timezone_id TEXT,
+  locale TEXT,
+  geolocation TEXT,
   state JSON,
   status TEXT DEFAULT 'active' CHECK(status IN ('active', 'suspended', 'banned', 'migration_required')),
   last_login_at DATETIME,
@@ -253,6 +256,12 @@ export interface AccountRow {
   proxy: string | null;
   /** Immutable internal profile ID (random UUID) for the isolated browser profile dir */
   profile_id: string | null;
+  /** C3：IANA timezone（旧库 migrate 后必有列） */
+  timezone_id?: string | null;
+  /** C3：BCP-47 locale */
+  locale?: string | null;
+  /** C3：geolocation JSON */
+  geolocation?: string | null;
   /** Playwright storage state as JSON string */
   state: string | null;
   /** Account status */

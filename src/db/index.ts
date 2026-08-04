@@ -25,7 +25,7 @@ import {
 } from './repos/index.js';
 
 // Re-export domain models
-export type { Account } from './repos/accounts.js';
+export type { Account, AccountConfigUpdates } from './repos/accounts.js';
 export type { AccountProfile } from './repos/profiles.js';
 export type { OperationLog, AccountStats } from './repos/operations.js';
 export type { MyPublishedNote, MyNotesFilter } from './repos/my-notes.js';
@@ -175,6 +175,14 @@ export class XhsDatabase {
       this.db.exec('ALTER TABLE accounts ADD COLUMN profile_id TEXT');
     } catch (e: any) {
       if (!e.message?.includes('duplicate column name')) throw e;
+    }
+    // C3：时区 / locale / geo
+    for (const col of ['timezone_id TEXT', 'locale TEXT', 'geolocation TEXT']) {
+      try {
+        this.db.exec(`ALTER TABLE accounts ADD COLUMN ${col}`);
+      } catch (e: any) {
+        if (!e.message?.includes('duplicate column name')) throw e;
+      }
     }
     // R3-8：再重建应用新 CHECK（仅当缺 migration_required 时）。事务保证原子，不留 accounts_new 半成品。
     this.rebuildAccountsForMigration();
