@@ -177,7 +177,7 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
           const items = await ctx.client.search(params.keyword, params.count, params.timeout, filters);
           // 蓝军 #6 / R2-1：每个提取到的 xsecToken 绑定到实际执行提取的账号（fail-closed）
           for (const it of items) {
-            getCooccurrenceGuard().bindXsecSource(it.xsecToken, ctx.accountId);
+            await getCooccurrenceGuard().bindXsecSource(it.xsecToken, ctx.accountId);
           }
           return items;
         },
@@ -406,7 +406,7 @@ export async function handleContentTools(name: string, args: any, pool: AccountP
         const feeds = await ctx.client.listFeeds();
         // 蓝军 #6 / R2-1：feed 中每个 xsecToken 绑定到实际提取账号（fail-closed）
         for (const it of feeds as any[]) {
-          if (it?.xsecToken) getCooccurrenceGuard().bindXsecSource(it.xsecToken, ctx.accountId);
+          if (it?.xsecToken) await getCooccurrenceGuard().bindXsecSource(it.xsecToken, ctx.accountId);
         }
         return feeds;
       }, { capability: 'read' });

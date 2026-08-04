@@ -45,4 +45,15 @@ describe('applyWebRtcIpHandlingPolicy', () => {
     applyWebRtcIpHandlingPolicy(dir);
     expect(readWebRtcIpHandlingPolicy(dir)).toBe(WEBRTC_POLICY_DISABLE_NON_PROXIED_UDP);
   });
+
+  it('Preferences JSON 损坏时跳过写入，不整文件覆写', () => {
+    const defaultDir = path.join(dir, 'Default');
+    fs.mkdirSync(defaultDir, { recursive: true });
+    const prefsPath = path.join(defaultDir, 'Preferences');
+    const corrupt = '{not-json';
+    fs.writeFileSync(prefsPath, corrupt);
+    applyWebRtcIpHandlingPolicy(dir);
+    expect(fs.readFileSync(prefsPath, 'utf8')).toBe(corrupt);
+    expect(readWebRtcIpHandlingPolicy(dir)).toBeUndefined();
+  });
 });

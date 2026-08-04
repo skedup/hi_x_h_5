@@ -787,6 +787,7 @@ export interface WheelApproachOptions {
 /**
  * B4：wheel 小步逼近目标元素，替代裸 scrollIntoViewIfNeeded。
  * 先用 mouse.wheel 向目标方向滚动；仍不可见时 scrollIntoViewIfNeeded 兜底。
+ * headful `viewport: null` 时用 window.innerHeight，勿默认 800 误判可见性。
  */
 export async function wheelApproachElement(
   page: Page,
@@ -795,8 +796,7 @@ export async function wheelApproachElement(
 ): Promise<void> {
   const maxWheelSteps = options.maxWheelSteps ?? 5;
   const margin = options.viewportMargin ?? 60;
-  const viewport = page.viewportSize();
-  const vh = viewport?.height ?? 800;
+  const vh = await resolvePageViewportHeight(page);
 
   const isComfortablyVisible = async (): Promise<boolean> => {
     const box = await element.boundingBox();
@@ -822,6 +822,19 @@ export async function wheelApproachElement(
   if (!(await isComfortablyVisible())) {
     await element.scrollIntoViewIfNeeded().catch(() => {});
   }
+}
+
+/** Playwright 固定 viewport，或 headful null 时取真实窗口高度 */
+async function resolvePageViewportHeight(page: Page): Promise<number> {
+  const fixed = page.viewportSize();
+  if (fixed?.height && fixed.height > 0) return fixed.height;
+  try {
+    const h = await page.evaluate(() => window.innerHeight);
+    if (typeof h === 'number' && h > 0) return h;
+  } catch {
+    /* page closed */
+  }
+  return 800;
 }
 
 /**

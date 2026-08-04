@@ -147,14 +147,20 @@ Verification code expires in 1 minute.`,
           description: 'BCP-47 locale (e.g. zh-CN). Empty string clears. Drives navigator.languages / Accept-Language.',
         },
         geolocation: {
-          type: 'object',
           description:
             'Browser geolocation. Requires timezoneId + locale on the account after merge. Pass null to clear (JSON null).',
-          properties: {
-            latitude: { type: 'number' },
-            longitude: { type: 'number' },
-            accuracy: { type: 'number' },
-          },
+          anyOf: [
+            { type: 'null' },
+            {
+              type: 'object',
+              properties: {
+                latitude: { type: 'number' },
+                longitude: { type: 'number' },
+                accuracy: { type: 'number' },
+              },
+              required: ['latitude', 'longitude'],
+            },
+          ],
         },
       },
       required: ['account'],
