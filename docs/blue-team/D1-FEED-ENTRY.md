@@ -32,6 +32,8 @@ bun test src/xhs/utils/interact-entry.test.ts
 - [x] `entry:'direct'` 行为与现网一致
 - [x] `entry:'feed'` 封面可见时不直链 goto；不可见时回退且可观测
 - [x] 单测 mock page（不依赖真站）
+- [x] 封面按 path **精确**匹配 noteId（拒子串）；打开后校验身份
+- [x] feed 若落在 modal，经封面原始 href 落到详情页，复用 Interact 选择器
 
 ## 刻意不做
 

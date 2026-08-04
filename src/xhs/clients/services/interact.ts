@@ -149,10 +149,10 @@ export class InteractService {
     let readingStarted = false;
     const sessionEnabled = !!config.antiDetect.interactSession?.enabled;
 
+    const entry = resolveInteractEntry(sessionOpts.entry);
+    let entryUsed: InteractEntry = entry;
+    let entryFallback = false;
     try {
-      const entry = resolveInteractEntry(sessionOpts.entry);
-      let entryUsed: InteractEntry = entry;
-      let entryFallback = false;
       const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
       entryUsed = opened.mode;
       entryFallback = opened.entryFallback;
@@ -173,16 +173,15 @@ export class InteractService {
 
       const isLiked = await evalMainState(
         page,
-        () => {
+        (id) => {
           const state = (window as any).__INITIAL_STATE__;
-          const noteDetailMap = state?.note?.noteDetailMap;
-          if (noteDetailMap) {
-            const firstKey = Object.keys(noteDetailMap)[0];
-            return noteDetailMap[firstKey]?.note?.interactInfo?.liked || false;
-          }
-          return false;
+          let map = state?.note?.noteDetailMap;
+          if (!map) return false;
+          map = map.value !== undefined ? map.value : map._value || map;
+          const detail = map?.[id];
+          return detail?.note?.interactInfo?.liked || detail?.interactInfo?.liked || false;
         },
-        null,
+        noteId,
       );
 
       const shouldClick = (unlike && isLiked) || (!unlike && !isLiked);
@@ -287,10 +286,10 @@ export class InteractService {
     let readingStarted = false;
     const sessionEnabled = !!config.antiDetect.interactSession?.enabled;
 
+    const entry = resolveInteractEntry(sessionOpts.entry);
+    let entryUsed: InteractEntry = entry;
+    let entryFallback = false;
     try {
-      const entry = resolveInteractEntry(sessionOpts.entry);
-      let entryUsed: InteractEntry = entry;
-      let entryFallback = false;
       const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
       entryUsed = opened.mode;
       entryFallback = opened.entryFallback;
@@ -311,16 +310,15 @@ export class InteractService {
 
       const isCollected = await evalMainState(
         page,
-        () => {
+        (id) => {
           const state = (window as any).__INITIAL_STATE__;
-          const noteDetailMap = state?.note?.noteDetailMap;
-          if (noteDetailMap) {
-            const firstKey = Object.keys(noteDetailMap)[0];
-            return noteDetailMap[firstKey]?.note?.interactInfo?.collected || false;
-          }
-          return false;
+          let map = state?.note?.noteDetailMap;
+          if (!map) return false;
+          map = map.value !== undefined ? map.value : map._value || map;
+          const detail = map?.[id];
+          return detail?.note?.interactInfo?.collected || detail?.interactInfo?.collected || false;
         },
-        null,
+        noteId,
       );
 
       const shouldClick = (unfavorite && isCollected) || (!unfavorite && !isCollected);
@@ -424,10 +422,10 @@ export class InteractService {
     let readScrollCount = 0;
     let readingStarted = false;
 
+    const entry = resolveInteractEntry(sessionOpts.entry);
+    let entryUsed: InteractEntry = entry;
+    let entryFallback = false;
     try {
-      const entry = resolveInteractEntry(sessionOpts.entry);
-      let entryUsed: InteractEntry = entry;
-      let entryFallback = false;
       const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
       entryUsed = opened.mode;
       entryFallback = opened.entryFallback;
@@ -548,10 +546,10 @@ export class InteractService {
     let readScrollCount = 0;
     let readingStarted = false;
 
+    const entry = resolveInteractEntry(sessionOpts.entry);
+    let entryUsed: InteractEntry = entry;
+    let entryFallback = false;
     try {
-      const entry = resolveInteractEntry(sessionOpts.entry);
-      let entryUsed: InteractEntry = entry;
-      let entryFallback = false;
       const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
       entryUsed = opened.mode;
       entryFallback = opened.entryFallback;
@@ -780,10 +778,10 @@ export class InteractService {
     let readingStarted = false;
     const sessionEnabled = !!config.antiDetect.interactSession?.enabled;
 
+    const entry = resolveInteractEntry(sessionOpts.entry);
+    let entryUsed: InteractEntry = entry;
+    let entryFallback = false;
     try {
-      const entry = resolveInteractEntry(sessionOpts.entry);
-      let entryUsed: InteractEntry = entry;
-      let entryFallback = false;
       const opened = await openNoteForInteract(page, noteId, xsecToken, entry);
       entryUsed = opened.mode;
       entryFallback = opened.entryFallback;
