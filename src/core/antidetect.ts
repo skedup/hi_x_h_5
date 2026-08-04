@@ -17,16 +17,23 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import { createLogger } from './logger.js';
 import { config } from './config.js';
+import {
+  commentNearFingerprint,
+  fingerprintFromHex,
+  hamming64,
+} from './near-text.js';
 
 const log = createLogger('antidetect');
 
 /**
- * A5 持久化后端（由 AntidetectPersistRepository 实现）。
+ * A5 / D2 持久化后端（由 AntidetectPersistRepository 实现）。
  * Guard 不直接依赖 better-sqlite3，便于单测注入内存假实现。
  */
 export interface AdPersistStore {
   upsertDedup(dedupKey: string, accountId: string, createdAt: number, expiresAt: number): void;
   upsertToken(tokenHash: string, accountId: string, createdAt: number, expiresAt: number): void;
+  /** D2：近邻指纹（hex） */
+  upsertNear?(fingerprint: string, accountId: string, createdAt: number, expiresAt: number): void;
   loadActiveDedups(nowMs: number): Array<{
     dedup_key: string;
     account_id: string;
@@ -35,6 +42,12 @@ export interface AdPersistStore {
   }>;
   loadActiveTokens(nowMs: number): Array<{
     token_hash: string;
+    account_id: string;
+    created_at: number;
+    expires_at: number;
+  }>;
+  loadActiveNears?(nowMs: number): Array<{
+    fingerprint: string;
     account_id: string;
     created_at: number;
     expires_at: number;
@@ -63,6 +76,11 @@ export interface BeforeActionInput {
   dedupKey?: string;
   /** 该账号意图使用的 xsecToken（C2.2 绑定检测） */
   xsecToken?: string;
+  /**
+   * D2：评论文本原文（近邻门禁）。与精确 SHA dedupKey 并行；
+   * 传入后与已提交/进行中指纹做 Hamming 比较。
+   */
+  nearText?: string;
 }
 
 /**
@@ -75,6 +93,8 @@ export interface PolicyReservation {
   dedupKey?: string;
   /** 本次新绑定的 xsecToken */
   xsecToken?: string;
+  /** D2：本次新占用的近邻指纹 hex */
+  nearFingerprint?: string;
   /** 本次占用的唯一 id（R3-2：分层临时占用/提交，按 id 提交或回滚） */
   id?: string;
 }
@@ -99,6 +119,8 @@ export interface AfterActionInput {
   result?: any;
   dedupKey?: string;
   xsecToken?: string;
+  /** D2：与 beforeAction 相同的评论文本（成功提交近邻指纹时用） */
+  nearText?: string;
   /** beforeAction 返回的本次新占用资源；失败/取消时精确回滚（R2-9） */
   reservation?: PolicyReservation;
 }
@@ -147,6 +169,13 @@ export class CooccurrenceGuard {
   /** A5：committed 过期时间（ms）；未设置表示不过期（persist 关闭时） */
   private dedupExpires = new Map<string, number>();
   private tokenExpires = new Map<string, number>();
+  /** D2：近邻指纹 committed（hex -> accountId / expires） */
+  private nearCommitted = new Map<string, string>(); // fingerprint -> accountId
+  private nearExpires = new Map<string, number>();
+  /** D2：近邻 in-flight：fingerprint -> reservationId 集合；owner 另表 */
+  private nearInFlight = new Map<string, Set<string>>();
+  private nearOwner = new Map<string, string>();
+  private nearSucceeded = new Set<string>();
   /** 蓝军 #4：检查/预占的全局 policy 互斥锁 */
   private policyMutex = new AsyncMutex();
   /** A5：可选持久化后端；未挂载或 persist.enabled=false 时仅内存 */
@@ -233,9 +262,25 @@ export class CooccurrenceGuard {
       this.tokenOwner.set(row.token_hash, row.account_id);
       this.tokenExpires.set(row.token_hash, row.expires_at);
     }
+
+    // D2：近邻指纹
+    for (const fp of [...this.nearCommitted.keys()]) {
+      this.nearCommitted.delete(fp);
+      this.nearExpires.delete(fp);
+      if (!this.nearInFlight.has(fp)) this.nearOwner.delete(fp);
+    }
+    if (this.persistStore.loadActiveNears) {
+      for (const row of this.persistStore.loadActiveNears(now)) {
+        this.nearCommitted.set(row.fingerprint, row.account_id);
+        this.nearOwner.set(row.fingerprint, row.account_id);
+        this.nearExpires.set(row.fingerprint, row.expires_at);
+      }
+    }
+
     log.info('A5 已加载守卫持久化状态', {
       dedup: this.dedupCommitted.size,
       tokens: this.tokenCommitted.size,
+      nears: this.nearCommitted.size,
     });
   }
 
@@ -255,6 +300,59 @@ export class CooccurrenceGuard {
     this.persistStore.deleteExpired(now);
     this.persistStore.upsertToken(tokenHash, accountId, now, exp);
     this.tokenExpires.set(tokenHash, exp);
+  }
+
+  private persistNear(fingerprint: string, accountId: string): void {
+    if (!this.isPersistEnabled() || !this.persistStore?.upsertNear) return;
+    const now = Date.now();
+    const exp = this.expiresAtFromNow(now);
+    this.persistStore.deleteExpired(now);
+    this.persistStore.upsertNear(fingerprint, accountId, now, exp);
+    this.nearExpires.set(fingerprint, exp);
+  }
+
+  /** D2：惰性过期近邻指纹 */
+  private purgeExpiredNear(fingerprint: string, now = Date.now()): void {
+    const exp = this.nearExpires.get(fingerprint);
+    if (exp === undefined || exp > now) return;
+    this.nearCommitted.delete(fingerprint);
+    this.nearExpires.delete(fingerprint);
+    if (!this.nearInFlight.has(fingerprint)) this.nearOwner.delete(fingerprint);
+    this.persistStore?.deleteExpired(now);
+  }
+
+  private purgeAllExpiredNears(now = Date.now()): void {
+    for (const fp of [...this.nearExpires.keys()]) {
+      this.purgeExpiredNear(fp, now);
+    }
+  }
+
+  /**
+   * D2：是否与已有（他账号）近邻指纹冲突。
+   * 同账号命中不拦截（与精确 SHA A4 策略一致）。
+   */
+  private findCrossAccountNearOwner(fpHex: string, accountId: string): string | undefined {
+    const threshold = Math.max(0, this.cfg.nearDedup?.threshold ?? 3);
+    const fp = fingerprintFromHex(fpHex);
+    this.purgeAllExpiredNears();
+
+    const check = (otherHex: string, owner: string | undefined): string | undefined => {
+      if (!owner || owner === accountId) return undefined;
+      this.purgeExpiredNear(otherHex);
+      if (!this.nearCommitted.has(otherHex) && !this.nearInFlight.has(otherHex)) return undefined;
+      if (hamming64(fp, fingerprintFromHex(otherHex)) <= threshold) return owner;
+      return undefined;
+    };
+
+    for (const [otherHex, owner] of this.nearCommitted) {
+      const hit = check(otherHex, owner);
+      if (hit) return hit;
+    }
+    for (const [otherHex] of this.nearInFlight) {
+      const hit = check(otherHex, this.nearOwner.get(otherHex));
+      if (hit) return hit;
+    }
+    return undefined;
   }
 
   /** C2.1 是否启用共现抑制（串行） */
@@ -319,6 +417,24 @@ export class CooccurrenceGuard {
         }
       }
 
+      // D2：评论文本近邻（与精确 SHA 并行；同账号放行）
+      const nearEnabled = !!this.cfg.nearDedup?.enabled;
+      let nearFp: string | null = null;
+      if (nearEnabled && input.nearText) {
+        nearFp = commentNearFingerprint(input.nearText);
+        if (nearFp) {
+          const nearOwner = this.findCrossAccountNearOwner(nearFp, input.accountId);
+          if (nearOwner) {
+            log.warn('跨账号近邻去重拦截', {
+              fingerprint: nearFp.slice(0, 8),
+              owner: nearOwner,
+              accountId: input.accountId,
+            });
+            return { allow: false, reason: 'cross_account_dedup' };
+          }
+        }
+      }
+
       // C2.2 xsecToken 绑定：跨账号复用处理（内存键为 token 哈希，A5）
       if (this.cfg.xsecTokenBinding.enabled && input.xsecToken) {
         this.purgeExpiredTokenHash(this.tokenKey(input.xsecToken));
@@ -340,6 +456,7 @@ export class CooccurrenceGuard {
       // 成功时按 id 提交为永久占用，不回滚既有/他人绑定。
       let reservedDedup: string | undefined;
       let reservedToken: string | undefined;
+      let reservedNear: string | undefined;
       if (q.enabled) {
         this.recordCount(this.hourly, input.accountId, q.perAccountHourly, 3_600_000);
         this.recordCount(this.daily, input.accountId, q.perAccountDaily, 86_400_000);
@@ -355,6 +472,16 @@ export class CooccurrenceGuard {
         // 同账号并发复用：把本次 reservationId 加入共享占用集合（引用计数，R4）
         set.add(resvId);
         reservedDedup = input.dedupKey;
+      }
+      if (nearEnabled && nearFp && !this.nearCommitted.has(nearFp)) {
+        let set = this.nearInFlight.get(nearFp);
+        if (!set) {
+          set = new Set<string>();
+          this.nearInFlight.set(nearFp, set);
+          this.nearOwner.set(nearFp, input.accountId);
+        }
+        set.add(resvId);
+        reservedNear = nearFp;
       }
       if (this.cfg.xsecTokenBinding.enabled && input.xsecToken) {
         const tKey = this.tokenKey(input.xsecToken);
@@ -375,7 +502,15 @@ export class CooccurrenceGuard {
         }
       }
 
-      return { allow: true, reservation: { dedupKey: reservedDedup, xsecToken: reservedToken, id: resvId } };
+      return {
+        allow: true,
+        reservation: {
+          dedupKey: reservedDedup,
+          xsecToken: reservedToken,
+          nearFingerprint: reservedNear,
+          id: resvId,
+        },
+      };
     });
   }
 
@@ -413,6 +548,9 @@ export class CooccurrenceGuard {
       }
       if (input.reservation.xsecToken) {
         this.settleTokenReservation(input.reservation.xsecToken, id, businessSuccess);
+      }
+      if (input.reservation.nearFingerprint) {
+        this.settleNearReservation(input.reservation.nearFingerprint, id, businessSuccess);
       }
     }
 
@@ -459,6 +597,9 @@ export class CooccurrenceGuard {
     }
     if (reservation.xsecToken) {
       this.settleTokenReservation(reservation.xsecToken, id, false);
+    }
+    if (reservation.nearFingerprint) {
+      this.settleNearReservation(reservation.nearFingerprint, id, false);
     }
 
     if (this.cfg.quota.enabled) {
@@ -539,6 +680,11 @@ export class CooccurrenceGuard {
     this.tokenOwner.clear();
     this.tokenSucceeded.clear();
     this.tokenExpires.clear();
+    this.nearCommitted.clear();
+    this.nearInFlight.clear();
+    this.nearOwner.clear();
+    this.nearSucceeded.clear();
+    this.nearExpires.clear();
   }
 
   /**
@@ -601,6 +747,26 @@ export class CooccurrenceGuard {
       this.tokenOwner.delete(tKey);
     }
     this.tokenSucceeded.delete(tKey);
+  }
+
+  /** D2：近邻指纹 reservation 收敛 */
+  private settleNearReservation(fingerprint: string, id: string, succeeded: boolean): void {
+    const set = this.nearInFlight.get(fingerprint);
+    if (!set || !set.delete(id)) return;
+    if (succeeded) this.nearSucceeded.add(fingerprint);
+    if (set.size > 0) return;
+
+    this.nearInFlight.delete(fingerprint);
+    if (this.nearSucceeded.has(fingerprint)) {
+      const owner = this.nearOwner.get(fingerprint);
+      if (owner) {
+        this.nearCommitted.set(fingerprint, owner);
+        this.persistNear(fingerprint, owner);
+      }
+    } else {
+      this.nearOwner.delete(fingerprint);
+    }
+    this.nearSucceeded.delete(fingerprint);
   }
 
   private checkBudget(accountId: string): boolean {

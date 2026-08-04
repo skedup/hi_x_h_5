@@ -580,6 +580,7 @@ export class ExploreService {
                       action: 'comment',
                       dedupKey,
                       xsecToken: selectedFeed.xsecToken,
+                      nearText: commentText,
                     });
                     if (!resv.allow) {
                       log.warn('explore 内部评论被共现守卫拦截', { noteId: selectedFeed.id, reason: resv.reason });
@@ -608,6 +609,7 @@ export class ExploreService {
                           success: commented,
                           dedupKey,
                           xsecToken: selectedFeed.xsecToken,
+                          nearText: commentText,
                           reservation: resv.reservation,
                         });
                       }

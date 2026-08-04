@@ -59,6 +59,11 @@ function makeCfg(overrides: any = {}) {
       maxMultiplier: 8,
       ...(overrides.heavyTail || {}),
     },
+    nearDedup: {
+      enabled: true,
+      threshold: 3,
+      ...(overrides.nearDedup || {}),
+    },
   };
 }
 
@@ -360,16 +365,20 @@ describe('R5 token 与取消状态机', () => {
   });
 });
 
-/** A5：内存假 store，模拟 SQLite 持久化（bun 不支持 better-sqlite3） */
+/** A5 / D2：内存假 store，模拟 SQLite 持久化（bun 不支持 better-sqlite3） */
 function makeMemoryPersistStore() {
   const dedups = new Map<string, { account_id: string; created_at: number; expires_at: number }>();
   const tokens = new Map<string, { account_id: string; created_at: number; expires_at: number }>();
+  const nears = new Map<string, { account_id: string; created_at: number; expires_at: number }>();
   return {
     upsertDedup(dedupKey: string, accountId: string, createdAt: number, expiresAt: number) {
       dedups.set(dedupKey, { account_id: accountId, created_at: createdAt, expires_at: expiresAt });
     },
     upsertToken(tokenHash: string, accountId: string, createdAt: number, expiresAt: number) {
       tokens.set(tokenHash, { account_id: accountId, created_at: createdAt, expires_at: expiresAt });
+    },
+    upsertNear(fingerprint: string, accountId: string, createdAt: number, expiresAt: number) {
+      nears.set(fingerprint, { account_id: accountId, created_at: createdAt, expires_at: expiresAt });
     },
     loadActiveDedups(nowMs: number) {
       return [...dedups.entries()]
@@ -380,6 +389,11 @@ function makeMemoryPersistStore() {
       return [...tokens.entries()]
         .filter(([, v]) => v.expires_at > nowMs)
         .map(([token_hash, v]) => ({ token_hash, ...v }));
+    },
+    loadActiveNears(nowMs: number) {
+      return [...nears.entries()]
+        .filter(([, v]) => v.expires_at > nowMs)
+        .map(([fingerprint, v]) => ({ fingerprint, ...v }));
     },
     deleteExpired(nowMs: number) {
       let n = 0;
@@ -395,14 +409,22 @@ function makeMemoryPersistStore() {
           n++;
         }
       }
+      for (const [k, v] of nears) {
+        if (v.expires_at <= nowMs) {
+          nears.delete(k);
+          n++;
+        }
+      }
       return n;
     },
     clearAll() {
       dedups.clear();
       tokens.clear();
+      nears.clear();
     },
     _dedups: dedups,
     _tokens: tokens,
+    _nears: nears,
   };
 }
 
@@ -544,5 +566,112 @@ describe('A5 Guard 持久化（杀进程后仍拦截）', () => {
     const r = await g.beforeAction({ accountId: A, action: 'like', dedupKey: 'like:note:off' });
     await g.afterAction({ accountId: A, action: 'like', success: true, reservation: r.reservation });
     expect(store._dedups.size).toBe(0);
+  });
+});
+
+describe('D2 评论文本近邻去重', () => {
+  it('近邻文案跨账号拦截；精确 SHA 仍拦', async () => {
+    const g = new CooccurrenceGuard(
+      makeCfg({
+        quota: { enabled: false, cooldownMsAfterAction: 0 },
+      }),
+    );
+    const t1 = '今天天气真好';
+    const t2 = '今天天气真好！';
+    const r1 = await g.beforeAction({
+      accountId: A,
+      action: 'comment',
+      dedupKey: `comment_text:${sha256OfText(t1)}`,
+      nearText: t1,
+    });
+    expect(r1.allow).toBe(true);
+    await g.afterAction({
+      accountId: A,
+      action: 'comment',
+      success: true,
+      dedupKey: `comment_text:${sha256OfText(t1)}`,
+      nearText: t1,
+      reservation: r1.reservation,
+    });
+
+    // 精确相同文案 → SHA 拦
+    const exact = await g.beforeAction({
+      accountId: B,
+      action: 'comment',
+      dedupKey: `comment_text:${sha256OfText(t1)}`,
+      nearText: t1,
+    });
+    expect(exact.allow).toBe(false);
+    expect(exact.reason).toBe('cross_account_dedup');
+
+    // 近邻不同 SHA → 近邻拦
+    const near = await g.beforeAction({
+      accountId: B,
+      action: 'comment',
+      dedupKey: `comment_text:${sha256OfText(t2)}`,
+      nearText: t2,
+    });
+    expect(near.allow).toBe(false);
+    expect(near.reason).toBe('cross_account_dedup');
+  });
+
+  it('明显不同文案不拦；同账号近邻可再次提交', async () => {
+    const g = new CooccurrenceGuard(
+      makeCfg({
+        quota: { enabled: false, cooldownMsAfterAction: 0 },
+      }),
+    );
+    const r1 = await g.beforeAction({
+      accountId: A,
+      action: 'comment',
+      dedupKey: `comment_text:${sha256OfText('今天天气真好')}`,
+      nearText: '今天天气真好',
+    });
+    await g.afterAction({
+      accountId: A,
+      action: 'comment',
+      success: true,
+      reservation: r1.reservation,
+    });
+
+    const diff = await g.beforeAction({
+      accountId: B,
+      action: 'comment',
+      dedupKey: `comment_text:${sha256OfText('这家火锅太辣了推荐')}`,
+      nearText: '这家火锅太辣了推荐',
+    });
+    expect(diff.allow).toBe(true);
+
+    const sameAcc = await g.beforeAction({
+      accountId: A,
+      action: 'comment',
+      dedupKey: `comment_text:${sha256OfText('今天天气真好！')}`,
+      nearText: '今天天气真好！',
+    });
+    expect(sameAcc.allow).toBe(true);
+  });
+
+  it('XHS_MCP_AD_NEAR_DEDUP 关闭时不近邻拦截', async () => {
+    const g = new CooccurrenceGuard(
+      makeCfg({
+        quota: { enabled: false, cooldownMsAfterAction: 0 },
+        nearDedup: { enabled: false, threshold: 3 },
+      }),
+    );
+    const r1 = await g.beforeAction({
+      accountId: A,
+      action: 'comment',
+      dedupKey: `comment_text:${sha256OfText('今天天气真好')}`,
+      nearText: '今天天气真好',
+    });
+    await g.afterAction({ accountId: A, action: 'comment', success: true, reservation: r1.reservation });
+
+    const near = await g.beforeAction({
+      accountId: B,
+      action: 'comment',
+      dedupKey: `comment_text:${sha256OfText('今天天气真好！')}`,
+      nearText: '今天天气真好！',
+    });
+    expect(near.allow).toBe(true);
   });
 });

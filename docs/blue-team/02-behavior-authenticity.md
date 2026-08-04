@@ -17,7 +17,7 @@
 | AI 决策 | `src/core/explore-ai.ts` |
 | 运维门禁 | `src/core/liveness.ts`（**非**行为拟人） |
 
-**范围边界**：Wave B 默认保留 Interact **直链** `goto(/explore/{id})`，补齐页内 dwell/滚动/多步轨迹。「从 feed/搜索有机点入」→ **Wave D / 可选 `entry: 'feed'`**，勿与 B3 混为一谈。
+**范围边界**：Wave B 默认保留 Interact **直链** `goto(/explore/{id})`，补齐页内 dwell/滚动/多步轨迹。Wave D1 已落地可选 `entry: 'feed'`（默认仍 `direct`）→ [D1-FEED-ENTRY.md](./D1-FEED-ENTRY.md)。
 
 ---
 
@@ -113,7 +113,7 @@
 
 ### 明确延后（Wave D）
 
-- 从 explore/search **有机点入** 替代直链（可选 `entry: 'feed'`）。
+- 从 explore/search **有机点入** 替代直链（可选 `entry: 'feed'`）— **D1 mitigated**（默认仍 direct；见 [D1-FEED-ENTRY.md](./D1-FEED-ENTRY.md)）。
 
 ---
 
