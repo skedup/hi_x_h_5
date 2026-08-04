@@ -106,10 +106,10 @@ interface NoteDetail {
  * 首个占用来源，避免后续任何账号用该 token 发起写操作时无法追溯来源账号。
  * 抽成独立函数便于不依赖真实 Page/DOM 的单测覆盖。
  */
-export function bindFeedXsecTokens(feeds: FeedItem[], accountId: string): void {
+export async function bindFeedXsecTokens(feeds: FeedItem[], accountId: string): Promise<void> {
   const guard = getCooccurrenceGuard();
   for (const feed of feeds) {
-    if (feed?.xsecToken) guard.bindXsecSource(feed.xsecToken, accountId);
+    if (feed?.xsecToken) await guard.bindXsecSource(feed.xsecToken, accountId);
   }
 }
 /** B4：Explore 专用 humanScroll preset（步间短于搜索，避免拖垮 duration） */
@@ -325,7 +325,7 @@ export class ExploreService {
         const feeds = await this.getFeeds(page);
         // A3（blue-team）：提取 feed 即绑定 xsecToken 来源账号，不等到真正点赞/评论才 bind，
         // 确保「探索式提取」与 search/list_feeds 一致地 fail-closed 占用来源。
-        bindFeedXsecTokens(feeds, accountId);
+        await bindFeedXsecTokens(feeds, accountId);
         const videoRatio = computeFeedVideoRatio(feeds);
         const newFeeds = feeds.filter((f) => {
           if (seenInSession.has(f.id)) return false;

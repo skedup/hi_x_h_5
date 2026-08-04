@@ -166,7 +166,7 @@ describe('C2.2 xsecToken 绑定', () => {
   });
   it('蓝军 #6 来源绑定：A 提取的 token 被 B 写操作使用时 fail-closed 拦截', async () => {
     const g = new CooccurrenceGuard(makeCfg({ xsecTokenBinding: { enabled: true, mode: 'block' } }));
-    g.bindXsecSource('tok', A);
+    await g.bindXsecSource('tok', A);
     // A 同源写放行
     expect((await g.beforeAction({ accountId: A, action: 'comment', xsecToken: 'tok' })).allow).toBe(true);
     // B 跨账号使用被拦截（而非「谁先写归谁」）
@@ -176,11 +176,29 @@ describe('C2.2 xsecToken 绑定', () => {
   });
   it('蓝军 #6 首个提取者占用来源，后续提取不抢占', async () => {
     const g = new CooccurrenceGuard(makeCfg({ xsecTokenBinding: { enabled: true, mode: 'block' } }));
-    g.bindXsecSource('tok', A);
-    g.bindXsecSource('tok', B); // B 抢占无效
+    await g.bindXsecSource('tok', A);
+    await g.bindXsecSource('tok', B); // B 抢占无效
     expect(g.isTripped(B)).toBe(false);
     expect((await g.beforeAction({ accountId: B, action: 'comment', xsecToken: 'tok' })).allow).toBe(false);
     expect((await g.beforeAction({ accountId: A, action: 'comment', xsecToken: 'tok' })).allow).toBe(true);
+  });
+  it('in-flight 预占期间 bindXsecSource 不得被其他账号抢占并 persist', async () => {
+    const g = new CooccurrenceGuard(makeCfg({ xsecTokenBinding: { enabled: true, mode: 'block' } }));
+    const b1 = await g.beforeAction({ accountId: A, action: 'like', xsecToken: 'tok-inflight' });
+    expect(b1.allow).toBe(true);
+    await g.bindXsecSource('tok-inflight', B); // 应无效：A 已 in-flight 占用
+    await g.afterAction({
+      accountId: A,
+      action: 'like',
+      success: true,
+      xsecToken: 'tok-inflight',
+      reservation: b1.reservation,
+    });
+    // A 仍是所有者；B 不可写
+    expect((await g.beforeAction({ accountId: A, action: 'like', xsecToken: 'tok-inflight' })).allow).toBe(true);
+    const rB = await g.beforeAction({ accountId: B, action: 'like', xsecToken: 'tok-inflight' });
+    expect(rB.allow).toBe(false);
+    expect(rB.reason).toBe('xsec_token_bound_to_other_account');
   });
 });
 
@@ -478,7 +496,7 @@ describe('A5 Guard 持久化（杀进程后仍拦截）', () => {
     });
     const g1 = new CooccurrenceGuard(cfg);
     g1.attachPersistence(store);
-    g1.bindXsecSource('raw-token-abc', A);
+    await g1.bindXsecSource('raw-token-abc', A);
     expect(store._tokens.has(sha256OfText('raw-token-abc'))).toBe(true);
 
     const g2 = new CooccurrenceGuard(cfg);

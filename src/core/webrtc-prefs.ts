@@ -30,16 +30,19 @@ export function applyWebRtcIpHandlingPolicy(
   fs.mkdirSync(defaultDir, { recursive: true });
 
   let prefs: Record<string, unknown> = {};
+  let hadExistingPrefs = false;
   if (fs.existsSync(prefsPath)) {
+    hadExistingPrefs = true;
     try {
       const raw = fs.readFileSync(prefsPath, 'utf8');
       prefs = JSON.parse(raw) as Record<string, unknown>;
     } catch (err) {
-      log.warn('读取 Preferences 失败，将重建 webrtc 相关字段', {
+      // 勿用 {} 覆写：损坏文件整文件重建会丢掉其它 prefs，改变账号指纹
+      log.warn('读取 Preferences 失败，跳过 WebRTC 写入以免覆盖损坏文件', {
         prefsPath,
         error: err instanceof Error ? err.message : String(err),
       });
-      prefs = {};
+      return;
     }
   }
 
@@ -58,7 +61,11 @@ export function applyWebRtcIpHandlingPolicy(
   const tmp = `${prefsPath}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(prefs), 'utf8');
   fs.renameSync(tmp, prefsPath);
-  log.info('已写入 WebRTC IP 处理策略', { policy, profileDir: path.basename(profileDir) });
+  log.info('已写入 WebRTC IP 处理策略', {
+    policy,
+    profileDir: path.basename(profileDir),
+    createdPrefs: !hadExistingPrefs,
+  });
 }
 
 /**

@@ -618,15 +618,20 @@ export class CooccurrenceGuard {
    * 使「谁取到的 token 归谁」，而非「谁先写归谁」（蓝军 #6）。提取点绑定为永久来源（committed），
    * 后续写操作的 checkXsecSource 只校验既有来源；消费路径（get_note/download/user_profile）
    * 不得补写来源（R3-5）。首个提取者占用，后续提取同 token 的不同账号不会抢占所有权。
+   *
+   * 须与 beforeAction 同用 policyMutex：已有 committed **或** in-flight 所有者时不得抢占
+   * （否则 A 写预占期间 B 的 explore/search bind 会覆盖 owner 并 persist，A 成功后归属错乱）。
    */
-  bindXsecSource(xsecToken: string, accountId: string): void {
+  async bindXsecSource(xsecToken: string, accountId: string): Promise<void> {
     if (!this.cfg.xsecTokenBinding.enabled || !xsecToken) return;
-    const tKey = this.tokenKey(xsecToken);
-    if (!this.tokenCommitted.has(tKey)) {
+    await this.policyMutex.run(async () => {
+      const tKey = this.tokenKey(xsecToken);
+      // tokenOwnerOf 含 in-flight；勿只看 tokenCommitted
+      if (this.tokenOwnerOf(xsecToken)) return;
       this.tokenCommitted.add(tKey);
       this.tokenOwner.set(tKey, accountId);
       this.persistTokenHash(tKey, accountId);
-    }
+    });
   }
 
   /**
