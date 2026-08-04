@@ -30,7 +30,7 @@ describe('C4 resolveImagePaths', () => {
   const tmpFiles: string[] = [];
 
   beforeAll(() => {
-    config.data.dir = dataDir;
+    Object.assign(config.data, { dir: dataDir });
   });
 
   afterEach(async () => {
@@ -41,7 +41,7 @@ describe('C4 resolveImagePaths', () => {
   });
 
   afterAll(async () => {
-    config.data.dir = prevDataDir;
+    Object.assign(config.data, { dir: prevDataDir });
     await fs.remove(dataDir).catch(() => {});
   });
 

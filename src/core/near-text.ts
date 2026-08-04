@@ -13,7 +13,7 @@ export function normalizeCommentText(text: string): string {
   s = s.replace(/[\uff01-\uff5e]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
   // 去空白与常见中英文标点
   s = s.replace(/[\s\u3000]+/g, '');
-  s = s.replace(/[.,!?;:'"，。！？；：、""''（）()\[\]【】《》<>…—\-_/\\|#@*`~^=+]+/g, '');
+  s = s.replace(/[.,!?;:'"，。！？；：、""''（）()[\]【】《》<>…—\-_/\\|#@*`~^=+]+/g, '');
   return s;
 }
 
