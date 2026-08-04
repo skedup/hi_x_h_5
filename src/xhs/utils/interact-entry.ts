@@ -75,7 +75,7 @@ async function openViaDirect(
   noteId: string,
   xsecToken: string,
 ): Promise<string | undefined> {
-  return navigateWithRetry(page, buildNoteUrl(noteId, xsecToken)) ?? undefined;
+  return (await navigateWithRetry(page, buildNoteUrl(noteId, xsecToken))) ?? undefined;
 }
 
 /**

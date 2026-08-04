@@ -5,11 +5,12 @@
  */
 
 import { createLogger } from './logger.js';
+import type { ProxyRequiredMode } from './proxy-mode.js';
+
+export { parseProxyRequiredMode } from './proxy-mode.js';
+export type { ProxyRequiredMode } from './proxy-mode.js';
 
 const log = createLogger('proxy');
-
-/** 多账号写批次代理硬约束模式 */
-export type ProxyRequiredMode = 'off' | 'warn' | 'block';
 
 /** 解析后的 Playwright 可用代理 */
 export interface ParsedProxy {
@@ -19,19 +20,6 @@ export interface ParsedProxy {
   password?: string;
   /** 规范化互异键：hostname:port（小写） */
   serverKey: string;
-}
-
-/**
- * 解析 XHS_MCP_AD_PROXY_REQUIRED。
- * 默认 block（多账号写强制互异代理）；warn 仅告警；off/false 关闭。
- */
-export function parseProxyRequiredMode(value: string | undefined): ProxyRequiredMode {
-  if (value === undefined) return 'block';
-  const v = value.toLowerCase().trim();
-  if (['false', '0', 'off', 'no'].includes(v)) return 'off';
-  if (['warn', 'warning'].includes(v)) return 'warn';
-  if (['true', '1', 'on', 'yes', 'block'].includes(v)) return 'block';
-  return 'block';
 }
 
 function defaultPort(protocol: string): string {

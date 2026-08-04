@@ -6,7 +6,7 @@
 
 import path from 'path';
 import os from 'os';
-import { parseProxyRequiredMode } from './proxy.js';
+import { parseProxyRequiredMode } from './proxy-mode.js';
 
 /**
  * 日志级别枚举

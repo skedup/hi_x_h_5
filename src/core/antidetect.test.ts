@@ -6,10 +6,12 @@
  */
 import { describe, it, expect } from 'bun:test';
 import { CooccurrenceGuard, sha256OfText } from './antidetect.js';
+import { config } from './config.js';
 
 // 构造一个确定性的测试配置
 function makeCfg(overrides: any = {}) {
   return {
+    ...config.antiDetect,
     cooccurrence: {
       enabled: true,
       sequential: true,
