@@ -33,6 +33,16 @@ export interface XhsClientOptions {
   state?: any;
   /** Proxy server URL (e.g., "http://proxy:8080") */
   proxy?: string;
+  /** C3：IANA timezone */
+  timezoneId?: string;
+  /** C3：BCP-47 locale */
+  locale?: string;
+  /** C3：geolocation */
+  geolocation?: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+  };
   /** Callback invoked when session state changes (e.g., after login) */
   onStateChange?: (state: any) => void | Promise<void>;
 }
@@ -67,6 +77,9 @@ export class XhsClient {
       profileId: options.profileId,
       state: options.state,
       proxy: options.proxy,
+      timezoneId: options.timezoneId,
+      locale: options.locale,
+      geolocation: options.geolocation,
       onStateChange: options.onStateChange,
     });
   }

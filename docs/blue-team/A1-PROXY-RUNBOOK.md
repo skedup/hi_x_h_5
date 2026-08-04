@@ -36,4 +36,9 @@ export XHS_MCP_AD_PROXY_REQUIRED=block
 
 ## 与 C3/C8
 
-启用地理代理后应尽快落地 timezone/locale/geo（C3）与 WebRTC 抑制（C8），避免「有代理仍漏本机 IP/时区」的半成品上量。
+启用地理代理后应配置账号 `timezoneId` / `locale`（必要时 `geolocation`），并确认 WebRTC 缓解开启（默认）：
+
+- C3：[C3-LOCALE-ENV.md](./C3-LOCALE-ENV.md) — `xhs_set_account_config`
+- C8：[C8-WEBRTC.md](./C8-WEBRTC.md) — `XHS_MCP_AD_WEBRTC_MITIGATION`（默认 true；有 proxy 时写 prefs）
+
+有 proxy 却无属地时启动会 warn，避免「有代理仍漏本机时区」的半成品上量。

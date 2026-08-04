@@ -203,10 +203,11 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0/P1 |
 | **做什么** | DB 字段；launch 传入；`grantPermissions(['geolocation'])`；与 C1 去掉 deny 联调；校验 `Intl` + `navigator.languages` / Accept-Language；**禁止无属地时瞎填 geo**。不默认伪造 UA。 |
 | **DoD** | 配置后时区与 languages 一致；A1 多账号场景联调通过 |
+| **触及** | [C3-LOCALE-ENV.md](./C3-LOCALE-ENV.md) · `locale-env.ts` · `context.ts` · `accounts` · `tools/account.ts` |
 
 ### C4 · 配图下载对齐 downloadFile
 
@@ -249,13 +250,13 @@
 
 | 字段 | 内容 |
 |------|------|
-| **状态** | todo |
+| **状态** | done |
 | **优先级** | P0/P1 |
 | **依据** | 01 P0-4（指纹 review） |
-| **做什么** | ① A1 启用 proxy 时，评估并落地 WebRTC 抑制（如 Chromium 策略 / `webrtc.ip_handling` / 权限或 init 策略——须不引入可观测异常指纹）。② 自检脚本或手工清单：代理下 `RTCPeerConnection` ICE 候选是否仍暴露宿主/机房 IP。③ 若技术不可行：`wontfix` + 威胁模型（仅信任不泄漏的代理类型），写入 01。④ 与 A1 联调：有 proxy 无 WebRTC 缓解不得标 A1 完全 mitigated。 |
-| **触及** | `context.ts` / launch args 或 context 选项 · 文档 · 可选 scripts |
-| **DoD** | 代理会话下 ICE 无宿主公网/局域网泄漏，或书面 `wontfix`；自检步骤进 01 §5 |
-| **回滚** | env 关闭抑制（默认开当 A1 proxy 启用时） |
+| **做什么** | ① A1 启用 proxy 时写入 `webrtc.ip_handling_policy=disable_non_proxied_udp`。② 自检清单见 [C8-WEBRTC.md](./C8-WEBRTC.md) / 01 §5。③ 若 prefs 在特定 Chrome 未生效：威胁模型 + 可 `wontfix` 该路径。④ 与 A1 联调。 |
+| **触及** | [C8-WEBRTC.md](./C8-WEBRTC.md) · `webrtc-prefs.ts` · `context.ts` · `config.ts` |
+| **DoD** | 代理会话下 ICE 无宿主公网/局域网泄漏，或书面接受残余风险；自检步骤进 01 §5 |
+| **回滚** | `XHS_MCP_AD_WEBRTC_MITIGATION=false` |
 | **依赖** | 与 A1 捆绑验收；可与 C3 同 PR |
 
 **Wave C 出口**：args 干净+容器说明；登录 headful；A1+C3 自洽；配图头一致；登出归档；**WebRTC 已缓解或书面接受**；CLAUDE.md 与 live config 一致。
@@ -318,8 +319,8 @@ C4 · C5 · C6 · C7 相对独立
 - [ ] Explore 视频接触率可检；explore 滚动 preset
 - [ ] `navigateWithRetry` / `alreadyDone` 无均匀探测指纹
 - [ ] 登录强制 headful（有图形时）；容器 no-sandbox 有文档
-- [x] A1+C3 时区/languages 自洽；配图 Referer/Sec-Fetch 对齐（配图 C4 done；C3 仍待）
-- [ ] 代理下 WebRTC ICE 无宿主泄漏（或 `wontfix` 书面）
+- [x] A1+C3 时区/languages 自洽；配图 Referer/Sec-Fetch 对齐（配图 C4 done；C3 done）
+- [x] 代理下 WebRTC ICE 无宿主泄漏（prefs `disable_non_proxied_udp`；手工自检见 C8；残余风险见威胁模型）
 - [x] CLAUDE.md 与 config 默认一致、无 stealth.js 虚述
 - [ ] 01/02/03 对应 P0 标 mitigated
 

@@ -90,12 +90,12 @@
 
 1. 收紧 `BROWSER_ARGS`：默认去掉 no-sandbox / deny-permission-prompts；删重复的 AutomationControlled 行；容器用 env 开 no-sandbox。
 2. 登录强制 headful + `viewport: null`；无 DISPLAY 用 Xvfb 或 `ALLOW_HEADLESS_LOGIN`。
-3. **C8**：WebRTC/ICE 抑制或书面 `wontfix` + 自检清单；同机共现工程约束。
-4. **A1 与 C3+C8 捆绑**：不得长期「有 proxy 无时区 / 未处理 WebRTC」。
+3. **C8**：WebRTC/ICE — **mitigated**（prefs；见 [C8-WEBRTC.md](./C8-WEBRTC.md)）；同机共现工程约束仍属基建。
+4. **A1 与 C3+C8 捆绑**：代码已接线；运维须为地理代理账号补齐 `timezoneId`/`locale`。
 
 ### P1
 
-5. 账号级 timezone/locale/geolocation + `grantPermissions`；校验 `navigator.languages` / Accept-Language。
+5. 账号级 timezone/locale/geolocation + `grantPermissions` — **mitigated（C3）**；见 [C3-LOCALE-ENV.md](./C3-LOCALE-ENV.md)。
 6. evaluate 封装 + `waitForFunction` 主世界等待策略成文 — **done（C6）**。
 7. `resolveImagePaths` 对齐 `downloadFile`（proxy + Referer + Sec-Fetch）— **done（C4）**。
 8. 登出 = 归档 profile（复用 `profile.ts` 模式）— **done（C5）**。
@@ -106,12 +106,11 @@
 
 - [ ] 同机双账号对比 Canvas/WebGL hash
 - [ ] `HEADLESS=true` 时登录 viewport 是否 1920×1080
-- [ ] 异地代理下 `Intl` / `navigator.languages` 是否仍为宿主机
-- [ ] 代理下 WebRTC 候选地址是否暴露宿主 IP
+- [x] 异地代理下 `Intl` / `navigator.languages`：经 C3 `timezoneId`/`locale` 配置后应与账号属地一致（见 [C3-LOCALE-ENV.md](./C3-LOCALE-ENV.md)）
+- [x] 代理下 WebRTC：prefs `disable_non_proxied_udp`（C8）；手工 ICE 自检见 [C8-WEBRTC.md](./C8-WEBRTC.md)
 - [x] 发布配图请求是否带与浏览一致的 Referer/Sec-Fetch/Cookie 通道（C4）
 - [x] `deleteCookies` 后 profile 内 IndexedDB 是否仍在（C5：原路径应不存在，内容在 `.archived-*`）
-- [ ] 去掉 deny 并 grant geolocation 后 `permissions.query` 是否一致
-
+- [x] 去掉 deny 并 grant geolocation 后（C1+C3）：配置 geo 的账号启动时会 `grantPermissions`
 ---
 
 ## 6. 状态
@@ -119,4 +118,4 @@
 | 项 | 状态 |
 |----|------|
 | 审计 | open（review 修订已合入文档） |
-| Wave C 整改 | pending |
+| Wave C 整改 | C1–C8 代码项 done（C3/C8 见专项文档）；同机硬件指纹共现仍属基建/运维约束 |

@@ -258,6 +258,7 @@ All configuration can be controlled via environment variables:
 | `XHS_MCP_AD_LIVENESS_IDLE` | `0` | 无人确认超时 ms；`0` 关闭 |
 | `XHS_MCP_AD_HEADLESS_WRITE_GATE` | `true` | B1 写操作拒绝 headless；`false` 关闭 |
 | `XHS_MCP_AD_PROXY_REQUIRED` | `block` | 多账号写出口门禁：`block`/`warn`/`off`；见 `docs/blue-team/A1-PROXY-RUNBOOK.md` |
+| `XHS_MCP_AD_WEBRTC_MITIGATION` | `true` | C8 代理会话写 `webrtc.ip_handling_policy=disable_non_proxied_udp`；`false` 关闭；见 `docs/blue-team/C8-WEBRTC.md` |
 | `XHS_MCP_AD_PERSIST` | `true` | A5 共现守卫 committed 落库；`false` 仅内存 |
 | `XHS_MCP_AD_PERSIST_TTL_MS` | `2592000000` | 持久化行 TTL（默认 30 天） |
 | `XHS_MCP_AD_HEAVY_TAIL` | `true` | B1 行为重尾延迟；`false` 退回窄带均匀；见 `docs/blue-team/B1-CALL-SITES.md` |

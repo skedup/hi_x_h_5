@@ -12,6 +12,7 @@ import { XhsDatabase } from '../db/index.js';
 import { getLoginSessionManager, LoginSession } from '../core/login-session.js';
 import { getPrompt, setPrompt, PromptType, deleteAccountPrompts } from '../core/prompt-manager.js';
 import { validateProxyInput } from '../core/proxy.js';
+import { mergeAccountLocaleEnv } from '../core/locale-env.js';
 
 /**
  * Account management tool definitions for MCP.
@@ -114,7 +115,8 @@ Verification code expires in 1 minute.`,
   },
   {
     name: 'xhs_set_account_config',
-    description: 'Update account configuration such as name, proxy or status.',
+    description:
+      'Update account configuration: name, proxy, status, and C3 locale env (timezoneId / locale / geolocation). Geolocation requires timezoneId and locale.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -135,6 +137,24 @@ Verification code expires in 1 minute.`,
           type: 'string',
           enum: ['active', 'suspended', 'banned'],
           description: 'Account status',
+        },
+        timezoneId: {
+          type: 'string',
+          description: 'IANA timezone (e.g. Asia/Shanghai). Empty string clears. Recommended when using geo proxy.',
+        },
+        locale: {
+          type: 'string',
+          description: 'BCP-47 locale (e.g. zh-CN). Empty string clears. Drives navigator.languages / Accept-Language.',
+        },
+        geolocation: {
+          type: 'object',
+          description:
+            'Browser geolocation. Requires timezoneId + locale on the account after merge. Pass null to clear (JSON null).',
+          properties: {
+            latitude: { type: 'number' },
+            longitude: { type: 'number' },
+            accuracy: { type: 'number' },
+          },
         },
       },
       required: ['account'],
@@ -266,6 +286,9 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
           name: acc.name,
           status: acc.status,
           proxy: acc.proxy || null,
+          timezoneId: acc.timezoneId || null,
+          locale: acc.locale || null,
+          geolocation: acc.geolocation || null,
           hasSession: !!acc.state,
           profile: profile
             ? {
@@ -680,12 +703,24 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
     }
 
     case 'xhs_set_account_config': {
+      const geoSchema = z
+        .object({
+          latitude: z.number().finite(),
+          longitude: z.number().finite(),
+          accuracy: z.number().finite().optional(),
+        })
+        .nullable()
+        .optional();
+
       const params = z
         .object({
           account: z.string(),
           name: z.string().min(1).max(64).optional(),
           proxy: z.string().optional(),
           status: z.enum(['active', 'suspended', 'banned', 'migration_required']).optional(),
+          timezoneId: z.string().optional(),
+          locale: z.string().optional(),
+          geolocation: geoSchema,
         })
         .parse(args);
 
@@ -726,10 +761,56 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
         }
       }
 
+      // C3：合并校验属地（空串清除 timezone/locale；geolocation null 清除）
+      const localePatch: {
+        timezoneId?: string | null;
+        locale?: string | null;
+        geolocation?: { latitude: number; longitude: number; accuracy?: number } | null;
+      } = {};
+      if (params.timezoneId !== undefined) {
+        localePatch.timezoneId = params.timezoneId.trim() === '' ? null : params.timezoneId;
+      }
+      if (params.locale !== undefined) {
+        localePatch.locale = params.locale.trim() === '' ? null : params.locale;
+      }
+      if (params.geolocation !== undefined) {
+        localePatch.geolocation = params.geolocation;
+      }
+
+      let mergedLocale: {
+        timezoneId?: string;
+        locale?: string;
+        geolocation?: { latitude: number; longitude: number; accuracy?: number };
+      } | null = null;
+      if (
+        localePatch.timezoneId !== undefined ||
+        localePatch.locale !== undefined ||
+        localePatch.geolocation !== undefined
+      ) {
+        const merged = mergeAccountLocaleEnv(
+          {
+            timezoneId: account.timezoneId,
+            locale: account.locale,
+            geolocation: account.geolocation,
+          },
+          localePatch,
+        );
+        if (!merged.ok) {
+          return {
+            content: [{ type: 'text', text: merged.error }],
+            isError: true,
+          };
+        }
+        mergedLocale = merged.value;
+      }
+
       const updates: {
         name?: string;
         proxy?: string;
         status?: 'active' | 'suspended' | 'banned' | 'migration_required';
+        timezoneId?: string | null;
+        locale?: string | null;
+        geolocation?: { latitude: number; longitude: number; accuracy?: number } | null;
       } = {};
       if (params.name !== undefined) {
         updates.name = params.name;
@@ -739,6 +820,16 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
       }
       if (params.status !== undefined) {
         updates.status = params.status;
+      }
+      // 写回校验后的 merged.value，避免 patch 里 NaN/非法值绕过合并结果落库
+      if (mergedLocale && localePatch.timezoneId !== undefined) {
+        updates.timezoneId = mergedLocale.timezoneId ?? null;
+      }
+      if (mergedLocale && localePatch.locale !== undefined) {
+        updates.locale = mergedLocale.locale ?? null;
+      }
+      if (mergedLocale && localePatch.geolocation !== undefined) {
+        updates.geolocation = mergedLocale.geolocation ?? null;
       }
 
       const updated = await pool.updateAccountConfig(params.account, updates);
@@ -759,6 +850,9 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
                       name: updatedAccount.name,
                       status: updatedAccount.status,
                       proxy: updatedAccount.proxy || null,
+                      timezoneId: updatedAccount.timezoneId || null,
+                      locale: updatedAccount.locale || null,
+                      geolocation: updatedAccount.geolocation || null,
                     }
                   : null,
               },
