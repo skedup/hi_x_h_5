@@ -87,26 +87,29 @@ export function validateAccountLocaleEnv(
   }
 
   if (input.geolocation !== undefined) {
-    const g = input.geolocation;
-    if (g === null || (typeof g === 'object' && Number.isNaN((g as any).latitude))) {
-      // 允许显式清空由调用方用 null 通道处理；此处忽略非法空对象
-    } else {
-      const { latitude, longitude, accuracy } = g;
-      if (typeof latitude !== 'number' || typeof longitude !== 'number') {
-        return { ok: false, error: 'geolocation requires numeric latitude and longitude' };
-      }
-      if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
-        return { ok: false, error: 'geolocation latitude/longitude out of range' };
-      }
-      if (accuracy !== undefined && (typeof accuracy !== 'number' || accuracy < 0)) {
-        return { ok: false, error: 'geolocation accuracy must be a non-negative number' };
-      }
-      out.geolocation = {
-        latitude,
-        longitude,
-        ...(accuracy !== undefined ? { accuracy } : {}),
-      };
+    const { latitude, longitude, accuracy } = input.geolocation;
+    if (
+      typeof latitude !== 'number' ||
+      typeof longitude !== 'number' ||
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude)
+    ) {
+      return { ok: false, error: 'geolocation requires finite numeric latitude and longitude' };
     }
+    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      return { ok: false, error: 'geolocation latitude/longitude out of range' };
+    }
+    if (
+      accuracy !== undefined &&
+      (typeof accuracy !== 'number' || !Number.isFinite(accuracy) || accuracy < 0)
+    ) {
+      return { ok: false, error: 'geolocation accuracy must be a non-negative finite number' };
+    }
+    out.geolocation = {
+      latitude,
+      longitude,
+      ...(accuracy !== undefined ? { accuracy } : {}),
+    };
   }
 
   if (out.geolocation && (!out.timezoneId || !out.locale)) {
@@ -191,11 +194,16 @@ export function parseGeolocationJson(raw: string | null | undefined): AccountLoc
   if (!raw) return undefined;
   try {
     const o = JSON.parse(raw);
-    if (typeof o?.latitude === 'number' && typeof o?.longitude === 'number') {
+    if (
+      typeof o?.latitude === 'number' &&
+      typeof o?.longitude === 'number' &&
+      Number.isFinite(o.latitude) &&
+      Number.isFinite(o.longitude)
+    ) {
       return {
         latitude: o.latitude,
         longitude: o.longitude,
-        ...(typeof o.accuracy === 'number' ? { accuracy: o.accuracy } : {}),
+        ...(typeof o.accuracy === 'number' && Number.isFinite(o.accuracy) ? { accuracy: o.accuracy } : {}),
       };
     }
   } catch {

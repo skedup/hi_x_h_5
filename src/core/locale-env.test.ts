@@ -41,6 +41,21 @@ describe('validateAccountLocaleEnv', () => {
     });
     expect(r.ok).toBe(true);
   });
+
+  it('NaN / Infinity 坐标被拒（不得当清除）', () => {
+    const nanLat = validateAccountLocaleEnv({
+      timezoneId: 'Asia/Shanghai',
+      locale: 'zh-CN',
+      geolocation: { latitude: Number.NaN, longitude: 121.5 },
+    });
+    expect(nanLat.ok).toBe(false);
+    const infLon = validateAccountLocaleEnv({
+      timezoneId: 'Asia/Shanghai',
+      locale: 'zh-CN',
+      geolocation: { latitude: 31, longitude: Number.POSITIVE_INFINITY },
+    });
+    expect(infLon.ok).toBe(false);
+  });
 });
 
 describe('buildPlaywrightLocaleOptions', () => {
@@ -84,5 +99,13 @@ describe('mergeAccountLocaleEnv', () => {
       expect(cleared.value.geolocation).toBeUndefined();
       expect(cleared.value.timezoneId).toBe('Asia/Shanghai');
     }
+  });
+
+  it('NaN geo patch 合并失败', () => {
+    const r = mergeAccountLocaleEnv(
+      { timezoneId: 'Asia/Shanghai', locale: 'zh-CN' },
+      { geolocation: { latitude: Number.NaN, longitude: 1 } },
+    );
+    expect(r.ok).toBe(false);
   });
 });

@@ -705,9 +705,9 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
     case 'xhs_set_account_config': {
       const geoSchema = z
         .object({
-          latitude: z.number(),
-          longitude: z.number(),
-          accuracy: z.number().optional(),
+          latitude: z.number().finite(),
+          longitude: z.number().finite(),
+          accuracy: z.number().finite().optional(),
         })
         .nullable()
         .optional();
@@ -777,6 +777,11 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
         localePatch.geolocation = params.geolocation;
       }
 
+      let mergedLocale: {
+        timezoneId?: string;
+        locale?: string;
+        geolocation?: { latitude: number; longitude: number; accuracy?: number };
+      } | null = null;
       if (
         localePatch.timezoneId !== undefined ||
         localePatch.locale !== undefined ||
@@ -796,6 +801,7 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
             isError: true,
           };
         }
+        mergedLocale = merged.value;
       }
 
       const updates: {
@@ -815,14 +821,15 @@ export async function handleAccountTools(name: string, args: any, pool: AccountP
       if (params.status !== undefined) {
         updates.status = params.status;
       }
-      if (localePatch.timezoneId !== undefined) {
-        updates.timezoneId = localePatch.timezoneId;
+      // 写回校验后的 merged.value，避免 patch 里 NaN/非法值绕过合并结果落库
+      if (mergedLocale && localePatch.timezoneId !== undefined) {
+        updates.timezoneId = mergedLocale.timezoneId ?? null;
       }
-      if (localePatch.locale !== undefined) {
-        updates.locale = localePatch.locale;
+      if (mergedLocale && localePatch.locale !== undefined) {
+        updates.locale = mergedLocale.locale ?? null;
       }
-      if (localePatch.geolocation !== undefined) {
-        updates.geolocation = localePatch.geolocation;
+      if (mergedLocale && localePatch.geolocation !== undefined) {
+        updates.geolocation = mergedLocale.geolocation ?? null;
       }
 
       const updated = await pool.updateAccountConfig(params.account, updates);
