@@ -25,49 +25,44 @@
 
 ### P0
 
-#### P0-1 Interact「直链 → 页内无阅读 → 一点即关」
+#### P0-1 Interact「直链 → 页内无阅读 → 一点即关」 — **mitigated（B3）**
 
-- **证据**：`likeFeed` / `favoriteFeed` / `postComment`：`newPage` → `goto`（经 `navigateWithRetry`）→ `rateLimitedSleep(REQUEST_INTERVAL)`（默认 **≥2s**）→ 状态检查 → `click` → `page.close()`。
-- **真问题**：无阅读滚动、无有机入站/referrer、一点即关；**不是**「goto 后 <1s 关页」（该描述已被现状限流否定，不可作 DoD）。
-- **批处理时最强行为指纹。**
+- **原证据**：`likeFeed` / `favoriteFeed` / `postComment`：goto → 短等 → click → close。
+- **现状**：默认开启 Interact 会话化（重尾 pre-dwell → ≥1 阅读 scroll → 轨迹 click → post-stay）。回滚：`XHS_MCP_AD_INTERACT_SESSION=false`。见 [B3-CALL-SITES.md](./B3-CALL-SITES.md)。
+- **残余**：默认仍直链入站；有机 feed 点入见 **D1**（可选 `entry:feed`）。
 
-#### P0-2 点击缺多步 Fitts / hover dwell
+#### P0-2 点击缺多步 Fitts / hover dwell — **mitigated（B2）**
 
-- Explore：`scrollIntoViewIfNeeded` + `click({ force: true })`。
-- Interact：`likeBtn.click()` 等走 Playwright 动作链，通常含 **scroll + 移到元素中心（多为 steps≈1 瞬移）+ down/up**。
-- **正确表述**：缺的是 **多步 Fitts/Bezier 轨迹与 hover dwell**，**不是**「零 pointermove / 无 pointer 事件」。
-- `force: true` 可打穿遮罩/未稳定 DOM。
+- **现状**：`clickWithTrajectory`（默认 `minSteps≥5`）；`force` 仅 fallback。见 [B2-CALL-SITES.md](./B2-CALL-SITES.md)。回滚：`XHS_MCP_AD_TRAJECTORY=false`。
 
-#### P0-3 行为延迟为均匀族
+#### P0-3 行为延迟为均匀族 — **mitigated（B1，行为路径）**
 
-- `randomBetween`、`jitteredSleep`（对称均匀因子）、`rateLimitedSleep`（`[base, base×1.4]`）、explore 阅读停顿均为均匀族时钟指纹。
-- `jitteredSleep` ≠ 独立均匀间隔采样，但仍属均匀时钟。
+- **现状**：行为等待走 `heavyTailDelay`（默认开）；`jitteredSleep` 保留给功能轮询；`rateLimitedSleep` 仍 ≥ base。见 [B1-CALL-SITES.md](./B1-CALL-SITES.md)。
 
-#### P0-4 中文输入无 IME composition
+#### P0-4 中文输入无 IME composition — **wontfix（B5 Phase2）**
 
-- `typeLikeHuman` 按码点 `keyboard.type`；注释已承认无 composition。
-- **B5 结论**：`typing.mode`（`XHS_MCP_AD_TYPING_MODE`）成文；完整 IME composition 为 **wontfix**（见 [B5-IME.md](./B5-IME.md)）。缓解：revise + 重尾间隔。
+- `typeLikeHuman` 按码点；`typing.mode=ime` 降级 direct + warn。见 [B5-IME.md](./B5-IME.md)。
 
-#### P0-5 Explore 硬跳过全部视频
+#### P0-5 Explore 硬跳过全部视频 — **mitigated（B4）**
 
-- `type === 'video' → false`（`explore.ts`）。
+- 默认允许视频接触率路径；回滚：`XHS_MCP_AD_EXPLORE_ALLOW_VIDEO=false`。见 [B4-CALL-SITES.md](./B4-CALL-SITES.md)。
 
 ### P1
 
-| ID | 向量 | 证据 |
-|----|------|------|
-| P1-1 | Explore 私有弱滚动 ≠ 共享 `humanScroll` | 私有等距 wheel vs 共享 easing；搜索用强、浏览用弱 |
-| P1-2 | `scrollIntoViewIfNeeded` 程序化滚入 | explore / interact |
-| P1-3 | 找评论 `scrollBy(0.8*innerHeight)` + **固定 800ms** | `interact.ts`；须进 B6 |
-| P1-4 | **Explore 与 Interact** 评论/回复 `typeLikeHuman` 无 revise | 发布正文有 revise；标签仍无 |
-| P1-5 | AI 失败「很棒的分享！」/ 默认必赞帖 | `explore-ai.ts` |
-| P1-6 | 打开率 `+ skippedRounds * 0.1` | 线性爬升 |
-| P1-7 | reply/likeComment 不用 `rateLimitedSleep` | 与 like/fav/comment 分裂 |
-| P1-8 | 发布标签无修订；清空字段 40ms 固定 sleep | `publish.ts` |
-| P1-9 | `mouse.click(400, 50)` 关遮罩 | 热力尖峰 |
-| P1-10 | Explore modal 内赞→评短间隔，零 `rateLimitedSleep` | 与 Interact 限流分裂 |
-| P1-11 | `navigateWithRetry` 失败时 3–5s 均匀连刷同 URL | 重试指纹 |
-| P1-12 | `alreadyDone` 仍 goto→读 state→关页 | 直链探活会话图 |
+| ID | 向量 | 证据 | 状态 |
+|----|------|------|------|
+| P1-1 | Explore 私有弱滚动 ≠ 共享 `humanScroll` | 曾私有等距 wheel | **mitigated（B4）** explore preset |
+| P1-2 | `scrollIntoViewIfNeeded` 程序化滚入 | explore / interact | 部分缓解（轨迹前仍可能用） |
+| P1-3 | 找评论固定 800ms | `interact.ts` | **mitigated（B6）** |
+| P1-4 | 评论/回复无 revise | explore/interact | **mitigated（B6）** |
+| P1-5 | AI 失败固定句 / 默认赞帖 | `explore-ai.ts` | **mitigated（A4）** |
+| P1-6 | 打开率线性爬升 | explore | 部分（冷却策略见实现） |
+| P1-7 | reply/likeComment 限流分裂 | interact | **mitigated（B6）** |
+| P1-8 | 发布标签无修订；40ms sleep | `publish.ts` | 低优残余 |
+| P1-9 | `mouse.click(400, 50)` 关遮罩 | 热力尖峰 | 低优残余 |
+| P1-10 | Explore modal 写间隔 | explore | **mitigated（B6）** |
+| P1-11 | `navigateWithRetry` 均匀重试 | interact | **mitigated（B7）** |
+| P1-12 | `alreadyDone` 纯探测会话 | interact | **mitigated（B7）** |
 
 ### P2
 
@@ -97,27 +92,27 @@
 
 ### P0（Wave B）
 
-1. **Interact 会话化（直链保留）**：重尾 dwell → ≥1 次阅读滚动 → 轨迹 click（`steps≥N`）→ 动作后停留；批处理可 `keepPage`。验收**禁止**使用「<1s 关页」条款。
-2. **轨迹点击原语**：多步 move + hover；`force` 仅 fallback + 审计。
-3. **`heavyTailDelay`**：只替换行为等待（打字、阅读、滚动步间、Interact dwell）；**不要**默改全局 `jitteredSleep`（发布轮询等功能等待保留窄带）。
-4. **IME**：Phase1 策略成文；Phase2 **wontfix**（见 [B5-IME.md](./B5-IME.md)）。
-5. **Explore 视频**：按相对 feed 视频占比设接触率，不能只「打开即关凑统计」。
+1. **Interact 会话化（直链保留）** — **done（B3）**；验收禁止「&lt;1s 关页」假条款。
+2. **轨迹点击原语** — **done（B2）**。
+3. **`heavyTailDelay`** — **done（B1）**；勿默改全局 `jitteredSleep`。
+4. **IME**：Phase1 成文；Phase2 **wontfix**（[B5-IME.md](./B5-IME.md)）。
+5. **Explore 视频** — **done（B4）**。
 
 ### P1
 
-6. Explore 用 **独立** `SCROLL_CONFIG_EXPLORE`（勿直接套搜索的 1–2s 读延迟拖垮 duration）。
-7. Explore + Interact 评论/回复开 revise；标签同理。
-8. wheel 逼近可见；B6 纳入固定 800ms + explore 写间隔 `rateLimitedSleep`。
-9. AI fallback 跳过；打开率改冷却/衰减。
-10. **B7**：`navigateWithRetry` 重尾重试；`alreadyDone` 避免纯探测会话（见 plan）。
+6. Explore `SCROLL_CONFIG_EXPLORE` — **done（B4）**。
+7. Explore + Interact 评论/回复 revise — **done（B6）**。
+8. wheel / 写间隔 — **done（B6）**。
+9. AI fallback 跳过 — **done（A4）**。
+10. **B7**：`navigateWithRetry` / `alreadyDone` — **done**。
 
-### 明确延后（Wave D）
+### 明确延后 / 已落地
 
-- 从 explore/search **有机点入** 替代直链（可选 `entry: 'feed'`）— **D1 mitigated**（默认仍 direct；见 [D1-FEED-ENTRY.md](./D1-FEED-ENTRY.md)）。
+- 有机点入 — **D1 mitigated**（默认仍 direct；见 [D1-FEED-ENTRY.md](./D1-FEED-ENTRY.md)）。
 
 ---
 
-## 5. 跨服务一致性矩阵（Wave B 目标态）
+## 5. 跨服务一致性矩阵（目标态 ≈ 现状）
 
 | 行为原语 | 搜索 | Explore | Interact | 发布 |
 |----------|------|---------|----------|------|
@@ -125,7 +120,7 @@
 | 点击 | 多步轨迹 | 多步、无 force 默认 | 多步轨迹 | 多步轨迹 |
 | 键入 | n/a | revise 开 | revise 开 | revise 开 |
 | 延迟 | 行为重尾 | 行为重尾 | 重尾 + rate limit | 功能窄带 + 行为重尾 |
-| 入站 | 列表 | feed | **Wave B：直链+页内；Wave D：feed 点入** | 创作者页 |
+| 入站 | 列表 | feed | 默认直链+页内；可选 `entry:feed`（D1） | 创作者页 |
 
 ---
 
@@ -133,5 +128,5 @@
 
 | 项 | 状态 |
 |----|------|
-| 审计 | open（review 修订已合入文档） |
-| Wave B 整改 | pending |
+| 审计 | closed（P0 可缓解项 mitigated；IME = wontfix） |
+| Wave B 整改 | **done**（B1–B7；B5 Phase2 wontfix） |

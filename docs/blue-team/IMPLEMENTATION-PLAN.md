@@ -309,32 +309,38 @@ C4 · C5 · C6 · C7 相对独立
 
 ## 6. 总验收清单
 
-- [ ] 多账号写互异 proxy；同 server 被拒；迁移 warn→block 有记录
-- [ ] 工具 like ↔ explore like 互斥；同文案跨帖互斥
-- [ ] xsec 默认 block；explore 提取即 bind
-- [ ] 无固定评论句；AI 失败不默认赞帖
-- [ ] 重启后 dedup/xsec 仍生效
-- [ ] Interact：dwell + 阅读滚动 + steps≥N 轨迹（非「&lt;1s」假 DoD）
-- [ ] 行为重尾；功能 `jitteredSleep` 未误伤；rateLimited ≥ base
-- [ ] Explore 视频接触率可检；explore 滚动 preset
-- [ ] `navigateWithRetry` / `alreadyDone` 无均匀探测指纹
-- [ ] 登录强制 headful（有图形时）；容器 no-sandbox 有文档
-- [x] A1+C3 时区/languages 自洽；配图 Referer/Sec-Fetch 对齐（配图 C4 done；C3 done）
-- [x] 代理下 WebRTC ICE 无宿主泄漏（prefs `disable_non_proxied_udp`；手工自检见 C8；残余风险见威胁模型）
-- [x] CLAUDE.md 与 config 默认一致、无 stealth.js 虚述
-- [ ] 01/02/03 对应 P0 标 mitigated
+> **收口日期**：2026-08-04 · 代码项以 develop 默认为准；标 `[x]` = 代码/单测 DoD 已满足。  
+> **残余**（不因本清单勾选而消失）：同机硬件指纹（D4）、同 /24（D3）、A7 登录速率、IME composition（B5 wontfix）、Gemini 双出口。
+
+- [x] 多账号写互异 proxy；同 server 被拒；迁移 warn→block 有记录（A1 · [A1-PROXY-RUNBOOK.md](./A1-PROXY-RUNBOOK.md)）
+- [x] 工具 like ↔ explore like 互斥；同文案跨帖互斥（A2/A4 · `comment_text:` + D2 近邻）
+- [x] xsec 默认 block；explore 提取即 bind（A3）
+- [x] 无固定评论句；AI 失败不默认赞帖（A4）
+- [x] 重启后 dedup/xsec 仍生效（A5 · `XHS_MCP_AD_PERSIST` 默认 true）
+- [x] Interact：dwell + 阅读滚动 + steps≥N 轨迹（B2/B3 · 非「&lt;1s」假 DoD）
+- [x] 行为重尾；功能 `jitteredSleep` 未误伤；rateLimited ≥ base（B1）
+- [x] Explore 视频接触率可检；explore 滚动 preset（B4）
+- [x] `navigateWithRetry` / `alreadyDone` 无均匀探测指纹（B7）
+- [x] 登录强制 headful（有图形时）；容器 no-sandbox 有文档（C2 · [C1-BROWSER-ARGS.md](./C1-BROWSER-ARGS.md) / [C2-LOGIN-HEADFUL.md](./C2-LOGIN-HEADFUL.md)）
+- [x] A1+C3 时区/languages 自洽；配图 Referer/Sec-Fetch 对齐（C3/C4）
+- [x] 代理下 WebRTC ICE 缓解（C8 prefs；手工 ICE 自检见 [C8-WEBRTC.md](./C8-WEBRTC.md)）
+- [x] CLAUDE.md 与 config 默认一致、无 stealth.js 虚述（C7）
+- [x] 01/02/03 对应可缓解 P0 标 mitigated（见各册 §状态；残余见上）
+
+**可选未做**：A7 新号登录速率（plan 仍 `todo`）。
 
 ---
 
-## 7. 明确不在本轮范围（见 Wave D）
+## 7. 明确延后 / 不在本轮代码范围
 
-| 项 | 原因 |
-|----|------|
-| 容器/云手机硬件指纹 | Wave D4 / 基建 |
-| 同 /24 代理检测 | Wave D3 |
-| feed 有机点入 | Wave D1 |
-| embedding / pHash | Wave D2 |
-| 换驱动 / 重写 MCP | 保持 patchright |
+| 项 | 状态 | 原因 |
+|----|------|------|
+| 容器/云手机硬件指纹 | D4 延后 | 基建 |
+| 同 /24 代理检测 | D3 延后 | 需出口 IP 解析 |
+| feed 有机点入 | **D1 done** | 默认仍 `direct`；可选 `entry:feed` |
+| 评论文本近邻 | **D2 done** | simhash；配图 pHash / embedding 不做 |
+| 换驱动 / 重写 MCP | 不做 | 保持 patchright |
+| IME composition | B5 Phase2 **wontfix** | 见 [B5-IME.md](./B5-IME.md) |
 
 ---
 
@@ -342,6 +348,5 @@ C4 · C5 · C6 · C7 相对独立
 
 1. 项状态改 `doing`，分支如 `feat/blue-a2-dedup-keys`。  
 2. 合入后 `done` + 蓝军文档 `mitigated`。  
-3. `wontfix` 须产品确认（IME / 同机指纹 / WebRTC）。  
-4. **未完成 A1–A5（含键统一）前禁止扩大 `accounts:all` 写流量。**  
-5. **未完成 C3+C8 前谨慎扩大异地代理多账号写。**
+3. `wontfix` 须产品确认（IME / 同机指纹 / WebRTC 残余）。  
+4. A1–A5 / C3+C8 已合入 develop；扩大 `accounts:all` / 异地代理多账号写前仍须补齐账号 proxy + timezone/locale，并完成运维红线自检（03 §6）。
