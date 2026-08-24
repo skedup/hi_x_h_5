@@ -22,6 +22,7 @@ from kindred_capability_sdk import (
 from kindred_capability_xiaohongshu import plugin
 from kindred_capability_xiaohongshu.artifacts import COMPOSE_PROFILE, DRAW_PROFILE, FACT
 from kindred_capability_xiaohongshu.client import ProviderError, UnknownSideEffect
+from kindred_capability_xiaohongshu.resources import resource_root
 from kindred_capability_xiaohongshu.session import TickRuntime
 
 TOKEN = "synthetic-xsec-token"
@@ -214,6 +215,31 @@ def _detail_payload() -> dict[str, Any]:
             ]
         },
     }
+
+
+def test_package_resources_are_complete() -> None:
+    root = resource_root()
+    manifest = json.loads((root / "kindred-resources.json").read_text(encoding="utf-8"))
+
+    assert manifest["schema_version"] == 1
+    assert manifest["artifact_routes"] == [
+        {
+            "producer_capability": "compose",
+            "selector_capability": "xiaohongshu",
+            "profile": COMPOSE_PROFILE,
+            "member_paths": {"title": "title.txt"},
+            "source_ref_kinds": ["feed", "memory", "plain", "tick", "xhs"],
+        }
+    ]
+    for relative in (
+        "actions/use_xhs/manifest.yaml",
+        "actions/use_xhs/SKILL.md",
+        "actions/publish_xhs/manifest.yaml",
+        "actions/publish_xhs/SKILL.md",
+        "activities/play_xiaohongshu/manifest.yaml",
+        "activities/play_xiaohongshu/SKILL.md",
+    ):
+        assert (root / relative).is_file()
 
 
 def _responses() -> dict[str, Any]:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kindred-capability-xiaohongshu"
-version = "0.2.1"
+version = "0.3.0"
 description = "Portable Xiaohongshu capability backed by hi_x_h_5"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -15,6 +15,9 @@ dependencies = [
 
 [project.entry-points."kindred.capability.v1"]
 xiaohongshu = "kindred_capability_xiaohongshu.plugin:create_capability"
+
+[project.entry-points."kindred.resources.v1"]
+xiaohongshu = "kindred_capability_xiaohongshu.resources:resource_root"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kindred_capability_xiaohongshu"]

@@ -1,0 +1,12 @@
+name: use_xhs
+desc: 打开小红书，浏览、搜索、查看帖子/主页/自己的内容与通知，或做一次低频互动
+state_effects:
+  stimulation:
+    direction: up
+    magnitude: small
+  fatigue:
+    direction: up
+    magnitude: small
+applies_when: 想借小红书看推荐流、搜索内容、查看作者主页、自己的帖子或评论/点赞/关注通知，确认某条内容事实，或对本轮看见的帖子低频互动
+capabilities:
+  - xiaohongshu

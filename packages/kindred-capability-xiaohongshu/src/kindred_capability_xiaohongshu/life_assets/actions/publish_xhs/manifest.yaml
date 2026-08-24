@@ -1,0 +1,9 @@
+name: publish_xhs
+desc: 把已经完成的图文正式发布到自己的小红书主页
+state_effects:
+  fatigue:
+    direction: up
+    magnitude: small
+applies_when: 当前 Activity run 已有一份 committed 小红书文字 Artifact 和至少一张 committed 图片，并且确实决定公开
+capabilities:
+  - xiaohongshu
