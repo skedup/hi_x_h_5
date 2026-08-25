@@ -1,0 +1,17 @@
+name: play_xiaohongshu
+description: 想打开小红书看看外面的生活，或把此刻一件具体经历整理成图文分享
+uses:
+  - action: use_xhs
+    intent: 浏览、搜索、阅读，或对本轮真实看见的内容做一次克制互动
+  - action: compose
+    intent: 为具体评论、回复或自己的公开表达，形成可在后续拍消费的文字 Artifact
+  - action: draw
+    intent: 为自己的公开表达生成一张真正想配上的图片；没有画面需要时不勉强生成
+  - action: publish_xhs
+    intent: 文字与至少一张图片都已提交，并且此刻确实决定公开发布
+terminal_when: |
+  已经看到了足够的内容、有一个感受可以带回来或一次克制互动已经尝试过；已经明确发布成功；
+  草稿/图片形成后决定暂时保留；发现自己只是被信息流拖着走，或能力不可用时，就 end_activity 收住。
+duration_hint: short
+produces: optional
+requires: []

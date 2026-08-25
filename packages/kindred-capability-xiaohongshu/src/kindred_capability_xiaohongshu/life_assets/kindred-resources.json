@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "artifact_routes": [
+    {
+      "producer_capability": "compose",
+      "selector_capability": "xiaohongshu",
+      "profile": "kindred.compose.xiaohongshu.v1",
+      "member_paths": {"title": "title.txt"},
+      "source_ref_kinds": ["feed", "memory", "plain", "tick", "xhs"]
+    }
+  ]
+}

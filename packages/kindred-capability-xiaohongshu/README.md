@@ -21,6 +21,10 @@ name:  xiaohongshu
 value: kindred_capability_xiaohongshu.plugin:create_capability
 ```
 
+同一个 wheel 还通过 `kindred.resources.v1` 的 `xiaohongshu` entry point 自带两项 Action、
+一项 Activity 与 XHS Compose profile route。Kindred Host 在装配时与公共生活资产组成 15/8
+只读视图；本 package 不再依赖 Kindred root patch 或 derived wheel。
+
 Kindred 配置示例：
 
 ```yaml
