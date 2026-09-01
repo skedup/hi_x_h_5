@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { parseEnv } from 'node:util';
 
 import { SERVICE_API_VERSION } from './service-api.js';
 
 const MCP_PROTOCOL_VERSION = '2025-06-18';
 const SERVICE_LABEL = 'com.kindred.xhs-mcp';
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
 
 type JsonObject = Record<string, unknown>;
 
@@ -38,9 +40,64 @@ function hasSystemChrome(): boolean {
   return candidates.some(existsSync);
 }
 
-export function summarizeStatus(chrome: boolean, accounts: number, loggedIn: number): string {
-  const status = !chrome ? 'chrome_missing' : loggedIn === 0 ? 'not_logged_in' : 'ok';
-  return `status=${status} service_api_version=${SERVICE_API_VERSION} accounts=${accounts} logged_in=${loggedIn}`;
+export function summarizeStatus(chrome: boolean, accounts: number, sessions: number): string {
+  const status = !chrome ? 'chrome_missing' : sessions === 0 ? 'login_required' : 'session_present';
+  const login = sessions === 0 ? 'absent' : 'unverified';
+  return `status=${status} service_api_version=${SERVICE_API_VERSION} accounts=${accounts} sessions=${sessions} login=${login}`;
+}
+
+export function loadOperatorEnvironment(
+  path: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (!path?.trim()) return;
+  let values: NodeJS.Dict<string>;
+  try {
+    values = parseEnv(readFileSync(resolve(path), 'utf8'));
+  } catch {
+    throw new Error('XHS_MCP_ENV_FILE could not be loaded');
+  }
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined && env[key] === undefined) env[key] = value;
+  }
+}
+
+function port(env: NodeJS.ProcessEnv): string {
+  const value = env.XHS_MCP_PORT || '18060';
+  if (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 65535) {
+    throw new Error('XHS_MCP_PORT must be an integer between 1 and 65535');
+  }
+  return value;
+}
+
+export function operatorBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.XHS_MCP_URL || `http://127.0.0.1:${port(env)}`;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('XHS_MCP_URL is malformed');
+  }
+  if (
+    url.protocol !== 'http:' ||
+    !LOOPBACK_HOSTS.has(url.hostname) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    (url.pathname !== '' && url.pathname !== '/')
+  ) {
+    throw new Error('XHS_MCP_URL must be a loopback HTTP service root');
+  }
+  return url.origin;
+}
+
+export function systemdActivationCommands(): string[][] {
+  return [
+    ['--user', 'daemon-reload'],
+    ['--user', 'enable', 'kindred-xhs-mcp.service'],
+    ['--user', 'restart', 'kindred-xhs-mcp.service'],
+  ];
 }
 
 export function renderLaunchAgent(args: string[], dataDir: string, logDir: string): string {
@@ -152,7 +209,7 @@ class McpClient {
 }
 
 function client(write: boolean): McpClient {
-  const baseUrl = (process.env.XHS_MCP_URL || 'http://127.0.0.1:18060').replace(/\/$/, '');
+  const baseUrl = operatorBaseUrl();
   const token = write
     ? process.env.XHS_MCP_HTTP_BEARER
     : process.env.XHS_MCP_HTTP_BEARER_READONLY || process.env.XHS_MCP_HTTP_BEARER;
@@ -165,12 +222,12 @@ async function status(): Promise<void> {
   const accounts = await api.callTool('xhs_list_accounts', {});
   const count = typeof accounts.count === 'number' ? accounts.count : 0;
   const rows = Array.isArray(accounts.accounts) ? accounts.accounts : [];
-  const loggedIn = rows.filter(
+  const sessions = rows.filter(
     (row) => typeof row === 'object' && row !== null && 'hasSession' in row && row.hasSession === true,
   ).length;
-  const summary = summarizeStatus(hasSystemChrome(), count, loggedIn);
+  const summary = summarizeStatus(hasSystemChrome(), count, sessions);
   console.log(summary);
-  if (!summary.startsWith('status=ok ')) process.exitCode = 2;
+  if (!summary.startsWith('status=session_present ')) process.exitCode = 2;
 }
 
 async function login(): Promise<void> {
@@ -209,12 +266,19 @@ function installService(): void {
   const node = join(root, 'node', 'bin', 'node');
   const server = join(root, 'dist', 'index.js');
   if (!existsSync(node) || !existsSync(server)) throw new Error('install-service must run from a release bundle');
-  const port = process.env.XHS_MCP_PORT || '18060';
+  const servicePort = port(process.env);
   const dataDir = resolve(process.env.XHS_MCP_DATA_DIR || join(homedir(), '.xhs-mcp'));
   const logDir = join(dataDir, 'logs');
   mkdirSync(logDir, { recursive: true, mode: 0o700 });
   const envFile = process.env.XHS_MCP_ENV_FILE;
-  const args = [node, ...(envFile ? [`--env-file=${resolve(envFile)}`] : []), server, '--http', '--port', port];
+  const args = [
+    node,
+    ...(envFile ? [`--env-file=${resolve(envFile)}`] : []),
+    server,
+    '--http',
+    '--port',
+    servicePort,
+  ];
   if (platform() === 'darwin') {
     const path = join(homedir(), 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`);
     mkdirSync(dirname(path), { recursive: true });
@@ -230,8 +294,9 @@ function installService(): void {
     const path = join(homedir(), '.config', 'systemd', 'user', 'kindred-xhs-mcp.service');
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, renderSystemdUnit(args, dataDir), { mode: 0o600 });
-    execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'inherit' });
-    execFileSync('systemctl', ['--user', 'enable', '--now', 'kindred-xhs-mcp.service'], { stdio: 'inherit' });
+    for (const args of systemdActivationCommands()) {
+      execFileSync('systemctl', args, { stdio: 'inherit' });
+    }
     console.log(`installed=${path}`);
   } else {
     throw new Error(`unsupported platform: ${platform()}`);
@@ -239,6 +304,7 @@ function installService(): void {
 }
 
 async function main(): Promise<void> {
+  loadOperatorEnvironment(process.env.XHS_MCP_ENV_FILE);
   const command = process.argv[2];
   if (command === 'status') await status();
   else if (command === 'login') await login();

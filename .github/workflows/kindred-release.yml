@@ -30,11 +30,65 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Check out fixed Kindred SDK source
+        uses: actions/checkout@v4
+        with:
+          repository: skedup/kindred
+          ref: b74f8c6b67e91b7e7a23115e778127f9fa365139
+          path: kindred-sdk-source
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install build
-      - run: python -m build packages/kindred-capability-xiaohongshu
+      - name: Install test and build tools
+        run: python -m pip install build pytest
+      - name: Validate release tag identity
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          package_version="$(python -c 'import tomllib; print(tomllib.load(open("packages/kindred-capability-xiaohongshu/pyproject.toml", "rb"))["project"]["version"])')"
+          test "$GITHUB_REF_NAME" = "kindred-xhs-v${package_version}"
+      - name: Build fixed SDK and run Portable package tests
+        run: |
+          python -m build kindred-sdk-source/packages/kindred-capability-sdk
+          python -m pip install kindred-sdk-source/packages/kindred-capability-sdk/dist/*.whl
+          python -m pip install -e packages/kindred-capability-xiaohongshu
+          python -m pytest packages/kindred-capability-xiaohongshu/tests
+      - name: Build Portable package wheel
+        run: python -m build packages/kindred-capability-xiaohongshu
+      - name: Verify clean wheel install, entry points, and license
+        run: |
+          python -m venv "$RUNNER_TEMP/xhs-wheel-smoke"
+          "$RUNNER_TEMP/xhs-wheel-smoke/bin/pip" install \
+            kindred-sdk-source/packages/kindred-capability-sdk/dist/*.whl \
+            packages/kindred-capability-xiaohongshu/dist/*.whl
+          "$RUNNER_TEMP/xhs-wheel-smoke/bin/python" - <<'PY'
+          from importlib import metadata
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          from kindred_capability_sdk import ToolDef
+
+
+          class Secrets:
+              def get(self, name: str) -> None:
+                  return None
+
+
+          entries = metadata.entry_points().select(group="kindred.capability.v1", name="xiaohongshu")
+          assert len(entries) == 1
+          contribution = next(iter(entries)).load()(
+              settings={"mcp_url": "http://127.0.0.1:18060", "write_mode": "none"},
+              secrets=Secrets(),
+          )
+          assert contribution.tool_bindings
+          assert all(isinstance(binding.tool_def, ToolDef) for binding in contribution.tool_bindings)
+          resources = metadata.entry_points().select(group="kindred.resources.v1", name="xiaohongshu")
+          assert len(resources) == 1
+
+          wheel = next(Path("packages/kindred-capability-xiaohongshu/dist").glob("*.whl"))
+          with ZipFile(wheel) as archive:
+              assert any(name.endswith(".dist-info/licenses/LICENSE") for name in archive.namelist())
+          PY
       - run: |
           cd packages/kindred-capability-xiaohongshu/dist
           sha256sum *.whl > SHA256SUMS
@@ -53,7 +107,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: macos-arm64
           - os: ubuntu-24.04
             target: ubuntu-24.04-x86_64
@@ -79,6 +133,19 @@ jobs:
           test -z "$(find release -path '*/node_modules/canvas/build/*' -type f \
             \( -name Makefile -o -name binding.Makefile -o -name canvas.target.mk \
                -o -name config.gypi -o -name gyp-mac-tool \) -print)"
+          bundle="$(find release -mindepth 1 -maxdepth 1 -type d -name 'kindred-xhs-sidecar-*' -print -quit)"
+          test -f "$bundle/node/LICENSE"
+          python3 - "$bundle" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          bundle = Path(sys.argv[1])
+          notices = json.loads((bundle / "THIRD_PARTY_NOTICES.json").read_text())
+          assert any(item.get("name") == "node" for item in notices)
+          sbom = json.loads((bundle / "sbom.cdx.json").read_text())
+          assert any(item.get("name") == "node" for item in sbom.get("components", []))
+          PY
       - name: Install Gitleaks
         env:
           GITLEAKS_VERSION: 8.30.1
@@ -110,4 +177,8 @@ jobs:
       - name: Publish immutable release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --generate-notes --repo "$GITHUB_REPOSITORY"
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --verify-tag --generate-notes --repo "$GITHUB_REPOSITORY"
+          test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json isImmutable --jq .isImmutable)" = true

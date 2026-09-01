@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Build one immutable Kindred XHS sidecar bundle on its target platform."""
 
 from __future__ import annotations
@@ -7,16 +6,20 @@ import argparse
 import gzip
 import hashlib
 import json
-import os
 import platform
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 NODE_VERSION = "22.18.0"
+NODE_LICENSE_SHA256 = "de8f7d08b164a5b05d815cefdcdb332d38846379649b53956071522f63a5e777"
+NODE_LICENSE_URL = (
+    f"https://raw.githubusercontent.com/nodejs/node/v{NODE_VERSION}/LICENSE"
+)
 SERVICE_API_VERSION = "1"
 NATIVE_PACKAGES = ("better-sqlite3", "canvas", "sharp")
 CANVAS_BUILD_METADATA = (
@@ -56,7 +59,7 @@ def detect_target() -> str:
     return target
 
 
-def package_notices(stage: Path) -> list[dict[str, str]]:
+def package_notices(stage: Path, node_version: str) -> list[dict[str, str]]:
     notices: dict[tuple[str, str], dict[str, str]] = {}
     for metadata in (stage / "node_modules").rglob("package.json"):
         try:
@@ -69,7 +72,50 @@ def package_notices(stage: Path) -> list[dict[str, str]]:
             if not isinstance(license_value, str):
                 license_value = "UNKNOWN"
             notices[(name, version)] = {"name": name, "version": version, "license": license_value}
+    notices[("node", node_version)] = {
+        "name": "node",
+        "version": node_version,
+        "license": "MIT and bundled third-party licenses",
+        "notice": "node/LICENSE",
+    }
     return [notices[key] for key in sorted(notices)]
+
+
+def write_node_license(destination: Path) -> None:
+    try:
+        with urllib.request.urlopen(NODE_LICENSE_URL, timeout=30) as response:
+            content = response.read()
+    except OSError as error:
+        raise SystemExit(
+            "bundled Node runtime license could not be obtained"
+        ) from error
+    if hashlib.sha256(content).hexdigest() != NODE_LICENSE_SHA256:
+        raise SystemExit("bundled Node runtime license checksum mismatch")
+    destination.write_bytes(content)
+
+
+def augment_sbom(raw: str, node_version: str) -> str:
+    sbom = json.loads(raw)
+    components = sbom.get("components")
+    if not isinstance(components, list):
+        raise SystemExit("npm SBOM has no component list")
+
+    names = {item.get("name") for item in components if isinstance(item, dict)}
+    missing = sorted(set(NATIVE_PACKAGES) - names)
+    if missing:
+        raise SystemExit(f"npm SBOM omits native packages: {', '.join(missing)}")
+    components.append(
+        {
+            "type": "application",
+            "bom-ref": f"pkg:generic/node@{node_version}",
+            "name": "node",
+            "version": node_version,
+            "licenses": [{"license": {"name": "MIT and bundled third-party licenses"}}],
+            "purl": f"pkg:generic/node@{node_version}",
+            "properties": [{"name": "kindred:license-path", "value": "node/LICENSE"}],
+        }
+    )
+    return json.dumps(sbom, ensure_ascii=False, indent=2) + "\n"
 
 
 def members(stage: Path) -> list[dict[str, Any]]:
@@ -155,9 +201,14 @@ def main() -> None:
     for bin_dir in (stage / "node_modules").rglob(".bin"):
         shutil.rmtree(bin_dir)
 
+    node_executable = shutil.which("node")
+    if not node_executable:
+        raise SystemExit("Node executable was not found")
+    node_binary = Path(node_executable).resolve()
     node_dir = stage / "node" / "bin"
     node_dir.mkdir(parents=True)
-    shutil.copy2(Path(shutil.which("node") or ""), node_dir / "node")
+    shutil.copy2(node_binary, node_dir / "node")
+    write_node_license(stage / "node" / "LICENSE")
     wrapper = stage / "bin" / "kindred-xhs"
     wrapper.parent.mkdir()
     wrapper.write_text(
@@ -174,11 +225,12 @@ def main() -> None:
     )
 
     (stage / "THIRD_PARTY_NOTICES.json").write_text(
-        json.dumps(package_notices(stage), ensure_ascii=False, indent=2) + "\n",
+        json.dumps(package_notices(stage, node_version), ensure_ascii=False, indent=2)
+        + "\n",
         encoding="utf-8",
     )
-    sbom = run("npm", "sbom", "--omit=dev", "--sbom-format=cyclonedx", cwd=stage, capture=True)
-    (stage / "sbom.cdx.json").write_text(sbom, encoding="utf-8")
+    raw_sbom = run("npm", "sbom", "--omit=dev", "--sbom-format=cyclonedx", cwd=stage, capture=True)
+    (stage / "sbom.cdx.json").write_text(augment_sbom(raw_sbom, node_version), encoding="utf-8")
     manifest = {
         "schema": 1,
         "name": "kindred-xhs-sidecar",

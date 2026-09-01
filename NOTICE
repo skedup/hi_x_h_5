@@ -5,4 +5,5 @@ Copyright (c) 2024 ShunL12324
 This distribution includes modifications and a Kindred Portable Capability maintained in this
 repository. The project is licensed under the MIT License in LICENSE. Third-party package names,
 versions, and declared licenses are recorded in each sidecar release's
-THIRD_PARTY_NOTICES.json and sbom.cdx.json.
+THIRD_PARTY_NOTICES.json and sbom.cdx.json. The bundled Node runtime's complete
+license and third-party notices are included at node/LICENSE.

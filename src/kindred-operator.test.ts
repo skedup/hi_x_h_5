@@ -1,6 +1,23 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { decodeRpcBody, renderLaunchAgent, renderSystemdUnit, summarizeStatus } from './kindred-operator.js';
+import {
+  decodeRpcBody,
+  loadOperatorEnvironment,
+  operatorBaseUrl,
+  renderLaunchAgent,
+  renderSystemdUnit,
+  summarizeStatus,
+  systemdActivationCommands,
+} from './kindred-operator.js';
+
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true });
+});
 
 describe('Kindred sidecar operator', () => {
   test('renders fixed launchd and systemd services', () => {
@@ -13,6 +30,35 @@ describe('Kindred sidecar operator', () => {
     expect(unit).toContain('ExecStart="/release/node/bin/node" "/release/dist/index.js"');
     expect(unit).toContain('Environment="XHS_MCP_DATA_DIR=/life/state/xhs"');
     expect(unit).not.toContain('uninstall');
+    expect(systemdActivationCommands()).toEqual([
+      ['--user', 'daemon-reload'],
+      ['--user', 'enable', 'kindred-xhs-mcp.service'],
+      ['--user', 'restart', 'kindred-xhs-mcp.service'],
+    ]);
+  });
+
+  test('loads the service env file without overriding explicit operator variables', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'kindred-xhs-env-'));
+    temporaryDirectories.push(directory);
+    const path = join(directory, 'xhs.env');
+    writeFileSync(path, 'XHS_MCP_HTTP_BEARER=file-secret\nXHS_MCP_PORT=19060\n');
+    const env: NodeJS.ProcessEnv = { XHS_MCP_PORT: '20060' };
+
+    loadOperatorEnvironment(path, env);
+
+    expect(env).toEqual({ XHS_MCP_PORT: '20060', XHS_MCP_HTTP_BEARER: 'file-secret' });
+  });
+
+  test('uses the service port by default and rejects non-loopback URLs', () => {
+    expect(operatorBaseUrl({ XHS_MCP_PORT: '19060' })).toBe('http://127.0.0.1:19060');
+    expect(operatorBaseUrl({ XHS_MCP_URL: 'http://localhost:19060/' })).toBe(
+      'http://localhost:19060',
+    );
+    expect(() => operatorBaseUrl({ XHS_MCP_URL: 'https://example.com' })).toThrow('loopback');
+    expect(() => operatorBaseUrl({ XHS_MCP_URL: 'http://127.0.0.1:19060/path' })).toThrow(
+      'loopback',
+    );
+    expect(() => operatorBaseUrl({ XHS_MCP_PORT: '70000' })).toThrow('between 1 and 65535');
   });
 
   test('decodes JSON and SSE responses by request id', () => {
@@ -27,8 +73,9 @@ describe('Kindred sidecar operator', () => {
   });
 
   test('distinguishes ready, missing Chrome, and not logged in', () => {
-    expect(summarizeStatus(true, 2, 1)).toContain('status=ok ');
+    expect(summarizeStatus(true, 2, 1)).toContain('status=session_present ');
+    expect(summarizeStatus(true, 2, 1)).toContain('sessions=1 login=unverified');
     expect(summarizeStatus(false, 0, 0)).toContain('status=chrome_missing ');
-    expect(summarizeStatus(true, 0, 0)).toContain('status=not_logged_in ');
+    expect(summarizeStatus(true, 0, 0)).toContain('status=login_required ');
   });
 });

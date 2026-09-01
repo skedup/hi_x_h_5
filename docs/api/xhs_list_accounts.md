@@ -27,7 +27,7 @@
 | `name` | string | 账号名称 |
 | `status` | string | 状态：active / suspended / banned |
 | `proxy` | string? | 代理地址 |
-| `hasSession` | boolean | 是否有有效会话 |
+| `hasSession` | boolean | 是否保存了本地 session；不代表 Cookie 已经在线验证 |
 | `lastActivity` | string | 最后活动时间 |
 
 ## 示例
