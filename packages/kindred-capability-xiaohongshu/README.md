@@ -25,6 +25,9 @@ value: kindred_capability_xiaohongshu.plugin:create_capability
 一项 Activity 与 XHS Compose profile route。Kindred Host 在装配时与公共生活资产组成 15/8
 只读视图；本 package 不再依赖 Kindred root patch 或 derived wheel。
 
+`0.3.0` 是首个公开资源闭包版本。wheel 与双平台 immutable sidecar 均从本仓同一正式 tag 构建；
+sidecar 的安装、状态和交互式登录入口见[正式发行文档](../../docs/kindred-release.md)。
+
 Kindred 配置示例：
 
 ```yaml

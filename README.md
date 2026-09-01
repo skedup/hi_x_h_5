@@ -29,6 +29,11 @@
 校验该版本；缺失或不匹配时直接失败，不调用平台工具。具体配置、Artifact bundle 和安全边界见
 [Portable package 文档](./packages/kindred-capability-xiaohongshu/README.md)。
 
+正式 Kindred 发行同时提供 Portable wheel，以及原生构建的 macOS arm64 / Ubuntu 24.04 x86_64
+immutable sidecar bundle。bundle 自带固定 Node 与生产依赖，并提供窄的
+`install-service`、`status`、`login` operator；不携带浏览器、账号或运行数据。构建、校验和本机激活
+见 [Kindred XHS 正式发行](./docs/kindred-release.md)。
+
 ## 功能概览
 
 ### 多账号管理
