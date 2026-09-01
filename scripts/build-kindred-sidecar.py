@@ -19,6 +19,13 @@ from typing import Any
 NODE_VERSION = "22.18.0"
 SERVICE_API_VERSION = "1"
 NATIVE_PACKAGES = ("better-sqlite3", "canvas", "sharp")
+CANVAS_BUILD_METADATA = (
+    "Makefile",
+    "binding.Makefile",
+    "canvas.target.mk",
+    "config.gypi",
+    "gyp-mac-tool",
+)
 TARGETS = {
     ("Darwin", "arm64"): "macos-arm64",
     ("Linux", "x86_64"): "ubuntu-24.04-x86_64",
@@ -81,6 +88,12 @@ def members(stage: Path) -> list[dict[str, Any]]:
     return output
 
 
+def remove_native_build_metadata(stage: Path) -> None:
+    build_dir = stage / "node_modules" / "canvas" / "build"
+    for name in CANVAS_BUILD_METADATA:
+        (build_dir / name).unlink(missing_ok=True)
+
+
 def write_archive(stage: Path, destination: Path) -> None:
     with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as raw:
         raw_path = Path(raw.name)
@@ -138,6 +151,7 @@ def main() -> None:
     shutil.copy2(repo / "NOTICE", stage / "NOTICE")
     run("npm", "ci", "--omit=dev", "--ignore-scripts", cwd=stage)
     run("npm", "rebuild", *NATIVE_PACKAGES, cwd=stage)
+    remove_native_build_metadata(stage)
     for bin_dir in (stage / "node_modules").rglob(".bin"):
         shutil.rmtree(bin_dir)
 
