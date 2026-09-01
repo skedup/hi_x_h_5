@@ -1,6 +1,6 @@
 {
   "name": "@sillyl12324/xhs-mcp",
-  "version": "2.7.1",
+  "version": "2.7.2",
   "type": "module",
   "description": "MCP server for Xiaohongshu (小红书/RedNote) - search, publish, and interact with content",
   "main": "dist/index.js",
@@ -24,6 +24,7 @@
     "start:http": "node dist/index.js --http",
     "start:bun": "bun dist/index.js",
     "start:bun:http": "bun dist/index.js --http",
+    "smoke:kindred": "node scripts/smoke-kindred-sidecar.mjs",
     "test:search": "bun scripts/test-xhs.ts search",
     "test:note": "bun scripts/test-xhs.ts note",
     "test:migration": "npm run build && node --test scripts/db-migration-regression.mjs scripts/profile-migration-concurrency-regression.mjs",

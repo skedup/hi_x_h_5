@@ -127,6 +127,7 @@ jobs:
         env:
           GEMINI_API_KEY: test-key-explore-ai
       - run: npm run build
+      - run: npm run smoke:kindred
       - run: python3 scripts/build-kindred-sidecar.py --target ${{ matrix.target }}
       - name: Verify release metadata boundary
         run: |

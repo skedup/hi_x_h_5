@@ -1,7 +1,7 @@
 /**
  * @fileoverview HTTP transport server for the MCP protocol.
  * Provides a Hono-based HTTP server as an alternative to stdio transport.
- * Uses StreamableHTTPServerTransport for MCP communication.
+ * Uses the MCP Web Standard transport for Hono request/response handling.
  * @module http-server
  */
 
@@ -10,13 +10,12 @@ import type { Context } from 'hono';
 import { randomBytes } from 'node:crypto';
 import { serve } from '@hono/node-server';
 import { createMcpServer } from './server.js';
-import { initDatabase } from './db/index.js';
-import { getAccountPool } from './core/account-pool.js';
+import { initDatabase, type XhsDatabase } from './db/index.js';
+import { getAccountPool, type AccountPool } from './core/account-pool.js';
 import { getLoginSessionManager } from './core/login-session.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { config } from './core/config.js';
-import { evaluateAuthorization, authorizeMessages } from './core/audit.js';
+import { authorizeMessages } from './core/audit.js';
 import { startLivenessMonitor, recordHumanActivity, installPresenceSignal } from './core/liveness.js';
 import { SERVICE_API_VERSION } from './service-api.js';
 
@@ -102,6 +101,27 @@ export function verifyPresenceToken(provided: string | undefined): boolean {
   return true;
 }
 
+export async function handleMcpRequest(
+  request: Request,
+  body: unknown,
+  pool: AccountPool,
+  db: XhsDatabase,
+): Promise<Response> {
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  const server = createMcpServer(pool, db);
+
+  try {
+    await server.connect(transport);
+    return await transport.handleRequest(request, { parsedBody: body });
+  } finally {
+    await transport.close().catch(() => {});
+    await server.close().catch(() => {});
+  }
+}
+
 /**
  * Start the HTTP transport server for the MCP protocol.
  * Uses Hono as the HTTP framework and Node.js as the runtime.
@@ -120,25 +140,6 @@ export async function startHttpServer(port: number = config.server.port) {
   // 打印人工在场确认 challenge（仅本机终端可见；短时有效、消费后轮换，自动化客户端无法读取）
   getPresenceChallenge();
 
-  /**
-   * Create a new MCP server and transport for each request.
-   * In stateless HTTP mode, each request is independent.
-   */
-  const getOrCreateServer = async (): Promise<{ server: Server; transport: StreamableHTTPServerTransport }> => {
-    // For stateless mode, we need a fresh transport per request
-    // but can potentially reuse the server logic
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, // Stateless mode
-    });
-
-    // Create server if not exists, or create new one for each request in stateless mode
-    // Note: In stateless HTTP mode, each request is independent
-    const server = createMcpServer(pool, db);
-    await server.connect(transport);
-
-    return { server, transport };
-  };
-
   const app = new Hono();
 
   // MCP 仅供本机进程调用，拒绝浏览器页面跨源触发写工具。
@@ -149,89 +150,14 @@ export async function startHttpServer(port: number = config.server.port) {
     await next();
   });
 
-  // MCP endpoint using StreamableHTTPServerTransport
+  // Each request gets an independent stateless MCP server and transport.
   app.post('/mcp', async (c) => {
-    let server: Server | null = null;
-    let transport: StreamableHTTPServerTransport | null = null;
-
     try {
       // 先解析 body 再做 C3.3 鉴权/读写分级/批量确认（body 仅可读取一次，后续复用）
       const body = await c.req.json();
       const reject = authorizeMcp(c, body);
       if (reject) return reject;
-
-      const result = await getOrCreateServer();
-      server = result.server;
-      transport = result.transport;
-
-      // Get the raw request body (已提前解析并复用)
-
-      // Create a mock Express-like request/response for the transport
-      // StreamableHTTPServerTransport expects Express-style req/res
-      const headers: Record<string, string> = {};
-      c.req.raw.headers.forEach((value, key) => {
-        headers[key] = value;
-      });
-
-      const mockReq = {
-        method: 'POST',
-        headers,
-        body,
-      };
-
-      let responseBody: any = null;
-      let responseHeaders: Record<string, string> = {};
-      let responseStatus = 200;
-      let resolveResponse: () => void = () => undefined;
-      const responseComplete = new Promise<void>((resolve) => {
-        resolveResponse = resolve;
-      });
-
-      const mockRes = {
-        writeHead: (status: number, headers?: Record<string, string>) => {
-          responseStatus = status;
-          if (headers) {
-            responseHeaders = { ...responseHeaders, ...headers };
-          }
-          return mockRes;
-        },
-        setHeader: (name: string, value: string) => {
-          responseHeaders[name] = value;
-          return mockRes;
-        },
-        getHeader: (name: string) => responseHeaders[name],
-        write: (chunk: string | Buffer) => {
-          if (responseBody === null) {
-            responseBody = '';
-          }
-          responseBody += typeof chunk === 'string' ? chunk : chunk.toString();
-          return true;
-        },
-        end: (data?: string | Buffer) => {
-          if (data) {
-            if (responseBody === null) {
-              responseBody = '';
-            }
-            responseBody += typeof data === 'string' ? data : data.toString();
-          }
-          resolveResponse();
-          return mockRes;
-        },
-        on: () => mockRes,
-        headersSent: false,
-        flushHeaders: () => {},
-      };
-
-      await transport.handleRequest(mockReq as any, mockRes as any, body);
-      await responseComplete;
-
-      // Build response
-      const response = new Response(responseBody, {
-        status: responseStatus,
-        headers: responseHeaders,
-      });
-
-      return response;
+      return await handleMcpRequest(c.req.raw, body, pool, db);
     } catch (error) {
       console.error('Error handling MCP request:', error);
       return c.json(
@@ -245,14 +171,6 @@ export async function startHttpServer(port: number = config.server.port) {
         },
         500,
       );
-    } finally {
-      // Clean up transport and server
-      if (transport) {
-        await transport.close().catch(() => {});
-      }
-      if (server) {
-        await server.close().catch(() => {});
-      }
     }
   });
 
