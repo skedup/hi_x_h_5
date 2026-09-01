@@ -26,6 +26,7 @@ value: kindred_capability_xiaohongshu.plugin:create_capability
 只读视图；本 package 不再依赖 Kindred root patch 或 derived wheel。
 
 `0.3.0` 建立首个公开资源闭包，`0.3.1` 收紧正式发行包的校验文件与构建元数据边界。
+`0.3.2` 补齐 wheel 许可证正文及公开发行的 clean-install 验证；Portable 工具契约不变。
 wheel 与双平台 immutable sidecar 均从本仓同一正式 tag 构建；sidecar 的安装、状态和交互式
 登录入口见[正式发行文档](../../docs/kindred-release.md)。
 

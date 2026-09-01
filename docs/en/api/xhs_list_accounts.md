@@ -27,7 +27,7 @@ None.
 | `name` | string | Account name |
 | `status` | string | Status: active / suspended / banned |
 | `proxy` | string? | Proxy address |
-| `hasSession` | boolean | Whether has valid session |
+| `hasSession` | boolean | Whether local session state exists; it does not prove the cookie is still valid |
 | `lastActivity` | string | Last activity time |
 
 ## Example

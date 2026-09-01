@@ -24,7 +24,8 @@ cd kindred-xhs-sidecar-<version>-<target>
 ```
 
 `manifest.json` 固定 source SHA、目标平台、Node/service API 版本及所有成员摘要。
-`THIRD_PARTY_NOTICES.json` 与 `sbom.cdx.json` 用于许可和依赖审计。
+`THIRD_PARTY_NOTICES.json` 与 `sbom.cdx.json` 用于许可和依赖审计；随包 Node runtime 的完整
+许可证和第三方声明位于 `node/LICENSE`，native npm package 必须出现在 SBOM 中。
 
 发行包只提供三个窄 operator 命令：
 
@@ -32,6 +33,8 @@ cd kindred-xhs-sidecar-<version>-<target>
 # 可选：令服务从本机 0600 文件读取 bearer 等环境变量
 export XHS_MCP_ENV_FILE=/absolute/path/to/xhs.env
 export XHS_MCP_DATA_DIR=/absolute/path/to/life/state/xiaohongshu
+# 可选；service 与 status/login 会共同使用该端口
+export XHS_MCP_PORT=18060
 
 ./bin/kindred-xhs install-service
 ./bin/kindred-xhs status
@@ -39,8 +42,13 @@ export XHS_MCP_DATA_DIR=/absolute/path/to/life/state/xiaohongshu
 ```
 
 `install-service` 只注册当前 bundle 的 launchd 或 systemd-user 服务，不创建账号、不导入 Cookie，
-也不安装浏览器。`status` 只通过 loopback health/MCP 返回服务版本和账号数量；`login` 交互式封装现有
-二维码与必要的短信验证码流程。Bearer 只从环境或服务 env file 读取，不接受命令行 token。
+也不安装浏览器；重复安装会重启已有服务，使升级后的 bundle 立即生效。`status` 和 `login` 会读取同一
+`XHS_MCP_ENV_FILE`，并且只连接 loopback HTTP 根地址。未显式设置 `XHS_MCP_URL` 时，operator 根据
+`XHS_MCP_PORT` 连接服务。
+
+`status` 只通过 health/MCP 返回服务版本、账号数和本地 session 数。`login=unverified` 明确表示本地
+session 存在，但该命令没有打开浏览器验证 Cookie 仍然有效；真实登录失效由实际平台请求或 `login`
+流程确认。Bearer 只从环境或 env file 读取，不接受命令行 token。
 
 本阶段没有通用 sidecar manager、账号管理 CLI、浏览器安装器、热更新或卸载数据逻辑。账号 DB、
 profile 与日志始终留在 `XHS_MCP_DATA_DIR`，更新发行包不得覆盖它们。
@@ -61,7 +69,9 @@ python3 scripts/build-kindred-sidecar.py --target ubuntu-24.04-x86_64
 
 构建器不会运行 root `postinstall`，因此不会下载 Chromium。GitHub 的
 `Kindred XHS release` workflow 在两个目标 runner 上重复 native smoke、生成 SBOM、扫描源码历史与
-release tree，并上传固定 artifacts。正式公开 tag 使用 `kindred-xhs-v<version>`。
+release tree，并上传固定 artifacts。正式公开 tag 使用 `kindred-xhs-v<capability-version>`；Python
+capability 与 Node sidecar 保持各自版本，manifest 会同时固定 sidecar version。tag 发布前必须在
+GitHub repository settings 中启用 immutable releases，workflow 会在发布后验证该状态。
 
 平台页面协议可能变化，使用者应遵守当地法律与平台条款。Kindred 的 XHS 写侧仍默认
 `write_mode=none`；安装 sidecar 不会自动开放发布、评论、点赞或收藏。
