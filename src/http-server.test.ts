@@ -32,14 +32,14 @@ describe('presence challenge 轮换', () => {
     const messages: string[] = [];
 
     try {
-      serverConfig.presenceChallengeTtlMs = 5;
+      serverConfig.presenceChallengeTtlMs = 100;
       console.error = (...args: unknown[]) => messages.push(args.map(String).join(' '));
 
       expect(verifyPresenceToken(undefined)).toBe(false);
       const first = messages.at(-1)?.match(/: ([a-f0-9]{32})$/)?.[1];
       expect(first).toBeDefined();
 
-      await new Promise((resolve) => setTimeout(resolve, 15));
+      await new Promise((resolve) => setTimeout(resolve, 150));
       expect(verifyPresenceToken(first)).toBe(false);
       const second = messages.at(-1)?.match(/: ([a-f0-9]{32})$/)?.[1];
       expect(second).toBeDefined();

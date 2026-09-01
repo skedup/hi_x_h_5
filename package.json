@@ -5,12 +5,14 @@
   "description": "MCP server for Xiaohongshu (小红书/RedNote) - search, publish, and interact with content",
   "main": "dist/index.js",
   "bin": {
-    "xhs-mcp": "dist/index.js"
+    "xhs-mcp": "dist/index.js",
+    "kindred-xhs": "dist/kindred-operator.js"
   },
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
     "dev": "bun run --watch src/index.ts",
@@ -26,7 +28,7 @@
     "test:note": "bun scripts/test-xhs.ts note",
     "test:migration": "npm run build && node --test scripts/db-migration-regression.mjs scripts/profile-migration-concurrency-regression.mjs",
     "regression:a2": "bun scripts/regression-a2.ts",
-    "test": "bun test",
+    "test": "bun test src",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
@@ -59,7 +61,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.38.0",
-    "@hono/node-server": "1.19.9",
+    "@hono/node-server": "1.19.17",
     "@langchain/core": "^1.1.18",
     "@langchain/langgraph": "^1.1.2",
     "@modelcontextprotocol/sdk": "^1.23.0",
@@ -69,9 +71,9 @@
     "hono": "^4.7.0",
     "jsonrepair": "^3.13.2",
     "liquidjs": "^10.24.0",
-    "patchright": "^1.57.0",
-    "patchright-core": "^1.57.0",
-    "sharp": "^0.34.5",
+    "patchright": "1.57.0",
+    "patchright-core": "1.57.0",
+    "sharp": "0.35.4",
     "zod": "^4.1.13"
   },
   "devDependencies": {

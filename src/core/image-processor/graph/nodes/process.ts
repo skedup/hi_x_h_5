@@ -5,7 +5,7 @@
  * 输出: baseSlides
  */
 
-import sharp from 'sharp';
+import sharp, { type ResizeOptions } from 'sharp';
 import { createCanvas } from 'canvas';
 import { mkdirSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -114,7 +114,7 @@ async function placeScreenshot(
 
   let targetWidth: number;
   let targetHeight: number;
-  let resizeOptions: sharp.ResizeOptions;
+  let resizeOptions: ResizeOptions;
 
   switch (mode) {
     case 'fill':
